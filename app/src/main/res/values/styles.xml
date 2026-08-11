@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.NeonEQ" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:statusBarColor">#050508</item>
+        <item name="android:navigationBarColor">#050508</item>
+        <item name="android:windowBackground">#050508</item>
+    </style>
+</resources>
