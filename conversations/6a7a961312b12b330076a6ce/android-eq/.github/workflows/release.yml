@@ -1,0 +1,87 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.5'
+
+    - name: Make gradlew executable
+      run: chmod +x gradlew
+
+    - name: Build Debug APK
+      run: ./gradlew assembleDebug
+
+    - name: Rename APK with version
+      run: |
+        VERSION="${{ github.ref_name }}"
+        if [ -z "$VERSION" ] || [ "$VERSION" = "refs/heads/main" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        fi
+        VERSION="${VERSION#v}"
+        cp app/build/outputs/apk/debug/app-debug.apk "NeonEQ-v${VERSION}.apk"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "APK_FILE=NeonEQ-v${VERSION}.apk" >> $GITHUB_ENV
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ env.VERSION }}
+        name: "Neon EQ v${{ env.VERSION }}"
+        body: |
+          # 🎧 Neon EQ v${{ env.VERSION }}
+
+          ## 📦 Installation
+          1. Download the APK file below
+          2. Enable "Install from unknown sources" in Android Settings
+          3. Tap the downloaded APK to install
+          4. Grant audio permissions when prompted
+          5. Toggle the EQ on and enjoy!
+
+          ## ✨ Features
+          - System-wide audio equalization (all apps)
+          - 10 presets (Flat, Bass Boost, Rock, Pop, Jazz, EDM, Classical, Dance, Bass Extreme, Treble Boost)
+          - 5/10/15/31 band equalizer
+          - Bass Boost (0-1000)
+          - 3D Sound / Virtualizer (0-1000)
+          - Loudness Enhancer (0-4000)
+          - Neon AMOLED dark theme
+          - Background foreground service
+
+          ## 📋 Requirements
+          - Android 5.0+ (API 21+)
+          - ~10 MB storage space
+
+          ---
+          Built from commit ${{ github.sha }}
+        files: ${{ env.APK_FILE }}
+        prerelease: false
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
