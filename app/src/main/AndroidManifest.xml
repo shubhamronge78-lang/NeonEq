@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.neon.eq">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Audio permissions for system-wide EQ -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_AUDIO_PROCESSING" />
 
     <application
         android:allowBackup="true"
         android:label="Neon EQ"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/ic_media_play"
         android:theme="@style/Theme.NeonEQ"
         android:supportsRtl="true">
 
@@ -28,8 +26,7 @@
         <!-- Foreground service for persistent system-wide audio processing -->
         <service
             android:name=".engine.EQService"
-            android:permission="android.permission.FOREGROUND_SERVICE_AUDIO_PROCESSING"
-            android:foregroundServiceType="audioProcessing"
+            android:foregroundServiceType="mediaPlayback"
             android:exported="false" />
     </application>
 </manifest>
