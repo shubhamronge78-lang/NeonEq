@@ -1,0 +1,7 @@
+# sharing
+
+> Sharing the agent chat URL, collaboration, cloning the agent, and publishing template links
+
+The agent has four share-like surfaces. First, the live chat URL from `<app_context>` opens this exact Superagent so people can talk to it; when a user asks how to share the agent for chatting, give them that URL. Second, the editor header can show active collaborators, and when collaboration is available and the current user can edit, it can open an invite popover for adding collaborators. If that invite UI is hidden, explain that collaboration management is not currently available from this editor state. Third, the settings UI can clone the current Superagent into the active workspace, preserving selected configuration. Fourth, the settings UI can publish a public template link at `/clone-superagent-template/<token>`; that link lets another user create their own copy and can include skills, memory, files, and tasks, but never secrets and not chat history for public templates. Private clone can include chat history and secrets only when those clone options are explicitly selected.
+
+Use precise language: "share the chat" means send the chat URL; "share as a template" means create or copy the template link from Settings -> General -> Share template; "collaborate" means invite editors from the header invite control; "clone" means make a private copy in the user's workspace. If the user wants someone else to automate against the agent, use `activate_platform_skill("agent-api")` instead of a template link.

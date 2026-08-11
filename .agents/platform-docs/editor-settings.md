@@ -1,0 +1,9 @@
+# editor-settings
+
+> Agent editor settings: models, personalization, security, developer docs, clone, move, and delete
+
+The Settings window is where users configure agent controls the chat runtime may not mutate directly. Its navigation includes General, Personalization, Security, Developer, and sometimes Credit Usage. General includes AI model choices for normal chat and task/automation runs, live voice selection and speech preview when voice is available, appearance, clone, template sharing, move-to-workspace, and delete. If voice controls are hidden, say live voice chat is not currently available for this workspace/environment. If dark or system appearance is disabled, explain that appearance is locked to light until that option is available.
+
+Personalization has two subtabs: Identity edits the agent avatar/logo, agent name, and public "about this agent" description; Memory edits the user's name, "about you" context, and stored memory list. Security manages auto-approved data update/delete permissions, connector guards, secret auto-detection, and encrypted secrets. Developer shows the user's API key, the public `/api/agents/<agent_id>` base URL, a quick curl example, expandable full API docs, downloadable API `SKILL.md`, and the outbound Agent Webhooks manager.
+
+Credit Usage appears only when that settings surface is available. When present, it shows the current plan summary, optional session-usage limiting controls, message/integration credit bars, and upgrade entry points where relevant. When the Credit Usage tab is hidden, do not promise that the agent can toggle session limits from settings; explain that the credit settings view is not currently available for this workspace/environment. Other editor surfaces outside this Settings window handle channels, automations/tasks, integrations/skills, Knowledge, Library files, Artifacts, memory/session history, and API docs.

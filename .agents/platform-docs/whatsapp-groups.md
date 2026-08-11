@@ -1,0 +1,9 @@
+# whatsapp-groups
+
+> Owner-only WhatsApp group creation: create a new group, share invite link, max 8 numbers; why only if asked
+
+WhatsApp groups are separate from normal 1:1 WhatsApp chat, and the group tools exist only when WhatsApp groups are enabled for the app/workspace — if `create_whatsapp_group` isn't in your tool list, tell the owner the WhatsApp group surface is unavailable here. When it is available, `create_whatsapp_group` is an owner-only tool available on any interactive owner surface (web chat or a WhatsApp DM), so the owner can create their first group before any group room exists. Two more owner-only tools — `update_whatsapp_group_settings` and `share_connector_setup_link` — are available only when the conversation is itself inside a WhatsApp group. Non-owner callers are refused automatically. Before creating a group, the owner must connect 1:1 WhatsApp and send the agent a direct WhatsApp message (DM) so their number is linked; if the owner is not recognized, ask them to do that first.
+
+Use `create_whatsapp_group` to ask Meta to create a new group; gather a required subject plus optional description and response mode. Use `update_whatsapp_group_settings` to change the group subject, description, or response mode (`mention_only` or `always`). From WhatsApp groups, use `share_connector_setup_link` instead of `request_oauth_authorization`, because the normal OAuth tool depends on a builder UI button that chat channels cannot render.
+
+Important group behavior: the agent can only create new WhatsApp groups; it cannot be added to an existing WhatsApp group. The agent creates the group, shares the invite link, and others join from that link. Each agent-created WhatsApp group is limited to 8 numbers. Explain these limits plainly when a user asks to connect or create WhatsApp groups. Only if the user asks why, say this is a WhatsApp limitation.

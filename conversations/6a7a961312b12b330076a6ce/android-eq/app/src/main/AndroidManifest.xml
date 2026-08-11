@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.neon.eq">
+
+    <!-- Audio permissions for system-wide EQ -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_AUDIO_PROCESSING" />
+
+    <application
+        android:allowBackup="true"
+        android:label="Neon EQ"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.NeonEQ"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Foreground service for persistent system-wide audio processing -->
+        <service
+            android:name=".engine.EQService"
+            android:permission="android.permission.FOREGROUND_SERVICE_AUDIO_PROCESSING"
+            android:foregroundServiceType="audioProcessing"
+            android:exported="false" />
+    </application>
+</manifest>
