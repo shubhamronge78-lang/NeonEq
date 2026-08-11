@@ -174,7 +174,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             .width(8.dp)
                             .height(160.dp)
                             .background(Color(0xFF1A1A2E), RoundedCornerShape(4.dp)),
-                        contentAlignment = Alignment.Bottom
+                        contentAlignment = Alignment.BottomCenter
                     ) {
                         Box(
                             modifier = Modifier
