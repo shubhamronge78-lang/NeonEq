@@ -1,55 +1,42 @@
 package com.neon.eq
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
-import android.media.AudioManager
-import android.media.audiofx.AudioEffect
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.neon.eq.engine.EqualizerEngine
 import com.neon.eq.engine.Presets
-import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
     private val engine = EqualizerEngine(this)
-    private val globalSessionId by lazy {
-        // Get global audio session for system-wide EQ
-        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        am.generateAudioSessionId()
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Request MODIFY_AUDIO_SETTINGS permission
         if (checkSelfPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.MODIFY_AUDIO_SETTINGS), 100)
         }
 
-        engine.attachToSession(0) // Session 0 = global audio mix
+        // Use global session with silent audio track to keep EQ alive
+        engine.attachToGlobalSession()
 
         setContent {
             NeonEQTheme {
@@ -80,7 +67,6 @@ fun NeonEQTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = darkColors, content = content)
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EqualizerScreen(engine: EqualizerEngine) {
     var enabled by remember { mutableStateOf(true) }
@@ -89,12 +75,25 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var virtualizer by remember { mutableStateOf(0) }
     var loudness by remember { mutableStateOf(0) }
     var selectedPreset by remember { mutableStateOf("Flat") }
-    var bandLevels by remember { mutableStateOf(IntArray(31) { 0 }) }
-    val bands = engine.bands
+    var bands by remember { mutableStateOf(engine.bands) }
+    var statusMsg by remember { mutableStateOf(engine.statusMessage) }
+
+    // Use a SnapshotStateMap for band levels — each entry is independently observable
+    val bandLevels = remember { mutableStateMapOf<Int, Float>() }
+
+    // Initialize band levels
+    LaunchedEffect(bandCount) {
+        bands = engine.bands
+        statusMsg = engine.statusMessage
+        repeat(bandCount) { i ->
+            if (bandLevels[i] == null) bandLevels[i] = 0f
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .background(Color(0xFF050508))
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -106,7 +105,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("NEON EQ", fontSize = 28.sp, fontWeight = FontWeight.Bold,
-                color = Color(0xFF00E5FF), style = LocalTextStyle.current)
+                color = Color(0xFF00E5FF))
             Switch(checked = enabled, onCheckedChange = {
                 enabled = it; engine.setEnabled(it)
             }, colors = SwitchDefaults.colors(
@@ -116,26 +115,27 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
 
         Text("System-Wide Audio Equalizer", fontSize = 12.sp, color = Color.Gray)
+        Text(statusMsg, fontSize = 10.sp, color = if (engine.isReady) Color(0xFF00E5FF) else Color(0xFFFF4081))
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(16.dp))
 
         // Presets
         Text("PRESETS", fontSize = 11.sp, color = Color(0xFF7C4DFF), fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(Presets.presets) { preset ->
+            items(Presets.presets, key = { it.name }) { preset ->
                 PresetChip(preset.name, selectedPreset == preset.name) {
                     selectedPreset = preset.name
                     val levels = Presets.levelsForCount(preset, bandCount)
                     levels.forEachIndexed { i, lvl ->
                         engine.setBandLevel(i, lvl)
-                        bandLevels[i] = lvl.toInt()
+                        bandLevels[i] = lvl.toFloat()
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(16.dp))
 
         // Band count selector
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -145,6 +145,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     onClick = {
                         bandCount = count
                         engine.setBandCount(count)
+                        bands = engine.bands
+                        statusMsg = engine.statusMessage
                     },
                     label = { Text("$count", fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(
@@ -157,68 +159,93 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(20.dp))
 
-        // EQ Bands
+        // EQ Bands — each band is its own composable to minimize recomposition
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(220.dp),
+                .height(240.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.Bottom
         ) {
             bands.take(bandCount).forEachIndexed { i, band ->
-                val level = bandLevels.getOrElse(i) { 0 }
-                val normLevel = (level + 15) / 30f // -15..15 -> 0..1
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        modifier = Modifier
-                            .width(8.dp)
-                            .height(160.dp)
-                            .background(Color(0xFF1A1A2E), RoundedCornerShape(4.dp)),
-                        contentAlignment = Alignment.BottomCenter
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height((160 * normLevel).dp)
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))
-                                    ),
-                                    RoundedCornerShape(4.dp)
-                                )
-                        )
-                    }
-                    Text("${band.freq}", fontSize = 8.sp, color = Color.Gray)
-                    Slider(
-                        value = level.toFloat(),
-                        onValueChange = { engine.setBandLevel(i, it.toInt().toShort()); bandLevels[i] = it.toInt() },
-                        valueRange = -15f..15f,
-                        modifier = Modifier
-                            .height(40.dp)
-                            .width(28.dp),
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF00E5FF),
-                            activeTrackColor = Color(0xFF00E5FF).copy(alpha = 0.4f)
-                        )
+                key(band.index, bandCount) {
+                    val level = bandLevels[i] ?: 0f
+                    BandSlider(
+                        bandIndex = i,
+                        freq = band.freq,
+                        level = level,
+                        onLevelChange = { newLevel ->
+                            bandLevels[i] = newLevel
+                            engine.setBandLevel(i, newLevel.toInt().toShort())
+                        }
                     )
                 }
             }
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(16.dp))
 
-        // Bass Boost
+        // Effect sliders
         EffectSlider("BASS BOOST", bassBoost, 0..1000) {
             bassBoost = it; engine.setBassBoost(it)
         }
-        // Virtualizer (3D)
         EffectSlider("3D SOUND", virtualizer, 0..1000) {
             virtualizer = it; engine.setVirtualizer(it)
         }
-        // Volume / Loudness
         EffectSlider("LOUDNESS", loudness, 0..4000) {
             loudness = it; engine.setLoudness(it)
         }
+
+        Spacer(Modifier.height(32.dp))
+    }
+}
+
+@Composable
+fun BandSlider(
+    bandIndex: Int,
+    freq: Int,
+    level: Float,
+    onLevelChange: (Float) -> Unit
+) {
+    val normLevel = (level + 15) / 30f
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .width(10.dp)
+                .height(160.dp)
+                .background(Color(0xFF1A1A2E), RoundedCornerShape(4.dp)),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height((160 * normLevel).coerceAtLeast(2f).dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))
+                        ),
+                        RoundedCornerShape(4.dp)
+                    )
+            )
+        }
+        Text(
+            if (freq >= 1000) "${freq / 1000}k" else "$freq",
+            fontSize = 8.sp,
+            color = Color.Gray
+        )
+        Slider(
+            value = level,
+            onValueChange = onLevelChange,
+            valueRange = -15f..15f,
+            modifier = Modifier
+                .height(40.dp)
+                .width(28.dp),
+            colors = SliderDefaults.colors(
+                thumbColor = Color(0xFF00E5FF),
+                activeTrackColor = Color(0xFF00E5FF).copy(alpha = 0.4f)
+            )
+        )
     }
 }
 
