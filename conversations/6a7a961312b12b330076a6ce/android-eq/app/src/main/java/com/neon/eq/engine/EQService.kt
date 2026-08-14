@@ -1,6 +1,5 @@
 package com.neon.eq.engine
 
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -21,8 +20,7 @@ class EQService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        // Attach to global audio session (0 = system mix)
-        engine.attachToSession(0)
+        engine.attachToGlobalSession()
         engine.setEnabled(true)
     }
 
