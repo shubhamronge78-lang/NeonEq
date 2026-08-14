@@ -6,8 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -19,12 +18,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -102,13 +101,18 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var bandLevels by remember { mutableStateOf(FloatArray(31) { 0f }) }
     var pendingAudio by remember { mutableStateOf<Pair<Int, Float>?>(null) }
 
+    // Smooth enable/disable transition
+    val enabledAmt by animateFloatAsState(
+        targetValue = if (enabled) 1f else 0f,
+        animationSpec = tween(500, easing = FastOutSlowInEasing)
+    )
+
     LaunchedEffect(Unit) {
         engine.onReady = { ready, msg, bandList ->
             isReady = ready; statusMsg = msg; bands = bandList
         }
     }
 
-    // Debounce audio — 120ms after last drag/tap
     LaunchedEffect(pendingAudio) {
         if (pendingAudio != null) {
             kotlinx.coroutines.delay(120)
@@ -138,14 +142,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             .padding(horizontal = 16.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // ── Header with glow ──
-        Text(
-            "NEON EQ",
-            fontSize = 32.sp,
-            fontWeight = FontWeight.Black,
-            color = NeonCyan,
-            modifier = Modifier.blur(0.dp)
-        )
+        // ── Header ──
+        Text("NEON EQ", fontSize = 32.sp, fontWeight = FontWeight.Black, color = NeonCyan)
         Text("System-Wide Audio Equalizer", fontSize = 11.sp, color = GrayText)
         Text(statusMsg, fontSize = 8.sp, color = NeonPurple.copy(alpha = 0.7f))
 
@@ -157,13 +155,15 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("POWER", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (enabled) NeonCyan else GrayText)
+            Text(
+                "POWER",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = lerp(GrayText, NeonCyan, enabledAmt)
+            )
             Switch(
                 checked = enabled,
-                onCheckedChange = {
-                    enabled = it
-                    engine.setEnabled(it)
-                },
+                onCheckedChange = { enabled = it; engine.setEnabled(it) },
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = NeonCyan,
                     checkedTrackColor = NeonCyan.copy(alpha = 0.3f),
@@ -220,6 +220,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             bandCount = bandCount,
             levels = bandLevels,
             enabled = enabled,
+            enabledAmt = enabledAmt,
             onLevelChange = { band, level ->
                 val newLevels = bandLevels.copyOf()
                 newLevels[band] = level
@@ -255,8 +256,28 @@ fun CanvasEQ(
     bandCount: Int,
     levels: FloatArray,
     enabled: Boolean,
+    enabledAmt: Float,
     onLevelChange: (Int, Float) -> Unit
 ) {
+    // ── Smooth per-band height animation ──
+    val animatedLevels = (0 until 31).map { i ->
+        animateFloatAsState(
+            targetValue = if (i < bandCount) levels.getOrElse(i) { 0f } else 0f,
+            animationSpec = tween(350, easing = FastOutSlowInEasing)
+        )
+    }
+
+    // ── Subtle breathing pulse for glow ──
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.88f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    )
 
     Canvas(
         modifier = Modifier
@@ -285,22 +306,26 @@ fun CanvasEQ(
             }
     ) {
         val slotW = size.width / bandCount
-        val barW = slotW * 0.45f
+        val barW = slotW * 0.42f
         val barMaxH = size.height - 20f
-        val glowColor = if (enabled) NeonCyan else GrayText
-        val topColor = if (enabled) NeonPurple else GrayText.copy(alpha = 0.4f)
+        val glowAlpha = 0.15f * pulse * enabledAmt
+
+        // Blend colors smoothly between disabled and enabled
+        val barColor = lerp(GrayText.copy(alpha = 0.5f), NeonCyan, enabledAmt)
+        val topColor = lerp(GrayText.copy(alpha = 0.3f), NeonPurple, enabledAmt)
+        val centerLineColor = Color.White.copy(alpha = 0.06f + 0.04f * enabledAmt)
 
         // Center line (0 dB reference)
         val centerY = 10f + barMaxH * 0.5f
         drawLine(
-            color = Color.White.copy(alpha = 0.08f),
+            color = centerLineColor,
             start = Offset(0f, centerY),
             end = Offset(size.width, centerY),
             strokeWidth = 1f
         )
 
         for (i in 0 until bandCount) {
-            val level = levels.getOrElse(i) { 0f }
+            val level = animatedLevels[i].value
             val normLevel = (level + 15f) / 30f
             val x = i * slotW + (slotW - barW) / 2f
             val barH = (barMaxH * normLevel).coerceAtLeast(3f)
@@ -314,20 +339,35 @@ fun CanvasEQ(
                 cornerRadius = CornerRadius(4f, 4f)
             )
 
-            // Glow behind bar (cheap: wider, semi-transparent)
-            if (enabled && barH > 10f) {
+            // ── Multi-layer soft glow ──
+            if (enabledAmt > 0.01f && barH > 6f) {
+                // Outer glow — wide, very soft
                 drawRoundRect(
-                    color = glowColor.copy(alpha = 0.12f),
-                    topLeft = Offset(x - 6f, y - 4f),
-                    size = Size(barW + 12f, barH + 8f),
+                    color = NeonCyan.copy(alpha = glowAlpha * 0.3f),
+                    topLeft = Offset(x - 10f, y - 6f),
+                    size = Size(barW + 20f, barH + 12f),
+                    cornerRadius = CornerRadius(12f, 12f)
+                )
+                // Mid glow
+                drawRoundRect(
+                    color = NeonCyan.copy(alpha = glowAlpha * 0.6f),
+                    topLeft = Offset(x - 5f, y - 3f),
+                    size = Size(barW + 10f, barH + 6f),
                     cornerRadius = CornerRadius(8f, 8f)
+                )
+                // Inner glow
+                drawRoundRect(
+                    color = NeonCyan.copy(alpha = glowAlpha),
+                    topLeft = Offset(x - 2f, y - 1f),
+                    size = Size(barW + 4f, barH + 2f),
+                    cornerRadius = CornerRadius(6f, 6f)
                 )
             }
 
-            // Main bar with gradient
+            // Main bar with vertical gradient
             drawRoundRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(topColor, glowColor),
+                    colors = listOf(topColor, barColor),
                     startY = y, endY = y + barH
                 ),
                 topLeft = Offset(x, y),
@@ -335,13 +375,32 @@ fun CanvasEQ(
                 cornerRadius = CornerRadius(4f, 4f)
             )
 
-            // Bright cap on top of bar
-            if (enabled) {
+            // Bright cap — soft white top
+            if (enabledAmt > 0.01f) {
                 drawRoundRect(
-                    color = Color.White.copy(alpha = 0.6f),
+                    color = Color.White.copy(alpha = 0.5f * enabledAmt),
                     topLeft = Offset(x, y),
-                    size = Size(barW, 3f),
+                    size = Size(barW, 2.5f),
                     cornerRadius = CornerRadius(2f, 2f)
+                )
+            }
+
+            // Faded reflection below center line
+            if (enabledAmt > 0.01f && barH > 20f) {
+                val reflectH = (barH * 0.25f).coerceAtMost(15f)
+                val reflectY = 10f + barMaxH - barH + barH - reflectH // bottom of bar + reflect
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            NeonCyan.copy(alpha = 0.15f * enabledAmt),
+                            Color.Transparent
+                        ),
+                        startY = reflectY,
+                        endY = reflectY + reflectH
+                    ),
+                    topLeft = Offset(x, reflectY),
+                    size = Size(barW, reflectH),
+                    cornerRadius = CornerRadius(4f, 4f)
                 )
             }
         }
@@ -350,11 +409,12 @@ fun CanvasEQ(
 
 @Composable
 fun PresetChip(name: String, selected: Boolean, onClick: () -> Unit) {
+    val bgAlpha by animateFloatAsState(if (selected) 0.15f else 0f, tween(250))
     Box(
         modifier = Modifier
             .clickable(onClick = onClick)
             .background(
-                if (selected) NeonCyan.copy(alpha = 0.15f) else BarBg,
+                if (selected) NeonCyan.copy(alpha = bgAlpha) else BarBg,
                 RoundedCornerShape(16.dp)
             )
             .padding(horizontal = 14.dp, vertical = 7.dp)
