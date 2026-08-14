@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -14,14 +15,18 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.neon.eq.engine.EqualizerEngine
 import com.neon.eq.engine.Presets
+import kotlin.math.round
 
 class MainActivity : ComponentActivity() {
 
@@ -34,7 +39,6 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.MODIFY_AUDIO_SETTINGS), 100)
         }
 
-        // Engine initializes on a background thread — no UI blocking
         engine.attachToGlobalSession()
 
         setContent {
@@ -70,7 +74,6 @@ fun NeonEQTheme(content: @Composable () -> Unit) {
 
 @Composable
 fun EqualizerScreen(engine: EqualizerEngine) {
-    // UI state — all on main thread, no audio calls
     var enabled by remember { mutableStateOf(true) }
     var bandCount by remember { mutableStateOf(5) }
     var bassBoost by remember { mutableStateOf(0) }
@@ -78,15 +81,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var loudness by remember { mutableStateOf(0) }
     var selectedPreset by remember { mutableStateOf("Flat") }
 
-    // Engine state — updated via callback from background thread
     var isReady by remember { mutableStateOf(false) }
     var statusMsg by remember { mutableStateOf("Loading...") }
     var bands by remember { mutableStateOf(engine.bands) }
 
-    // Band levels — visual only, updated instantly for smooth UI
-    val bandLevels = remember { mutableStateMapOf<Int, Float>() }
+    var bandLevels by remember { mutableStateOf(FloatArray(31) { 0f }) }
+    var pendingAudioUpdate by remember { mutableStateOf<Pair<Int, Float>?>(null) }
 
-    // Listen for engine ready callbacks
     LaunchedEffect(Unit) {
         engine.onReady = { ready, msg, bandList ->
             isReady = ready
@@ -95,12 +96,20 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
     }
 
-    // Loading overlay
+    // Debounce audio — 150ms after last drag
+    LaunchedEffect(pendingAudioUpdate) {
+        if (pendingAudioUpdate != null) {
+            kotlinx.coroutines.delay(150)
+            pendingAudioUpdate?.let { (band, level) ->
+                engine.setBandLevel(band, round(level).toInt().toShort())
+            }
+            pendingAudioUpdate = null
+        }
+    }
+
     if (!isReady) {
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFF050508)),
+            modifier = Modifier.fillMaxSize().background(Color(0xFF050508)),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -149,24 +158,26 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 PresetChip(preset.name, selectedPreset == preset.name) {
                     selectedPreset = preset.name
                     val levels = Presets.levelsForCount(preset, bandCount)
+                    val newLevels = FloatArray(31) { 0f }
                     levels.forEachIndexed { i, lvl ->
-                        bandLevels[i] = lvl.toFloat()    // instant UI update
-                        engine.setBandLevel(i, lvl)        // async audio update
+                        newLevels[i] = lvl.toFloat()
+                        engine.setBandLevel(i, lvl)
                     }
+                    bandLevels = newLevels
                 }
             }
         }
 
         Spacer(Modifier.height(16.dp))
 
-        // ── Band count selector ──
+        // ── Band count ──
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(5, 10, 15, 31).forEach { count ->
                 FilterChip(
                     selected = bandCount == count,
                     onClick = {
                         bandCount = count
-                        engine.setBandCount(count)  // async, calls onReady when done
+                        engine.setBandCount(count)
                     },
                     label = { Text("$count", fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(
@@ -179,28 +190,31 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(20.dp))
 
-        // ── EQ Bands ──
+        // ── Canvas EQ bars ──
+        CanvasEQ(
+            bandCount = bandCount,
+            levels = bandLevels,
+            onLevelChange = { band, level ->
+                val newLevels = bandLevels.copyOf()
+                newLevels[band] = level
+                bandLevels = newLevels
+                pendingAudioUpdate = band to level
+            }
+        )
+
+        // ── Frequency labels (Text, not Canvas) ──
         Row(
-            modifier = Modifier.fillMaxWidth().height(240.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.Bottom
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            bands.take(bandCount).forEachIndexed { i, band ->
-                key(band.index, bandCount) {
-                    val level = bandLevels[i] ?: 0f
-                    BandSlider(
-                        freq = band.freq,
-                        level = level,
-                        onLevelChange = { newLevel ->
-                            // UI updates instantly — just a float in a map
-                            bandLevels[i] = newLevel
-                        },
-                        onLevelChangeFinished = { finalLevel ->
-                            // Audio call ONLY when user releases slider — async, no UI block
-                            engine.setBandLevel(i, finalLevel.toInt().toShort())
-                        }
-                    )
-                }
+            bands.take(bandCount).forEach { band ->
+                Text(
+                    text = if (band.freq >= 1000) "${band.freq / 1000}k" else "${band.freq}",
+                    fontSize = 8.sp,
+                    color = Color.Gray,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center
+                )
             }
         }
 
@@ -209,15 +223,15 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // ── Effect sliders ──
         EffectSlider("BASS BOOST", bassBoost, 0..1000) { v ->
             bassBoost = v
-            engine.setBassBoost(v)  // async
+            engine.setBassBoost(v)
         }
         EffectSlider("3D SOUND", virtualizer, 0..1000) { v ->
             virtualizer = v
-            engine.setVirtualizer(v)  // async
+            engine.setVirtualizer(v)
         }
         EffectSlider("LOUDNESS", loudness, 0..4000) { v ->
             loudness = v
-            engine.setLoudness(v)  // async
+            engine.setLoudness(v)
         }
 
         Spacer(Modifier.height(32.dp))
@@ -225,48 +239,64 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 }
 
 @Composable
-fun BandSlider(
-    freq: Int,
-    level: Float,
-    onLevelChange: (Float) -> Unit,
-    onLevelChangeFinished: (Float) -> Unit
+fun CanvasEQ(
+    bandCount: Int,
+    levels: FloatArray,
+    onLevelChange: (Int, Float) -> Unit
 ) {
-    val normLevel by remember(level) { derivedStateOf { (level + 15f) / 30f } }
+    val bgColor = Color(0xFF1A1A2E)
+    val gradientTop = Color(0xFF7C4DFF)
+    val gradientBottom = Color(0xFF00E5FF)
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        // Visual bar
-        Box(
-            modifier = Modifier
-                .width(12.dp)
-                .height(160.dp)
-                .background(Color(0xFF1A1A2E), RoundedCornerShape(4.dp)),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height((160 * normLevel).coerceAtLeast(2f).dp)
-                    .background(
-                        Brush.verticalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))),
-                        RoundedCornerShape(4.dp)
-                    )
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(200.dp)
+            .pointerInput(bandCount) {
+                detectDragGestures(
+                    onDrag = { change, _ ->
+                        val slotWidth = size.width / bandCount
+                        val band = (change.position.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
+                        val normY = 1f - (change.position.y / size.height).coerceIn(0f, 1f)
+                        val level = (normY * 30f - 15f).coerceIn(-15f, 15f)
+                        onLevelChange(band, level)
+                        change.consume()
+                    }
+                )
+            }
+    ) {
+        val slotWidth = size.width / bandCount
+        val barWidthDp = size.width / bandCount * 0.4f
+        val barHeightMax = size.height - 20f
+        val minHeight = 4f
+
+        for (i in 0 until bandCount) {
+            val level = levels.getOrElse(i) { 0f }
+            val normLevel = (level + 15f) / 30f
+            val x = i * slotWidth + (slotWidth - barWidthDp) / 2f
+            val barH = (barHeightMax * normLevel).coerceAtLeast(minHeight)
+            val y = size.height - 10f - barH
+
+            // Background bar
+            drawRoundRect(
+                color = bgColor,
+                topLeft = Offset(x, 10f),
+                size = Size(barWidthDp, barHeightMax),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
+            )
+
+            // Gradient fill
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(gradientTop, gradientBottom),
+                    startY = y,
+                    endY = y + barH
+                ),
+                topLeft = Offset(x, y),
+                size = Size(barWidthDp, barH),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
             )
         }
-        Text(
-            if (freq >= 1000) "${freq / 1000}k" else "$freq",
-            fontSize = 8.sp, color = Color.Gray
-        )
-        Slider(
-            value = level,
-            onValueChange = onLevelChange,           // UI only — instant
-            onValueChangeFinished = { onLevelChangeFinished(level) },  // Audio — on release
-            valueRange = -15f..15f,
-            modifier = Modifier.height(40.dp).width(32.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = Color(0xFF00E5FF),
-                activeTrackColor = Color(0xFF00E5FF).copy(alpha = 0.4f)
-            )
-        )
     }
 }
 
