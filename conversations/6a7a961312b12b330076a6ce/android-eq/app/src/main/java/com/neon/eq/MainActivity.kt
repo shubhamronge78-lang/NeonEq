@@ -31,16 +31,58 @@ import androidx.compose.ui.unit.sp
 import com.neon.eq.engine.EqualizerEngine
 import com.neon.eq.engine.Presets
 import kotlin.math.round
+import android.content.Context
+import android.os.Process
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 class MainActivity : ComponentActivity() {
 
     private val engine = EqualizerEngine(this)
 
+    companion object {
+        private const val CRASH_PREFS = "neon_crash"
+        private const val CRASH_KEY = "last_crash"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Install a global crash catcher FIRST, before anything else can throw.
+        // If something we haven't anticipated crashes the app (on any thread), we
+        // save the real stack trace and show it directly in-app on next launch
+        // instead of leaving you staring at a dead/looping loading screen with
+        // zero information about what actually went wrong.
+        val prefs = getSharedPreferences(CRASH_PREFS, Context.MODE_PRIVATE)
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val trace = throwable.stackTraceToString()
+                prefs.edit().putString(CRASH_KEY, "Thread: ${thread.name}\n\n$trace").apply()
+            } catch (_: Throwable) { }
+            defaultHandler?.uncaughtException(thread, throwable)
+                ?: Process.killProcess(Process.myPid())
+        }
+
         super.onCreate(savedInstanceState)
 
         if (checkSelfPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.MODIFY_AUDIO_SETTINGS), 100)
+        }
+
+        val lastCrash = prefs.getString(CRASH_KEY, null)
+
+        if (lastCrash != null) {
+            setContent {
+                NeonEQTheme {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        CrashScreen(lastCrash) {
+                            prefs.edit().remove(CRASH_KEY).apply()
+                            engine.attachToGlobalSession()
+                            recreate()
+                        }
+                    }
+                }
+            }
+            return
         }
 
         engine.attachToGlobalSession()
@@ -57,6 +99,37 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         engine.release()
         super.onDestroy()
+    }
+}
+
+@Composable
+fun CrashScreen(trace: String, onDismiss: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF050508))
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Text("NEON EQ CRASHED", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF4081))
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Screenshot this and send it back — this is the real error, not a guess.",
+            fontSize = 12.sp, color = Color.Gray
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(
+            trace,
+            fontSize = 10.sp,
+            color = Color(0xFF00E5FF),
+            modifier = Modifier
+                .background(Color(0xFF0D0D14))
+                .padding(12.dp)
+        )
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onDismiss) {
+            Text("Dismiss & Retry")
+        }
     }
 }
 

@@ -7,12 +7,32 @@ android {
     namespace = "com.neon.eq"
     compileSdk = 34
 
+    // CI (GitHub Actions) runs on a fresh VM every time, so without a fixed keystore
+    // AGP auto-generates a brand-new random debug key each build. That means every
+    // "new" APK has a different signature than the last install, and Android's
+    // package installer silently refuses to update — you end up stuck on an old,
+    // stale build without any clear error. Pinning a checked-in keystore fixes that
+    // for good: every future build is signed identically, so installs always update
+    // cleanly (no more "uninstall the old app first").
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore.p12")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+            storeType = "PKCS12"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.neon.eq"
         minSdk = 21
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // Tie versionCode/versionName to the CI run so it's easy to confirm on-device
+        // (Settings > Apps > Neon EQ > version) that you're actually running the
+        // build you think you're running.
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
+        versionName = "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
     }
 
     buildTypes {
