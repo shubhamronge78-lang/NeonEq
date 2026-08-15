@@ -141,6 +141,27 @@ class EqualizerEngine(private val context: Context) {
         pollHandler.removeCallbacks(pollRunnable)
     }
 
+    // getSessionId()/isActive() on AudioPlaybackConfiguration are @SystemApi (hidden) —
+    // not part of the public SDK, so we reach them via reflection. Falls back to
+    // global session 0 only if the platform blocks it.
+    private val sessionIdMethod by lazy {
+        try {
+            AudioPlaybackConfiguration::class.java.getMethod("getSessionId").also { it.isAccessible = true }
+        } catch (e: Exception) { null }
+    }
+    private val isActiveMethod by lazy {
+        try {
+            AudioPlaybackConfiguration::class.java.getMethod("isActive").also { it.isAccessible = true }
+        } catch (e: Exception) { null }
+    }
+
+    private fun reflectSessionId(config: AudioPlaybackConfiguration): Int {
+        return try { (sessionIdMethod?.invoke(config) as? Int) ?: 0 } catch (e: Exception) { 0 }
+    }
+    private fun reflectIsActive(config: AudioPlaybackConfiguration): Boolean {
+        return try { (isActiveMethod?.invoke(config) as? Boolean) ?: false } catch (e: Exception) { false }
+    }
+
     private fun scanForActiveSessions() {
         try {
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -148,8 +169,8 @@ class EqualizerEngine(private val context: Context) {
 
             val activeSessionIds = mutableSetOf<Int>()
             for (config in configs) {
-                val sessionId = config.audioSessionId
-                if (sessionId != 0 && config.isActive) {
+                val sessionId = reflectSessionId(config)
+                if (sessionId != 0 && reflectIsActive(config)) {
                     activeSessionIds.add(sessionId)
                 }
             }
