@@ -1,6 +1,7 @@
 package com.neon.eq.engine
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
 import android.media.audiofx.*
@@ -10,7 +11,12 @@ import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-class EqualizerEngine(private val context: Context) {
+class EqualizerEngine private constructor(context: Context) {
+
+    // Always hold applicationContext internally — this engine is now a long-lived
+    // singleton shared between the Activity and the background service, so holding
+    // an Activity context here would leak it every time the screen rotates or closes.
+    private val context: Context = context.applicationContext
 
     companion object {
         const val MAX_BANDS = 31
@@ -20,7 +26,32 @@ class EqualizerEngine(private val context: Context) {
         private const val TAG = "NeonEQ"
         private const val DB_TO_MILLIBEL = 100
         private const val POLL_INTERVAL_MS = 1500L
+
+        private const val PREFS_NAME = "neon_eq_state"
+        private const val KEY_BAND_COUNT = "band_count"
+        private const val KEY_LEVELS = "levels"
+        private const val KEY_BASS = "bass"
+        private const val KEY_VIRT = "virt"
+        private const val KEY_LOUD = "loud"
+        private const val KEY_ENABLED = "enabled"
+        private const val KEY_PRESET_NAME = "preset_name"
+        private const val KEY_CUSTOM_PRESETS = "custom_presets"
+
+        @Volatile private var instance: EqualizerEngine? = null
+
+        // Shared singleton: the Activity (for UI) and EQService (for background
+        // persistence) must control the SAME set of audio effects, not two competing
+        // instances. Without this, closing the app used to kill the effects outright
+        // (Activity.onDestroy called engine.release()), which defeats the entire
+        // point of a "system-wide" equalizer — it only worked while the app was open.
+        fun getInstance(context: Context): EqualizerEngine =
+            instance ?: synchronized(this) {
+                instance ?: EqualizerEngine(context).also { instance = it }
+            }
     }
+
+    private val prefs: SharedPreferences =
+        this.context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val audioExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "NeonEQ-Audio").apply { isDaemon = true }
@@ -43,7 +74,12 @@ class EqualizerEngine(private val context: Context) {
     private var globalVirtualizer: Virtualizer? = null
     private var globalLoudness: LoudnessEnhancer? = null
 
-    @Volatile var bandCount = 5
+    // Real-time spectrum visualizer, attached to global session 0 alongside the EQ.
+    // Best-effort only — some devices/ROMs won't allow it, we degrade silently.
+    private var visualizer: Visualizer? = null
+    var onWaveform: ((ByteArray) -> Unit)? = null
+
+    @Volatile var bandCount = prefs.getInt(KEY_BAND_COUNT, 5)
         private set
     @Volatile var bands: List<BandInfo> = emptyList()
     @Volatile var enabled = false
@@ -51,12 +87,14 @@ class EqualizerEngine(private val context: Context) {
     @Volatile var isReady = false
     @Volatile var statusMessage = "Initializing..."
     @Volatile var activeSessionCount = 0
+    @Volatile var selectedPresetName: String = prefs.getString(KEY_PRESET_NAME, "Flat") ?: "Flat"
+        private set
 
-    private val currentBandLevels = ShortArray(31) { 0 }
-    private var currentBassBoost = 0
-    private var currentVirtualizer = 0
-    private var currentLoudness = 0
-    private var currentEnabled = true
+    private val currentBandLevels = loadLevels()
+    private var currentBassBoost = prefs.getInt(KEY_BASS, 0)
+    private var currentVirtualizer = prefs.getInt(KEY_VIRT, 0)
+    private var currentLoudness = prefs.getInt(KEY_LOUD, 0)
+    private var currentEnabled = prefs.getBoolean(KEY_ENABLED, true)
 
     // Custom setter: if the engine already finished init (isReady/watchdog fired)
     // BEFORE Compose got around to subscribing — very possible on slow first-launch
@@ -73,6 +111,65 @@ class EqualizerEngine(private val context: Context) {
     var onSessionUpdate: ((Int) -> Unit)? = null
 
     data class BandInfo(val index: Int, val freq: Int, val minLevel: Short, val maxLevel: Short)
+
+    private fun loadLevels(): ShortArray {
+        val raw = prefs.getString(KEY_LEVELS, null)
+        val arr = ShortArray(31) { 0 }
+        if (raw != null) {
+            try {
+                raw.split(",").forEachIndexed { i, s -> if (i < 31) arr[i] = s.toShort() }
+            } catch (_: Throwable) { }
+        }
+        return arr
+    }
+
+    private fun persistLevels() {
+        try {
+            prefs.edit().putString(KEY_LEVELS, currentBandLevels.joinToString(",")).apply()
+        } catch (_: Throwable) { }
+    }
+
+    private fun persistScalar(key: String, value: Int) {
+        try { prefs.edit().putInt(key, value).apply() } catch (_: Throwable) { }
+    }
+
+    fun currentLevelsSnapshot(): ShortArray = currentBandLevels.copyOf()
+    fun currentBassBoostValue(): Int = currentBassBoost
+    fun currentVirtualizerValue(): Int = currentVirtualizer
+    fun currentLoudnessValue(): Int = currentLoudness
+
+    fun setSelectedPresetName(name: String) {
+        selectedPresetName = name
+        try { prefs.edit().putString(KEY_PRESET_NAME, name).apply() } catch (_: Throwable) { }
+    }
+
+    // ── Custom presets: "name1|lvl,lvl,...;name2|lvl,lvl,..." ──
+    fun listCustomPresets(): List<Presets.Preset> {
+        val raw = prefs.getString(KEY_CUSTOM_PRESETS, null) ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        return raw.split(";").mapNotNull { entry ->
+            val parts = entry.split("|")
+            if (parts.size != 2) return@mapNotNull null
+            val name = parts[0]
+            val levels = try {
+                ShortArray(31) { i -> parts[1].split(",").getOrElse(i) { "0" }.toShort() }
+            } catch (_: Throwable) { return@mapNotNull null }
+            Presets.Preset(name, levels)
+        }
+    }
+
+    fun saveCustomPreset(name: String, levels: ShortArray) {
+        val existing = listCustomPresets().filter { it.name != name }
+        val entry = "$name|${levels.joinToString(",")}"
+        val serialized = (existing.map { "${it.name}|${it.levels.joinToString(",")}" } + entry).joinToString(";")
+        try { prefs.edit().putString(KEY_CUSTOM_PRESETS, serialized).apply() } catch (_: Throwable) { }
+    }
+
+    fun deleteCustomPreset(name: String) {
+        val remaining = listCustomPresets().filter { it.name != name }
+        val serialized = remaining.joinToString(";") { "${it.name}|${it.levels.joinToString(",")}" }
+        try { prefs.edit().putString(KEY_CUSTOM_PRESETS, serialized).apply() } catch (_: Throwable) { }
+    }
 
     // Hard watchdog: no matter what happens on the audio thread (native hang, hidden-API
     // Error on strict ROMs like MIUI, low-end HAL quirks), the loading screen MUST clear.
@@ -117,9 +214,14 @@ class EqualizerEngine(private val context: Context) {
                         val usable = minOf(numBands, MAX_BANDS)
                         bands = pickBands(eq, bandCount, usable)
                         Log.d(TAG, "Global session 0: $numBands bands")
+                        // Reapply persisted band levels immediately on (re)attach.
+                        for (i in 0 until minOf(bandCount, usable)) {
+                            val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
+                            val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
+                            try { eq.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) { }
+                        }
                     }
 
-                    // Create BassBoost for session 0
                     try {
                         globalBassBoost = BassBoost(0, 0).also { bb ->
                             bb.enabled = currentBassBoost > 0
@@ -128,7 +230,6 @@ class EqualizerEngine(private val context: Context) {
                         Log.d(TAG, "Global BassBoost created")
                     } catch (t: Throwable) { Log.w(TAG, "Global BassBoost failed: ${t.message}") }
 
-                    // Create Virtualizer for session 0
                     try {
                         globalVirtualizer = Virtualizer(0, 0).also { v ->
                             v.enabled = currentVirtualizer > 0
@@ -137,13 +238,14 @@ class EqualizerEngine(private val context: Context) {
                         Log.d(TAG, "Global Virtualizer created")
                     } catch (t: Throwable) { Log.w(TAG, "Global Virtualizer failed: ${t.message}") }
 
-                    // Create LoudnessEnhancer for session 0
                     try {
                         globalLoudness = LoudnessEnhancer(0).also { le ->
                             if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 4000))
                         }
                         Log.d(TAG, "Global LoudnessEnhancer created")
                     } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: ${t.message}") }
+
+                    try { attachVisualizer() } catch (t: Throwable) { Log.w(TAG, "Visualizer failed: ${t.message}") }
 
                 } catch (t: Throwable) {
                     Log.w(TAG, "Session 0 failed: ${t.message}")
@@ -153,11 +255,11 @@ class EqualizerEngine(private val context: Context) {
                 if (globalEQ != null) {
                     statusMessage = "Global EQ ready — play music to test"
                     isReady = true
-                    enabled = true
+                    enabled = currentEnabled
                 } else {
                     statusMessage = "Scanning for audio sessions..."
                     isReady = true
-                    enabled = true
+                    enabled = currentEnabled
                     if (bands.isEmpty()) bands = fallbackBands(bandCount)
                 }
 
@@ -179,6 +281,29 @@ class EqualizerEngine(private val context: Context) {
                     mainHandler.post { onReady?.invoke(isReady, statusMessage, bands) }
                 }
             }
+        }
+    }
+
+    // Best-effort real-time waveform capture off the global mix, so the UI can render
+    // a live neon spectrum. Requires RECORD_AUDIO; if not granted or unsupported on
+    // this device, this silently no-ops and the UI falls back to an idle animation.
+    private fun attachVisualizer() {
+        try {
+            visualizer?.runCatching { release() }
+            visualizer = Visualizer(0).apply {
+                val range = Visualizer.getCaptureSizeRange()
+                captureSize = range[1].coerceAtMost(1024).coerceAtLeast(range[0])
+                setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
+                        waveform?.let { data -> mainHandler.post { onWaveform?.invoke(data) } }
+                    }
+                    override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) { }
+                }, Visualizer.getMaxCaptureRate() / 2, true, false)
+                enabled = true
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "attachVisualizer failed: ${t.message}")
+            visualizer = null
         }
     }
 
@@ -234,21 +359,18 @@ class EqualizerEngine(private val context: Context) {
 
             Log.d(TAG, "Active sessions: $activeSessionIds (${configs.size} configs)")
 
-            // Remove stale sessions
             val stale = activeFX.keys - activeSessionIds
             for (id in stale) {
                 Log.d(TAG, "Removing stale session $id")
                 releaseSession(id)
             }
 
-            // Attach to new sessions
             for (sessionId in activeSessionIds) {
                 if (!activeFX.containsKey(sessionId)) {
                     attachToSession(sessionId)
                 }
             }
 
-            // Update band info
             if (bands.isEmpty()) {
                 val anyEQ = activeFX.values.firstOrNull()?.equalizer ?: globalEQ
                 if (anyEQ != null) {
@@ -286,7 +408,6 @@ class EqualizerEngine(private val context: Context) {
             val numBands = eq.numberOfBands.toInt()
             val usable = minOf(numBands, MAX_BANDS)
 
-            // Apply stored band levels to this new session
             for (i in 0 until minOf(bandCount, usable)) {
                 val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
                 val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
@@ -345,6 +466,7 @@ class EqualizerEngine(private val context: Context) {
 
     fun setBandLevel(band: Int, level: Short) {
         currentBandLevels[band] = level
+        persistLevels()
         val millibel = (level.toInt() * DB_TO_MILLIBEL).toShort()
         audioExecutor.execute {
             try { bands.getOrNull(band)?.let { bi -> globalEQ?.setBandLevel(bi.index.toShort(), millibel) } }
@@ -358,6 +480,7 @@ class EqualizerEngine(private val context: Context) {
 
     fun setBandCount(count: Int) {
         bandCount = count.coerceIn(MIN_BANDS, MAX_BANDS)
+        persistScalar(KEY_BAND_COUNT, bandCount)
         audioExecutor.execute {
             try {
                 val anyEQ = globalEQ ?: activeFX.values.firstOrNull()?.equalizer
@@ -365,7 +488,6 @@ class EqualizerEngine(private val context: Context) {
                     val usable = minOf(anyEQ.numberOfBands.toInt(), MAX_BANDS)
                     bands = pickBands(anyEQ, bandCount, usable)
                 }
-                // Reapply current band levels with new band mapping
                 for (i in 0 until bandCount) {
                     val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
                     try { bands.getOrNull(i)?.let { bi -> globalEQ?.setBandLevel(bi.index.toShort(), millibel) } } catch (_: Throwable) {}
@@ -380,8 +502,8 @@ class EqualizerEngine(private val context: Context) {
 
     fun setBassBoost(strength: Int) {
         currentBassBoost = strength
+        persistScalar(KEY_BASS, strength)
         audioExecutor.execute {
-            // Apply to global session 0
             try {
                 globalBassBoost?.apply {
                     setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
@@ -389,7 +511,6 @@ class EqualizerEngine(private val context: Context) {
                 }
             } catch (e: Throwable) { Log.e(TAG, "Global BassBoost", e) }
 
-            // Apply to dynamic sessions
             for ((_, sfx) in activeFX) {
                 try { sfx.bassBoost?.apply { setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort()); enabled = strength > 0 } }
                 catch (e: Throwable) { Log.e(TAG, "Session BassBoost", e) }
@@ -399,8 +520,8 @@ class EqualizerEngine(private val context: Context) {
 
     fun setVirtualizer(strength: Int) {
         currentVirtualizer = strength
+        persistScalar(KEY_VIRT, strength)
         audioExecutor.execute {
-            // Apply to global session 0
             try {
                 globalVirtualizer?.apply {
                     setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort())
@@ -408,7 +529,6 @@ class EqualizerEngine(private val context: Context) {
                 }
             } catch (e: Throwable) { Log.e(TAG, "Global Virtualizer", e) }
 
-            // Apply to dynamic sessions
             for ((_, sfx) in activeFX) {
                 try { sfx.virtualizer?.apply { setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort()); enabled = strength > 0 } }
                 catch (e: Throwable) { Log.e(TAG, "Session Virtualizer", e) }
@@ -418,13 +538,12 @@ class EqualizerEngine(private val context: Context) {
 
     fun setLoudness(gain: Int) {
         currentLoudness = gain
+        persistScalar(KEY_LOUD, gain)
         audioExecutor.execute {
-            // Apply to global session 0
             try {
                 globalLoudness?.setTargetGain(gain.coerceIn(0, 4000))
             } catch (e: Throwable) { Log.e(TAG, "Global Loudness", e) }
 
-            // Apply to dynamic sessions
             for ((_, sfx) in activeFX) {
                 try { sfx.loudnessEnhancer?.setTargetGain(gain.coerceIn(0, 4000)) }
                 catch (e: Throwable) { Log.e(TAG, "Session Loudness", e) }
@@ -437,11 +556,13 @@ class EqualizerEngine(private val context: Context) {
     fun setEnabled(on: Boolean) {
         enabled = on
         currentEnabled = on
+        try { prefs.edit().putBoolean(KEY_ENABLED, on).apply() } catch (_: Throwable) { }
         audioExecutor.execute {
             try { globalEQ?.enabled = on } catch (_: Throwable) {}
             try { globalBassBoost?.enabled = on && currentBassBoost > 0 } catch (_: Throwable) {}
             try { globalVirtualizer?.enabled = on && currentVirtualizer > 0 } catch (_: Throwable) {}
             try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 4000)) } catch (_: Throwable) {}
+            try { visualizer?.enabled = on } catch (_: Throwable) {}
 
             for ((_, sfx) in activeFX) {
                 try { sfx.equalizer.enabled = on } catch (_: Throwable) {}
@@ -451,6 +572,8 @@ class EqualizerEngine(private val context: Context) {
             }
         }
     }
+
+    fun isBoot(): Boolean = prefs.getBoolean(KEY_ENABLED, true)
 
     fun reattach() {
         audioExecutor.execute {
@@ -471,6 +594,7 @@ class EqualizerEngine(private val context: Context) {
         globalBassBoost?.runCatching { release() }; globalBassBoost = null
         globalVirtualizer?.runCatching { release() }; globalVirtualizer = null
         globalLoudness?.runCatching { release() }; globalLoudness = null
+        visualizer?.runCatching { release() }; visualizer = null
         enabled = false; isReady = false
     }
 }
