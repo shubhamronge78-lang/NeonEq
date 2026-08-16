@@ -171,6 +171,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             statusMsg = msg
             bands = bandList
         }
+        // Belt-and-suspenders: if init already completed before this subscribed
+        // (slow cold-start on weak CPUs), sync the current state immediately too.
+        if (engine.isReady) {
+            isReady = true
+            statusMsg = engine.statusMessage
+            bands = engine.bands
+        }
     }
 
     if (!isReady) {

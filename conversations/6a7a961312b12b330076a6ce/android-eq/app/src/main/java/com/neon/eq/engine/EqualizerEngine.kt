@@ -58,7 +58,18 @@ class EqualizerEngine(private val context: Context) {
     private var currentLoudness = 0
     private var currentEnabled = true
 
+    // Custom setter: if the engine already finished init (isReady/watchdog fired)
+    // BEFORE Compose got around to subscribing — very possible on slow first-launch
+    // CPUs like the Redmi 10c's — immediately replay the last known state to the new
+    // subscriber instead of silently dropping it. Without this, a late subscriber
+    // means the UI waits forever for a callback that already happened and went nowhere.
     var onReady: ((Boolean, String, List<BandInfo>) -> Unit)? = null
+        set(value) {
+            field = value
+            if (isReady) {
+                value?.invoke(isReady, statusMessage, bands)
+            }
+        }
     var onSessionUpdate: ((Int) -> Unit)? = null
 
     data class BandInfo(val index: Int, val freq: Int, val minLevel: Short, val maxLevel: Short)
