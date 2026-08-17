@@ -151,6 +151,20 @@ class MainActivity : ComponentActivity() {
     fun onEnabledToggled(on: Boolean) {
         if (on) startEqService() else stopEqService()
     }
+
+    // The RECORD_AUDIO prompt is async — attachToGlobalSession() already ran by the
+    // time the user answers it, so the visualizer's first attach attempt very likely
+    // failed silently (permission not yet granted) and never retried on its own.
+    // Nudge it back to life the moment permission actually comes through.
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100) {
+            val idx = permissions.indexOf(Manifest.permission.RECORD_AUDIO)
+            if (idx >= 0 && grantResults.getOrNull(idx) == PackageManager.PERMISSION_GRANTED) {
+                engine.retryVisualizerIfNeeded()
+            }
+        }
+    }
 }
 
 @Composable
@@ -390,7 +404,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             virtualizer = v
             engine.setVirtualizer(v)
         }
-        EffectSlider("LOUDNESS", loudness, 0..4000) { v ->
+        EffectSlider("LOUDNESS", loudness, 0..2000) { v ->
             loudness = v
             engine.setLoudness(v)
         }
@@ -516,59 +530,69 @@ fun CanvasEQ(
     val bgColor = Color(0xFF1A1A2E)
     val gradientTop = Color(0xFF7C4DFF)
     val gradientBottom = Color(0xFF00E5FF)
-    val barWidth = 12f
-    val barHeight = 180f
-    val minHeight = 4f
+    val density = LocalDensity.current
+
+    // Everything below is computed in real pixels derived from dp, and — critically —
+    // touch mapping and drawing both use the exact SAME "track" rectangle. Previously
+    // touch used the full canvas height while the visual bar was confined to a fixed
+    // 180px strip near the bottom regardless of screen density/canvas size, so where
+    // you touched and where the bar actually moved didn't match. Fixed here.
+    val barWidthPx = with(density) { 10.dp.toPx() }
+    val minHeightPx = with(density) { 3.dp.toPx() }
+    val labelAreaPx = with(density) { 46.dp.toPx() }
+
+    fun levelFromY(y: Float, trackHeight: Float): Float {
+        val clampedY = y.coerceIn(0f, trackHeight)
+        val normY = 1f - (clampedY / trackHeight)
+        return (normY * 30f - 15f).coerceIn(-15f, 15f)
+    }
 
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(240.dp)
             .pointerInput(bandCount) {
+                val trackHeight = size.height.toFloat() - labelAreaPx
                 detectDragGestures(
                     onDragStart = { offset ->
                         val slotWidth = size.width / bandCount
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
-                        val normY = 1f - (offset.y / size.height).coerceIn(0f, 1f)
-                        val level = (normY * 30f - 15f).coerceIn(-15f, 15f)
-                        onLevelChange(band, level)
+                        onLevelChange(band, levelFromY(offset.y, trackHeight))
                     },
                     onDrag = { change, _ ->
                         val slotWidth = size.width / bandCount
                         val band = (change.position.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
-                        val normY = 1f - (change.position.y / size.height).coerceIn(0f, 1f)
-                        val level = (normY * 30f - 15f).coerceIn(-15f, 15f)
-                        onLevelChange(band, level)
+                        onLevelChange(band, levelFromY(change.position.y, trackHeight))
                         change.consume()
                     }
                 )
             }
             .pointerInput(bandCount) {
+                val trackHeight = size.height.toFloat() - labelAreaPx
                 detectTapGestures(
                     onTap = { offset ->
                         val slotWidth = size.width / bandCount
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
-                        val normY = 1f - (offset.y / size.height).coerceIn(0f, 1f)
-                        val level = (normY * 30f - 15f).coerceIn(-15f, 15f)
-                        onLevelChange(band, level)
+                        onLevelChange(band, levelFromY(offset.y, trackHeight))
                     }
                 )
             }
     ) {
         val slotWidth = size.width / bandCount
+        val trackHeight = size.height - labelAreaPx
 
         for (i in 0 until bandCount) {
             val level = levels.getOrElse(i) { 0f }
             val normLevel = (level + 15f) / 30f
-            val x = i * slotWidth + (slotWidth - barWidth) / 2f
-            val barH = (barHeight * normLevel).coerceAtLeast(minHeight)
-            val y = size.height - 60f - barH
+            val x = i * slotWidth + (slotWidth - barWidthPx) / 2f
+            val barH = (trackHeight * normLevel).coerceAtLeast(minHeightPx)
+            val y = trackHeight - barH
 
-            // Background bar
+            // Background bar — spans the FULL track, same rect touch mapping uses.
             drawRoundRect(
                 color = bgColor,
-                topLeft = Offset(x, size.height - 60f - barHeight),
-                size = Size(barWidth, barHeight),
+                topLeft = Offset(x, 0f),
+                size = Size(barWidthPx, trackHeight),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
             )
 
@@ -580,11 +604,11 @@ fun CanvasEQ(
                     endY = y + barH
                 ),
                 topLeft = Offset(x, y),
-                size = Size(barWidth, barH),
+                size = Size(barWidthPx, barH),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
             )
 
-            // Frequency label
+            // Frequency + level labels, drawn in the reserved label area below the track.
             val band = bands.getOrNull(i)
             val freqText = if (band != null) {
                 if (band.freq >= 1000) "${band.freq / 1000}k" else "${band.freq}"
@@ -592,22 +616,21 @@ fun CanvasEQ(
             drawIntoCanvas {
                 val paint = android.graphics.Paint().apply {
                     color = android.graphics.Color.GRAY
-                    textSize = 18f
+                    textSize = with(density) { 11.sp.toPx() }
                     textAlign = android.graphics.Paint.Align.CENTER
                 }
                 it.nativeCanvas.drawText(
                     freqText,
-                    x + barWidth / 2f,
-                    size.height - 40f,
+                    x + barWidthPx / 2f,
+                    trackHeight + labelAreaPx * 0.45f,
                     paint
                 )
-                // Level value
                 paint.color = android.graphics.Color.rgb(0, 229, 255)
-                paint.textSize = 16f
+                paint.textSize = with(density) { 10.sp.toPx() }
                 it.nativeCanvas.drawText(
                     "${round(level).toInt()}",
-                    x + barWidth / 2f,
-                    size.height - 15f,
+                    x + barWidthPx / 2f,
+                    trackHeight + labelAreaPx * 0.85f,
                     paint
                 )
             }

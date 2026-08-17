@@ -93,7 +93,7 @@ class EqualizerEngine private constructor(context: Context) {
     private val currentBandLevels = loadLevels()
     private var currentBassBoost = prefs.getInt(KEY_BASS, 0)
     private var currentVirtualizer = prefs.getInt(KEY_VIRT, 0)
-    private var currentLoudness = prefs.getInt(KEY_LOUD, 0)
+    private var currentLoudness = prefs.getInt(KEY_LOUD, 0).coerceIn(0, 2000)
     private var currentEnabled = prefs.getBoolean(KEY_ENABLED, true)
 
     // Custom setter: if the engine already finished init (isReady/watchdog fired)
@@ -209,7 +209,7 @@ class EqualizerEngine private constructor(context: Context) {
                 // ── Try global session 0 ──
                 try {
                     globalEQ = Equalizer(0, 0).also { eq ->
-                        eq.enabled = true
+                        eq.enabled = currentEnabled
                         val numBands = eq.numberOfBands.toInt()
                         val usable = minOf(numBands, MAX_BANDS)
                         bands = pickBands(eq, bandCount, usable)
@@ -224,7 +224,7 @@ class EqualizerEngine private constructor(context: Context) {
 
                     try {
                         globalBassBoost = BassBoost(0, 0).also { bb ->
-                            bb.enabled = currentBassBoost > 0
+                            bb.enabled = currentEnabled && currentBassBoost > 0
                             if (currentBassBoost > 0) bb.setStrength(currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
                         }
                         Log.d(TAG, "Global BassBoost created")
@@ -232,7 +232,7 @@ class EqualizerEngine private constructor(context: Context) {
 
                     try {
                         globalVirtualizer = Virtualizer(0, 0).also { v ->
-                            v.enabled = currentVirtualizer > 0
+                            v.enabled = currentEnabled && currentVirtualizer > 0
                             if (currentVirtualizer > 0) v.setStrength(currentVirtualizer.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort())
                         }
                         Log.d(TAG, "Global Virtualizer created")
@@ -240,7 +240,7 @@ class EqualizerEngine private constructor(context: Context) {
 
                     try {
                         globalLoudness = LoudnessEnhancer(0).also { le ->
-                            if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 4000))
+                            if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 2000))
                         }
                         Log.d(TAG, "Global LoudnessEnhancer created")
                     } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: ${t.message}") }
@@ -287,6 +287,17 @@ class EqualizerEngine private constructor(context: Context) {
     // Best-effort real-time waveform capture off the global mix, so the UI can render
     // a live neon spectrum. Requires RECORD_AUDIO; if not granted or unsupported on
     // this device, this silently no-ops and the UI falls back to an idle animation.
+    // Call after RECORD_AUDIO is granted mid-session — the very first attach may have
+    // run before the permission dialog resolved, in which case Visualizer construction
+    // throws (caught silently) and visualizer stays null forever with no automatic retry.
+    // This lets MainActivity kick it back into life without resetting the rest of the EQ.
+    fun retryVisualizerIfNeeded() {
+        if (visualizer != null) return
+        audioExecutor.execute {
+            try { attachVisualizer() } catch (t: Throwable) { Log.w(TAG, "retryVisualizer failed: ${t.message}") }
+        }
+    }
+
     private fun attachVisualizer() {
         try {
             visualizer?.runCatching { release() }
@@ -298,7 +309,7 @@ class EqualizerEngine private constructor(context: Context) {
                         waveform?.let { data -> mainHandler.post { onWaveform?.invoke(data) } }
                     }
                     override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) { }
-                }, Visualizer.getMaxCaptureRate() / 2, true, false)
+                }, (Visualizer.getMaxCaptureRate() / 2).coerceAtLeast(1), true, false)
                 enabled = true
             }
         } catch (t: Throwable) {
@@ -419,19 +430,19 @@ class EqualizerEngine private constructor(context: Context) {
             var loud: LoudnessEnhancer? = null
             try {
                 bb = BassBoost(0, sessionId).also {
-                    it.enabled = currentBassBoost > 0
+                    it.enabled = currentEnabled && currentBassBoost > 0
                     if (currentBassBoost > 0) it.setStrength(currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
                 }
             } catch (e: Throwable) { Log.w(TAG, "BassBoost N/A for session $sessionId", e) }
             try {
                 virt = Virtualizer(0, sessionId).also {
-                    it.enabled = currentVirtualizer > 0
+                    it.enabled = currentEnabled && currentVirtualizer > 0
                     if (currentVirtualizer > 0) it.setStrength(currentVirtualizer.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort())
                 }
             } catch (e: Throwable) { Log.w(TAG, "Virtualizer N/A for session $sessionId", e) }
             try {
                 loud = LoudnessEnhancer(sessionId)
-                if (currentLoudness > 0) loud.setTargetGain(currentLoudness.coerceIn(0, 4000))
+                if (currentLoudness > 0) loud.setTargetGain(currentLoudness.coerceIn(0, 2000))
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
             activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud)
@@ -537,15 +548,16 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun setLoudness(gain: Int) {
-        currentLoudness = gain
-        persistScalar(KEY_LOUD, gain)
+        val safeGain = gain.coerceIn(0, 2000)
+        currentLoudness = safeGain
+        persistScalar(KEY_LOUD, safeGain)
         audioExecutor.execute {
             try {
-                globalLoudness?.setTargetGain(gain.coerceIn(0, 4000))
+                globalLoudness?.setTargetGain(safeGain)
             } catch (e: Throwable) { Log.e(TAG, "Global Loudness", e) }
 
             for ((_, sfx) in activeFX) {
-                try { sfx.loudnessEnhancer?.setTargetGain(gain.coerceIn(0, 4000)) }
+                try { sfx.loudnessEnhancer?.setTargetGain(safeGain) }
                 catch (e: Throwable) { Log.e(TAG, "Session Loudness", e) }
             }
         }
@@ -561,14 +573,14 @@ class EqualizerEngine private constructor(context: Context) {
             try { globalEQ?.enabled = on } catch (_: Throwable) {}
             try { globalBassBoost?.enabled = on && currentBassBoost > 0 } catch (_: Throwable) {}
             try { globalVirtualizer?.enabled = on && currentVirtualizer > 0 } catch (_: Throwable) {}
-            try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 4000)) } catch (_: Throwable) {}
+            try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 2000)) } catch (_: Throwable) {}
             try { visualizer?.enabled = on } catch (_: Throwable) {}
 
             for ((_, sfx) in activeFX) {
                 try { sfx.equalizer.enabled = on } catch (_: Throwable) {}
                 try { sfx.bassBoost?.enabled = on && (sfx.bassBoost?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
                 try { sfx.virtualizer?.enabled = on && (sfx.virtualizer?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
-                try { if (!on) sfx.loudnessEnhancer?.setTargetGain(0) else sfx.loudnessEnhancer?.setTargetGain(currentLoudness.coerceIn(0, 4000)) } catch (_: Throwable) {}
+                try { if (!on) sfx.loudnessEnhancer?.setTargetGain(0) else sfx.loudnessEnhancer?.setTargetGain(currentLoudness.coerceIn(0, 2000)) } catch (_: Throwable) {}
             }
         }
     }
