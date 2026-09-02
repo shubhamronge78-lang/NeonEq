@@ -94,7 +94,7 @@ class EqualizerEngine private constructor(context: Context) {
     @Volatile var selectedPresetName: String = prefs.getString(KEY_PRESET_NAME, "Flat") ?: "Flat"
         private set
 
-    private val currentBandLevels = loadLevels()
+    private var currentBandLevels = loadLevels()
     private var currentBassBoost = prefs.getInt(KEY_BASS, 0)
     private var currentVirtualizer = prefs.getInt(KEY_VIRT, 0)
     private var currentLoudness = prefs.getInt(KEY_LOUD, 0).coerceIn(0, 2000)
