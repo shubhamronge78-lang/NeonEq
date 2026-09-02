@@ -21,10 +21,10 @@ object Presets {
             when { i < 5 -> (8 - i).toShort(); i < 8 -> 3; else -> 0 }
         }),
         Preset("Bass Extreme", ShortArray(31) { i ->
-            when { i < 4 -> 12; i < 7 -> 6; else -> 0 }
+            when { i < 4 -> 8; i < 7 -> 4; else -> 0 }
         }),
         Preset("Sub Bass", ShortArray(31) { i ->
-            when { i < 3 -> 10; i < 6 -> 5; i < 10 -> -2; else -> 0 }
+            when { i < 3 -> 7; i < 6 -> 3; i < 10 -> -2; else -> 0 }
         }),
         // ── Treble family ──
         Preset("Treble Boost", ShortArray(31) { i ->
@@ -44,7 +44,7 @@ object Presets {
             when { i < 3 -> 4; i in 3..8 -> 2; i in 9..16 -> 0; else -> 3 }
         }),
         Preset("EDM", ShortArray(31) { i ->
-            when { i < 5 -> 7; i in 5..10 -> -2; i in 11..18 -> 1; else -> 4 }
+            when { i < 5 -> 5; i in 5..10 -> -2; i in 11..18 -> 1; else -> 3 }
         }),
         Preset("Classical", ShortArray(31) { i ->
             when { i < 3 -> 3; i in 3..10 -> 0; i in 11..20 -> -1; else -> 2 }
@@ -84,7 +84,7 @@ object Presets {
             when { i < 6 -> -3; i in 6..14 -> 5; i in 15..22 -> 2; else -> -1 }
         }),
         Preset("Movie", ShortArray(31) { i ->
-            when { i < 4 -> 8; i in 4..8 -> 2; i in 9..16 -> -1; i in 17..25 -> 3; else -> 5 }
+            when { i < 4 -> 6; i in 4..8 -> 2; i in 9..16 -> -1; i in 17..25 -> 3; else -> 4 }
         }),
         Preset("Night Mode", ShortArray(31) { i ->
             when { i < 5 -> -4; i in 5..12 -> 0; i in 13..22 -> -2; else -> -5 }

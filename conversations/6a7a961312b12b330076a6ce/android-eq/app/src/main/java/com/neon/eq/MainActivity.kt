@@ -200,9 +200,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     var enabled by remember { mutableStateOf(engine.isBoot()) }
     var bandCount by remember { mutableStateOf(engine.bandCount) }
-    var bassBoost by remember { mutableStateOf(engine.currentBassBoostValue()) }
-    var virtualizer by remember { mutableStateOf(engine.currentVirtualizerValue()) }
-    var loudness by remember { mutableStateOf(engine.currentLoudnessValue()) }
+    var bassBoost by remember { mutableStateOf(engine.currentBassBoostValue().coerceIn(0, 500)) }
+    var virtualizer by remember { mutableStateOf(engine.currentVirtualizerValue().coerceIn(0, 500)) }
+    var loudness by remember { mutableStateOf(engine.currentLoudnessValue().coerceIn(0, 500)) }
     var selectedPreset by remember { mutableStateOf(engine.selectedPresetName) }
     var customPresets by remember { mutableStateOf(engine.listCustomPresets()) }
     var showSaveDialog by remember { mutableStateOf(false) }
@@ -528,15 +528,15 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(16.dp))
 
         // ── Effect sliders ──
-        EffectSlider("BASS BOOST", bassBoost, 0..1000) { v ->
+        EffectSlider("BASS BOOST", bassBoost, 0..500) { v ->
             bassBoost = v
             engine.setBassBoost(v)
         }
-        EffectSlider("3D SOUND", virtualizer, 0..1000) { v ->
+        EffectSlider("3D SOUND", virtualizer, 0..500) { v ->
             virtualizer = v
             engine.setVirtualizer(v)
         }
-        EffectSlider("LOUDNESS", loudness, 0..1000) { v ->
+        EffectSlider("LOUDNESS", loudness, 0..500) { v ->
             loudness = v
             engine.setLoudness(v)
         }
@@ -809,7 +809,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #42",
+                        "Neon EQ v1.0 · Build #43",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
