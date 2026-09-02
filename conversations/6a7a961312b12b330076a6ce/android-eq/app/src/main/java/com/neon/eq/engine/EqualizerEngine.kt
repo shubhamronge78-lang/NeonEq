@@ -149,6 +149,8 @@ class EqualizerEngine private constructor(context: Context) {
 
     // Called on startup when auto-apply preset setting is enabled.
     // Restores the last saved preset's band levels + effects into the live engine.
+    // Uses batched setBandLevels() — one audio-thread task instead of 31 separate
+    // setBandLevel() calls (31 persist + 31 enqueue vs 1 persist + 1 enqueue).
     fun applyLastPreset(): Boolean {
         if (!isAutoApplyPreset()) return false
         val name = selectedPresetName
@@ -158,11 +160,8 @@ class EqualizerEngine private constructor(context: Context) {
         val builtIn = Presets.presets.find { it.name == name }
         if (builtIn != null) {
             try {
-                currentBandLevels = ShortArray(31) { i -> builtIn.levels.getOrElse(i) { 0 } }
-                persistLevels()
-                for (i in 0 until currentBandLevels.size) {
-                    setBandLevel(i, currentBandLevels[i])
-                }
+                val levels = ShortArray(31) { i -> builtIn.levels.getOrElse(i) { 0 } }
+                setBandLevels(levels)
             } catch (_: Throwable) { }
             return true
         }
@@ -171,11 +170,8 @@ class EqualizerEngine private constructor(context: Context) {
         val custom = listCustomPresets().find { it.name == name }
         if (custom != null) {
             try {
-                currentBandLevels = ShortArray(31) { i -> custom.levels.getOrElse(i) { 0 } }
-                persistLevels()
-                for (i in 0 until currentBandLevels.size) {
-                    setBandLevel(i, currentBandLevels[i])
-                }
+                val levels = ShortArray(31) { i -> custom.levels.getOrElse(i) { 0 } }
+                setBandLevels(levels)
                 setBassBoost(custom.bassBoost)
                 setVirtualizer(custom.virtualizer)
                 setLoudness(custom.loudness)

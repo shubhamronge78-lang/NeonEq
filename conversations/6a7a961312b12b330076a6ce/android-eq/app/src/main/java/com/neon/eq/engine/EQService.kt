@@ -45,6 +45,9 @@ class EQService : Service() {
         val isStickyRestart = intent == null
 
         engine.attachToGlobalSession()
+        // Auto-apply last preset on service start (boot, sticky restart) so the
+        // EQ comes back with the right curve even without the UI being opened.
+        engine.applyLastPreset()
         if (isStickyRestart) {
             // Restore persisted state without forcing it on.
             if (engine.isBoot()) {

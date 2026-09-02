@@ -513,12 +513,15 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 bandLevels = newLevels
                 engine.setBandLevel(band, round(level).toInt().toShort())
                 selectedPreset = "Custom"
+                engine.setSelectedPresetName("Custom")
             },
             onResetBand = { band ->
                 val newLevels = bandLevels.copyOf()
                 newLevels[band] = 0f
                 bandLevels = newLevels
                 engine.setBandLevel(band, 0)
+                selectedPreset = "Custom"
+                engine.setSelectedPresetName("Custom")
             }
         )
 
@@ -806,7 +809,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #39",
+                        "Neon EQ v1.0 · Build #42",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
