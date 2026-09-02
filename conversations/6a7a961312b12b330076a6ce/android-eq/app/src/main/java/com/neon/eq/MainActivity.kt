@@ -842,6 +842,7 @@ fun PresetChip(name: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CustomPresetChip(
     name: String,

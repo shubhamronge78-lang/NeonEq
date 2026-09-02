@@ -67,4 +67,16 @@ object Presets {
         }
         return result
     }
+
+    // Overload for CustomPreset (has the same levels array)
+    fun levelsForCount(preset: CustomPreset, count: Int): ShortArray {
+        if (count >= 31) return preset.levels
+        val result = ShortArray(count)
+        val step = 31f / count
+        for (i in 0 until count) {
+            val srcIdx = (i * step).toInt().coerceAtMost(30)
+            result[i] = preset.levels[srcIdx]
+        }
+        return result
+    }
 }
