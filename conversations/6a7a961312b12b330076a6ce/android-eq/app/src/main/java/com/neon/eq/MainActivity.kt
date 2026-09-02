@@ -48,6 +48,10 @@ import android.content.Context
 import android.os.Process
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import android.view.HapticFeedbackConstants
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 
 class MainActivity : ComponentActivity() {
 
@@ -208,6 +212,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     }
 
     var waveform by remember { mutableStateOf(ByteArray(0)) }
+    val snackbarHost = remember { SnackbarHostState() }
+    val haptic = LocalHapticFeedback.current
+    val scope2 = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         engine.onReady = { ready, msg, bandList ->
@@ -215,14 +222,23 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             statusMsg = msg
             bands = bandList
         }
-        // Belt-and-suspenders: if init already completed before this subscribed
-        // (slow cold-start on weak CPUs), sync the current state immediately too.
         if (engine.isReady) {
             isReady = true
             statusMsg = engine.statusMessage
             bands = engine.bands
         }
         engine.onWaveform = { data -> waveform = data }
+    }
+
+    // Clear callbacks on dispose (rotation, back press) — without this the old
+    // lambdas keep firing into dead Compose state and the visualizer keeps posting
+    // waveform data to nobody, leaking memory + wasting audio-thread CPU.
+    DisposableEffect(Unit) {
+        onDispose {
+            engine.onReady = null
+            engine.onWaveform = null
+            engine.onSessionUpdate = null
+        }
     }
 
     // Smoothly animate the whole band curve toward a new target (preset switch,
@@ -240,9 +256,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     from + (to - from) * eased
                 }
                 bandLevels = frame
-                for (i in 0 until 31) {
-                    engine.setBandLevel(i, round(frame[i]).toInt().toShort())
-                }
+                engine.setBandLevels(ShortArray(31) { i -> round(frame.getOrElse(i) { 0f }).toInt().toShort() })
                 kotlinx.coroutines.delay(16L)
             }
         }
@@ -262,6 +276,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         return
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -310,15 +325,31 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("PRESETS", fontSize = 11.sp, color = Color(0xFF7C4DFF), fontWeight = FontWeight.Bold)
-            Text(
-                "+ Save current",
-                fontSize = 11.sp,
-                color = Color(0xFF00E5FF),
-                modifier = Modifier.clickable {
-                    presetNameInput = ""
-                    showSaveDialog = true
-                }
-            )
+            Row {
+                Text(
+                    "↺ Reset All",
+                    fontSize = 11.sp,
+                    color = Color(0xFFFF4081),
+                    modifier = Modifier.clickable {
+                        animateLevelsTo(FloatArray(31) { 0f })
+                        selectedPreset = "Flat"
+                        engine.setSelectedPresetName("Flat")
+                        bassBoost = 0; engine.setBassBoost(0)
+                        virtualizer = 0; engine.setVirtualizer(0)
+                        loudness = 0; engine.setLoudness(0)
+                    }
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "+ Save current",
+                    fontSize = 11.sp,
+                    color = Color(0xFF00E5FF),
+                    modifier = Modifier.clickable {
+                        presetNameInput = ""
+                        showSaveDialog = true
+                    }
+                )
+            }
         }
         Spacer(Modifier.height(8.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -390,6 +421,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 bandLevels = newLevels
                 engine.setBandLevel(band, round(level).toInt().toShort())
                 selectedPreset = "Custom"
+            },
+            onResetBand = { band ->
+                val newLevels = bandLevels.copyOf()
+                newLevels[band] = 0f
+                bandLevels = newLevels
+                engine.setBandLevel(band, 0)
             }
         )
 
@@ -411,6 +448,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(32.dp))
     }
+    SnackbarHost(
+        hostState = snackbarHost,
+        modifier = Modifier.align(Alignment.BottomCenter)
+    )
+    } // end Box
 
     if (showSaveDialog) {
         AlertDialog(
@@ -433,6 +475,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         customPresets = engine.listCustomPresets()
                         selectedPreset = name
                         engine.setSelectedPresetName(name)
+                        scope2.launch { snackbarHost.showSnackbar("Preset '$name' saved") }
                     }
                     showSaveDialog = false
                 }) { Text("Save") }
@@ -525,12 +568,14 @@ fun CanvasEQ(
     bandCount: Int,
     bands: List<EqualizerEngine.BandInfo>,
     levels: FloatArray,
-    onLevelChange: (Int, Float) -> Unit
+    onLevelChange: (Int, Float) -> Unit,
+    onResetBand: (Int) -> Unit = {}
 ) {
     val bgColor = Color(0xFF1A1A2E)
     val gradientTop = Color(0xFF7C4DFF)
     val gradientBottom = Color(0xFF00E5FF)
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
 
     // Everything below is computed in real pixels derived from dp, and — critically —
     // touch mapping and drawing both use the exact SAME "track" rectangle. Previously
@@ -558,6 +603,7 @@ fun CanvasEQ(
                         val slotWidth = size.width / bandCount
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
                         onLevelChange(band, levelFromY(offset.y, trackHeight))
+                        haptic.performHapticFeedback(HapticFeedbackConstants.LongPress)
                     },
                     onDrag = { change, _ ->
                         val slotWidth = size.width / bandCount
@@ -574,6 +620,12 @@ fun CanvasEQ(
                         val slotWidth = size.width / bandCount
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
                         onLevelChange(band, levelFromY(offset.y, trackHeight))
+                    },
+                    onDoubleTap = { offset ->
+                        val slotWidth = size.width / bandCount
+                        val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
+                        onResetBand(band)
+                        haptic.performHapticFeedback(HapticFeedbackConstants.LongPress)
                     }
                 )
             }
@@ -686,6 +738,7 @@ fun CustomPresetChip(name: String, selected: Boolean, onClick: () -> Unit, onDel
 
 @Composable
 fun EffectSlider(label: String, value: Int, range: IntRange, onValueChange: (Int) -> Unit) {
+    val haptic = LocalHapticFeedback.current
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -695,7 +748,16 @@ fun EffectSlider(label: String, value: Int, range: IntRange, onValueChange: (Int
             value = value.toFloat(),
             onValueChange = { onValueChange(it.toInt()) },
             valueRange = range.first.toFloat()..range.last.toFloat(),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            onValueChange(0)
+                            haptic.performHapticFeedback(HapticFeedbackConstants.LongPress)
+                        }
+                    )
+                },
             colors = SliderDefaults.colors(
                 thumbColor = Color(0xFFFF4081),
                 activeTrackColor = Color(0xFFFF4081).copy(alpha = 0.4f)

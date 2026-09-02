@@ -563,7 +563,27 @@ class EqualizerEngine private constructor(context: Context) {
         }
     }
 
-    fun setReverb(preset: Short) {}
+    // Batch-set all band levels in a single audio thread task — used by preset
+    // animation frames so we enqueue ONE job per frame instead of 31 separate
+    // setBandLevel calls (372 total during a 12-frame animation). Same result,
+    // far less thread contention and native API churn.
+    fun setBandLevels(levels: ShortArray) {
+        for (i in levels.indices) {
+            if (i < currentBandLevels.size) currentBandLevels[i] = levels[i]
+        }
+        persistLevels()
+        audioExecutor.execute {
+            for (band in 0 until levels.size) {
+                val millibel = (levels[band].toInt() * DB_TO_MILLIBEL).toShort()
+                bands.getOrNull(band)?.let { bi ->
+                    try { globalEQ?.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
+                    for ((_, sfx) in activeFX) {
+                        try { sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
+                    }
+                }
+            }
+        }
+    }
 
     fun setEnabled(on: Boolean) {
         enabled = on
