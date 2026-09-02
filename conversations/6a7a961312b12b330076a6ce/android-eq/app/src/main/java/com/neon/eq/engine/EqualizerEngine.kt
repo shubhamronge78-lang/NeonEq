@@ -95,9 +95,9 @@ class EqualizerEngine private constructor(context: Context) {
         private set
 
     private var currentBandLevels = loadLevels()
-    private var currentBassBoost = prefs.getInt(KEY_BASS, 0)
-    private var currentVirtualizer = prefs.getInt(KEY_VIRT, 0)
-    private var currentLoudness = prefs.getInt(KEY_LOUD, 0).coerceIn(0, 300)
+    private var currentBassBoost = prefs.getInt(KEY_BASS, 150).coerceIn(0, 300)
+    private var currentVirtualizer = prefs.getInt(KEY_VIRT, 150).coerceIn(0, 300)
+    private var currentLoudness = prefs.getInt(KEY_LOUD, 150).coerceIn(0, 300)
     private var currentEnabled = prefs.getBoolean(KEY_ENABLED, true)
 
     // Custom setter: if the engine already finished init (isReady/watchdog fired)
