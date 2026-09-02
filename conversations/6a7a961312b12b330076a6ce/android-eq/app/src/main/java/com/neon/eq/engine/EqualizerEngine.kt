@@ -157,13 +157,12 @@ class EqualizerEngine private constructor(context: Context) {
         // Check built-in presets first
         val builtIn = Presets.presets.find { it.name == name }
         if (builtIn != null) {
-            val target = ShortArray(31) { i -> builtIn.levels.getOrElse(i) { 0 } }
             try {
-                for (i in 0 until 31) {
-                    bands.getOrNull(i)?.let { it.level = target[i] }
-                }
-                currentBandLevels = target
+                currentBandLevels = ShortArray(31) { i -> builtIn.levels.getOrElse(i) { 0 } }
                 persistLevels()
+                for (i in 0 until currentBandLevels.size) {
+                    setBandLevel(i, currentBandLevels[i])
+                }
             } catch (_: Throwable) { }
             return true
         }
@@ -172,11 +171,11 @@ class EqualizerEngine private constructor(context: Context) {
         val custom = listCustomPresets().find { it.name == name }
         if (custom != null) {
             try {
-                for (i in 0 until 31) {
-                    bands.getOrNull(i)?.let { it.level = custom.levels.getOrElse(i) { 0 } }
-                }
                 currentBandLevels = ShortArray(31) { i -> custom.levels.getOrElse(i) { 0 } }
                 persistLevels()
+                for (i in 0 until currentBandLevels.size) {
+                    setBandLevel(i, currentBandLevels[i])
+                }
                 setBassBoost(custom.bassBoost)
                 setVirtualizer(custom.virtualizer)
                 setLoudness(custom.loudness)
