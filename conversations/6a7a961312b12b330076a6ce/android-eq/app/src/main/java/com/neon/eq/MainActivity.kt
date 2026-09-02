@@ -48,7 +48,7 @@ import android.content.Context
 import android.os.Process
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import android.view.HapticFeedbackConstants
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -603,7 +603,7 @@ fun CanvasEQ(
                         val slotWidth = size.width / bandCount
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
                         onLevelChange(band, levelFromY(offset.y, trackHeight))
-                        haptic.performHapticFeedback(HapticFeedbackConstants.LongPress)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
                     onDrag = { change, _ ->
                         val slotWidth = size.width / bandCount
@@ -625,7 +625,7 @@ fun CanvasEQ(
                         val slotWidth = size.width / bandCount
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
                         onResetBand(band)
-                        haptic.performHapticFeedback(HapticFeedbackConstants.LongPress)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     }
                 )
             }
@@ -754,7 +754,7 @@ fun EffectSlider(label: String, value: Int, range: IntRange, onValueChange: (Int
                     detectTapGestures(
                         onDoubleTap = {
                             onValueChange(0)
-                            haptic.performHapticFeedback(HapticFeedbackConstants.LongPress)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         }
                     )
                 },
