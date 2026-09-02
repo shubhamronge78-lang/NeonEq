@@ -398,7 +398,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     color = Color(0xFF00E5FF),
                     modifier = Modifier.clickable {
                         val json = engine.exportCustomPresets()
-                        if (json == "{"app":"NeonEQ","version":1,"presets":[]}") {
+                        if (customPresets.isEmpty()) {
                             scope2.launch { snackbarHost.showSnackbar("No custom presets to share") }
                         } else {
                             try {
@@ -433,14 +433,18 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(8.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(Presets.presets, key = { "b_" + it.name }) { preset ->
-                PresetChip(preset = preset, selected = selectedPreset == preset.name, onClick = {
-                    selectedPreset = preset.name
-                    engine.setSelectedPresetName(preset.name)
-                    val levels = Presets.levelsForCount(preset, bandCount)
-                    val newLevels = FloatArray(31) { 0f }
-                    levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
-                    animateLevelsTo(newLevels)
-                }
+                PresetChip(
+                    preset = preset,
+                    selected = selectedPreset == preset.name,
+                    onClick = {
+                        selectedPreset = preset.name
+                        engine.setSelectedPresetName(preset.name)
+                        val levels = Presets.levelsForCount(preset, bandCount)
+                        val newLevels = FloatArray(31) { 0f }
+                        levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
+                        animateLevelsTo(newLevels)
+                    }
+                )
             }
             items(customPresets, key = { "c_" + it.name }) { preset ->
                 CustomPresetChip(
@@ -529,7 +533,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             virtualizer = v
             engine.setVirtualizer(v)
         }
-        EffectSlider("LOUDNESS", loudness, 0..2000) { v ->
+        EffectSlider("LOUDNESS", loudness, 0..1000) { v ->
             loudness = v
             engine.setLoudness(v)
         }

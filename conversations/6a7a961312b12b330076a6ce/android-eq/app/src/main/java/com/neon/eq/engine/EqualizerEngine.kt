@@ -97,7 +97,7 @@ class EqualizerEngine private constructor(context: Context) {
     private var currentBandLevels = loadLevels()
     private var currentBassBoost = prefs.getInt(KEY_BASS, 0)
     private var currentVirtualizer = prefs.getInt(KEY_VIRT, 0)
-    private var currentLoudness = prefs.getInt(KEY_LOUD, 0).coerceIn(0, 2000)
+    private var currentLoudness = prefs.getInt(KEY_LOUD, 0).coerceIn(0, 1000)
     private var currentEnabled = prefs.getBoolean(KEY_ENABLED, true)
 
     // Custom setter: if the engine already finished init (isReady/watchdog fired)
@@ -390,7 +390,7 @@ class EqualizerEngine private constructor(context: Context) {
 
                     try {
                         globalLoudness = LoudnessEnhancer(0).also { le ->
-                            if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 2000))
+                            if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 1000))
                         }
                         Log.d(TAG, "Global LoudnessEnhancer created")
                     } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: ${t.message}") }
@@ -592,7 +592,7 @@ class EqualizerEngine private constructor(context: Context) {
             } catch (e: Throwable) { Log.w(TAG, "Virtualizer N/A for session $sessionId", e) }
             try {
                 loud = LoudnessEnhancer(sessionId)
-                if (currentLoudness > 0) loud.setTargetGain(currentLoudness.coerceIn(0, 2000))
+                if (currentLoudness > 0) loud.setTargetGain(currentLoudness.coerceIn(0, 1000))
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
             activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud)
@@ -698,7 +698,7 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun setLoudness(gain: Int) {
-        val safeGain = gain.coerceIn(0, 2000)
+        val safeGain = gain.coerceIn(0, 1000)
         currentLoudness = safeGain
         persistScalar(KEY_LOUD, safeGain)
         audioExecutor.execute {
@@ -743,14 +743,14 @@ class EqualizerEngine private constructor(context: Context) {
             try { globalEQ?.enabled = on } catch (_: Throwable) {}
             try { globalBassBoost?.enabled = on && currentBassBoost > 0 } catch (_: Throwable) {}
             try { globalVirtualizer?.enabled = on && currentVirtualizer > 0 } catch (_: Throwable) {}
-            try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 2000)) } catch (_: Throwable) {}
+            try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 1000)) } catch (_: Throwable) {}
             try { visualizer?.enabled = on } catch (_: Throwable) {}
 
             for ((_, sfx) in activeFX) {
                 try { sfx.equalizer.enabled = on } catch (_: Throwable) {}
                 try { sfx.bassBoost?.enabled = on && (sfx.bassBoost?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
                 try { sfx.virtualizer?.enabled = on && (sfx.virtualizer?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
-                try { if (!on) sfx.loudnessEnhancer?.setTargetGain(0) else sfx.loudnessEnhancer?.setTargetGain(currentLoudness.coerceIn(0, 2000)) } catch (_: Throwable) {}
+                try { if (!on) sfx.loudnessEnhancer?.setTargetGain(0) else sfx.loudnessEnhancer?.setTargetGain(currentLoudness.coerceIn(0, 1000)) } catch (_: Throwable) {}
             }
         }
     }
