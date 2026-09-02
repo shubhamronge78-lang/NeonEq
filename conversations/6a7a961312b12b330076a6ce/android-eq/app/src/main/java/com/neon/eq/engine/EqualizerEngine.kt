@@ -21,8 +21,8 @@ class EqualizerEngine private constructor(context: Context) {
     companion object {
         const val MAX_BANDS = 31
         const val MIN_BANDS = 5
-        const val BASS_BOOST_STRENGTH_MAX = 500
-        const val VIRTUALIZER_STRENGTH_MAX = 500
+        const val BASS_BOOST_STRENGTH_MAX = 300
+        const val VIRTUALIZER_STRENGTH_MAX = 300
         private const val TAG = "NeonEQ"
         private const val DB_TO_MILLIBEL = 100
         private const val POLL_INTERVAL_MS = 1500L
@@ -97,7 +97,7 @@ class EqualizerEngine private constructor(context: Context) {
     private var currentBandLevels = loadLevels()
     private var currentBassBoost = prefs.getInt(KEY_BASS, 0)
     private var currentVirtualizer = prefs.getInt(KEY_VIRT, 0)
-    private var currentLoudness = prefs.getInt(KEY_LOUD, 0).coerceIn(0, 500)
+    private var currentLoudness = prefs.getInt(KEY_LOUD, 0).coerceIn(0, 300)
     private var currentEnabled = prefs.getBoolean(KEY_ENABLED, true)
 
     // Custom setter: if the engine already finished init (isReady/watchdog fired)
@@ -136,6 +136,26 @@ class EqualizerEngine private constructor(context: Context) {
     private fun persistScalar(key: String, value: Int) {
         try { prefs.edit().putInt(key, value).apply() } catch (_: Throwable) { }
     }
+
+    // Pre-amp compensation: when bass boost, virtualizer, or loudness are active,
+    // they add gain on top of the EQ. On phone speakers this causes clipping/distortion.
+    // We subtract a computed offset from all band levels sent to the hardware so the
+    // total output stays within the speaker's headroom. The UI shows the user's intended
+    // levels — only the hardware values are reduced.
+    private fun computePreampDb(): Int {
+        var preamp = 0
+        if (currentBassBoost > 0) preamp += currentBassBoost / 100   // ~1dB per 100 strength
+        if (currentVirtualizer > 0) preamp += currentVirtualizer / 200  // ~0.5dB per 100
+        if (currentLoudness > 0) preamp += currentLoudness / 100     // ~1dB per 100mB
+        return preamp.coerceAtMost(6)  // never reduce by more than -6dB total
+    }
+
+    private fun applyPreamp(level: Int): Short {
+        val adjusted = (level - computePreampDb()).coerceIn(-15, 15)
+        return (adjusted * DB_TO_MILLIBEL).toShort()
+    }
+
+
 
     fun currentLevelsSnapshot(): ShortArray = currentBandLevels.copyOf()
     fun currentBassBoostValue(): Int = currentBassBoost
@@ -363,7 +383,7 @@ class EqualizerEngine private constructor(context: Context) {
                         // Reapply persisted band levels immediately on (re)attach.
                         for (i in 0 until minOf(bandCount, usable)) {
                             val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
-                            val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
+                            val millibel = applyPreamp(currentBandLevels[i].toInt())
                             try { eq.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) { }
                         }
                     }
@@ -386,7 +406,7 @@ class EqualizerEngine private constructor(context: Context) {
 
                     try {
                         globalLoudness = LoudnessEnhancer(0).also { le ->
-                            if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 500))
+                            if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 300))
                         }
                         Log.d(TAG, "Global LoudnessEnhancer created")
                     } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: ${t.message}") }
@@ -606,7 +626,7 @@ class EqualizerEngine private constructor(context: Context) {
                 val usable = minOf(numBands, MAX_BANDS)
                 for (i in 0 until minOf(bandCount, usable)) {
                     val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
-                    val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
+                    val millibel = applyPreamp(currentBandLevels[i].toInt())
                     try { sfx.equalizer.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) {}
                 }
             } catch (e: Throwable) { Log.e(TAG, "reapply EQ for session", e) }
@@ -622,7 +642,7 @@ class EqualizerEngine private constructor(context: Context) {
             } } catch (e: Throwable) { Log.e(TAG, "reapply virt for session", e) }
 
             try { sfx.loudnessEnhancer?.apply {
-                if (currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 500))
+                if (currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 300))
             } } catch (e: Throwable) { Log.e(TAG, "reapply loud for session", e) }
         }
     }
@@ -638,7 +658,7 @@ class EqualizerEngine private constructor(context: Context) {
 
             for (i in 0 until minOf(bandCount, usable)) {
                 val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
-                val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
+                val millibel = applyPreamp(currentBandLevels[i].toInt())
                 try { eq.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) {}
             }
 
@@ -659,7 +679,7 @@ class EqualizerEngine private constructor(context: Context) {
             } catch (e: Throwable) { Log.w(TAG, "Virtualizer N/A for session $sessionId", e) }
             try {
                 loud = LoudnessEnhancer(sessionId)
-                if (currentLoudness > 0) loud.setTargetGain(currentLoudness.coerceIn(0, 500))
+                if (currentLoudness > 0) loud.setTargetGain(currentLoudness.coerceIn(0, 300))
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
             activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud)
@@ -692,10 +712,25 @@ class EqualizerEngine private constructor(context: Context) {
 
     // ── Public API ──
 
+
+    // Reapply all current band levels to global + per-session EQs with preamp compensation.
+    // Called when effect sliders change (bass/virt/loud) so the preamp updates live.
+    private fun reapplyBandLevelsToHardware() {
+        for (i in 0 until bandCount) {
+            val millibel = applyPreamp(currentBandLevels[i].toInt())
+            bands.getOrNull(i)?.let { bi ->
+                try { globalEQ?.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
+                for ((_, sfx) in activeFX) {
+                    try { sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
+                }
+            }
+        }
+    }
+
     fun setBandLevel(band: Int, level: Short) {
         currentBandLevels[band] = level
         persistLevels()
-        val millibel = (level.toInt() * DB_TO_MILLIBEL).toShort()
+        val millibel = applyPreamp(level.toInt())
         audioExecutor.execute {
             try { bands.getOrNull(band)?.let { bi -> globalEQ?.setBandLevel(bi.index.toShort(), millibel) } }
             catch (e: Throwable) { Log.e(TAG, "globalEQ setBandLevel", e) }
@@ -717,7 +752,7 @@ class EqualizerEngine private constructor(context: Context) {
                     bands = pickBands(anyEQ, bandCount, usable)
                 }
                 for (i in 0 until bandCount) {
-                    val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
+                    val millibel = applyPreamp(currentBandLevels[i].toInt())
                     try { bands.getOrNull(i)?.let { bi -> globalEQ?.setBandLevel(bi.index.toShort(), millibel) } } catch (_: Throwable) {}
                     for ((_, sfx) in activeFX) {
                         try { bands.getOrNull(i)?.let { bi -> sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } } catch (_: Throwable) {}
@@ -743,6 +778,9 @@ class EqualizerEngine private constructor(context: Context) {
                 try { sfx.bassBoost?.apply { setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort()); enabled = strength > 0 } }
                 catch (e: Throwable) { Log.e(TAG, "Session BassBoost", e) }
             }
+
+            // Preamp changed — reapply band levels with new compensation
+            reapplyBandLevelsToHardware()
         }
     }
 
@@ -761,11 +799,14 @@ class EqualizerEngine private constructor(context: Context) {
                 try { sfx.virtualizer?.apply { setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort()); enabled = strength > 0 } }
                 catch (e: Throwable) { Log.e(TAG, "Session Virtualizer", e) }
             }
+
+            // Preamp changed — reapply band levels with new compensation
+            reapplyBandLevelsToHardware()
         }
     }
 
     fun setLoudness(gain: Int) {
-        val safeGain = gain.coerceIn(0, 500)
+        val safeGain = gain.coerceIn(0, 300)
         currentLoudness = safeGain
         persistScalar(KEY_LOUD, safeGain)
         audioExecutor.execute {
@@ -777,6 +818,9 @@ class EqualizerEngine private constructor(context: Context) {
                 try { sfx.loudnessEnhancer?.setTargetGain(safeGain) }
                 catch (e: Throwable) { Log.e(TAG, "Session Loudness", e) }
             }
+
+            // Preamp changed — reapply band levels with new compensation
+            reapplyBandLevelsToHardware()
         }
     }
 
@@ -791,7 +835,7 @@ class EqualizerEngine private constructor(context: Context) {
         persistLevels()
         audioExecutor.execute {
             for (band in 0 until levels.size) {
-                val millibel = (levels[band].toInt() * DB_TO_MILLIBEL).toShort()
+                val millibel = applyPreamp(levels[band].toInt())
                 bands.getOrNull(band)?.let { bi ->
                     try { globalEQ?.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
                     for ((_, sfx) in activeFX) {
@@ -810,14 +854,14 @@ class EqualizerEngine private constructor(context: Context) {
             try { globalEQ?.enabled = on } catch (_: Throwable) {}
             try { globalBassBoost?.enabled = on && currentBassBoost > 0 } catch (_: Throwable) {}
             try { globalVirtualizer?.enabled = on && currentVirtualizer > 0 } catch (_: Throwable) {}
-            try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 500)) } catch (_: Throwable) {}
+            try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 300)) } catch (_: Throwable) {}
             try { visualizer?.enabled = on } catch (_: Throwable) {}
 
             for ((_, sfx) in activeFX) {
                 try { sfx.equalizer.enabled = on } catch (_: Throwable) {}
                 try { sfx.bassBoost?.enabled = on && (sfx.bassBoost?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
                 try { sfx.virtualizer?.enabled = on && (sfx.virtualizer?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
-                try { if (!on) sfx.loudnessEnhancer?.setTargetGain(0) else sfx.loudnessEnhancer?.setTargetGain(currentLoudness.coerceIn(0, 500)) } catch (_: Throwable) {}
+                try { if (!on) sfx.loudnessEnhancer?.setTargetGain(0) else sfx.loudnessEnhancer?.setTargetGain(currentLoudness.coerceIn(0, 300)) } catch (_: Throwable) {}
             }
         }
     }
