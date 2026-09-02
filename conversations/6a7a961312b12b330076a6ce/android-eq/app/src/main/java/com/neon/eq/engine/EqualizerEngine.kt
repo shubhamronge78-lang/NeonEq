@@ -501,20 +501,54 @@ class EqualizerEngine private constructor(context: Context) {
         return try { (isActiveMethod?.invoke(config) as? Boolean) ?: false } catch (t: Throwable) { false }
     }
 
+    // Track whether we've already done a brute-force scan for this audio-playing state.
+    // Avoids re-scanning 48 session IDs every 1.5s poll when reflection is blocked.
+    @Volatile private var bruteForceDone = false
+
     private fun scanForActiveSessions() {
         try {
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val configs = am.getActivePlaybackConfigurations()
 
             val activeSessionIds = mutableSetOf<Int>()
+
+            // Method 1: AudioPlaybackConfiguration reflection — don't require isActive()
+            // because MIUI often returns false even when audio is actively playing.
             for (config in configs) {
                 val sessionId = reflectSessionId(config)
-                if (sessionId != 0 && reflectIsActive(config)) {
+                if (sessionId != 0) {
                     activeSessionIds.add(sessionId)
                 }
             }
 
-            Log.d(TAG, "Active sessions: $activeSessionIds (${configs.size} configs)")
+            Log.d(TAG, "Session scan: ${configs.size} configs, ${activeSessionIds.size} sessions via reflection")
+
+            // Method 2: Brute-force fallback — if configs exist (audio is playing) but
+            // reflection found no session IDs (hidden API blocked on MIUI), try to
+            // create an Equalizer on sessions 1..48. If it has bands, it's a real
+            // audio session. Only do this once per audio-playing state to avoid churn.
+            if (activeSessionIds.isEmpty() && configs.isNotEmpty() && !bruteForceDone) {
+                Log.d(TAG, "Reflection found nothing with ${configs.size} configs — brute-force scan")
+                bruteForceDone = true
+                for (sid in 1..48) {
+                    if (activeFX.containsKey(sid) || sid == 0) continue
+                    try {
+                        val testEq = Equalizer(0, sid)
+                        val numBands = testEq.numberOfBands.toInt()
+                        if (numBands > 0) {
+                            // Real session — but don't keep this test EQ, let attachToSession create it properly
+                            testEq.release()
+                            activeSessionIds.add(sid)
+                            Log.d(TAG, "Brute-force found session $sid ($numBands bands)")
+                        } else {
+                            testEq.release()
+                        }
+                    } catch (e: Throwable) { /* session doesn't exist, skip */ }
+                }
+            }
+
+            // Reset brute-force flag when no audio is playing so we re-scan next time
+            if (configs.isEmpty()) bruteForceDone = false
 
             val stale = activeFX.keys - activeSessionIds
             for (id in stale) {
@@ -526,6 +560,11 @@ class EqualizerEngine private constructor(context: Context) {
                 if (!activeFX.containsKey(sessionId)) {
                     attachToSession(sessionId)
                 }
+            }
+
+            // Reapply current band levels + effects to any newly attached sessions
+            if (activeSessionIds.isNotEmpty()) {
+                reapplyStateToSessions()
             }
 
             if (bands.isEmpty()) {
@@ -553,6 +592,38 @@ class EqualizerEngine private constructor(context: Context) {
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Session scan failed", t)
+        }
+    }
+
+    // Reapply all current EQ state (band levels, bass, virtualizer, loudness, enabled)
+    // to all per-session FX. Called after new sessions are attached so they don't
+    // start with default/flat settings.
+    private fun reapplyStateToSessions() {
+        for ((_, sfx) in activeFX) {
+            try {
+                sfx.equalizer.enabled = currentEnabled
+                val numBands = sfx.equalizer.numberOfBands.toInt()
+                val usable = minOf(numBands, MAX_BANDS)
+                for (i in 0 until minOf(bandCount, usable)) {
+                    val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
+                    val millibel = (currentBandLevels[i].toInt() * DB_TO_MILLIBEL).toShort()
+                    try { sfx.equalizer.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) {}
+                }
+            } catch (e: Throwable) { Log.e(TAG, "reapply EQ for session", e) }
+
+            try { sfx.bassBoost?.apply {
+                setStrength(currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
+                enabled = currentEnabled && currentBassBoost > 0
+            } } catch (e: Throwable) { Log.e(TAG, "reapply bass for session", e) }
+
+            try { sfx.virtualizer?.apply {
+                setStrength(currentVirtualizer.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort())
+                enabled = currentEnabled && currentVirtualizer > 0
+            } } catch (e: Throwable) { Log.e(TAG, "reapply virt for session", e) }
+
+            try { sfx.loudnessEnhancer?.apply {
+                if (currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 500))
+            } } catch (e: Throwable) { Log.e(TAG, "reapply loud for session", e) }
         }
     }
 
