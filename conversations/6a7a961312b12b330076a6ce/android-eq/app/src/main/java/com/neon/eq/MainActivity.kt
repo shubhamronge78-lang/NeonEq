@@ -52,6 +52,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 
 class MainActivity : ComponentActivity() {
 
@@ -200,7 +202,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var selectedPreset by remember { mutableStateOf(engine.selectedPresetName) }
     var customPresets by remember { mutableStateOf(engine.listCustomPresets()) }
     var showSaveDialog by remember { mutableStateOf(false) }
+    var showOverwriteDialog by remember { mutableStateOf(false) }
+    var pendingPresetName by remember { mutableStateOf("") }
     var presetNameInput by remember { mutableStateOf("") }
+    var menuPreset by remember { mutableStateOf<Presets.CustomPreset?>(null) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameInput by remember { mutableStateOf("") }
+    var renamingFrom by remember { mutableStateOf("") }
 
     var isReady by remember { mutableStateOf(false) }
     var statusMsg by remember { mutableStateOf("Loading...") }
@@ -374,10 +382,19 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         val newLevels = FloatArray(31) { 0f }
                         levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
                         animateLevelsTo(newLevels)
+                        bassBoost = preset.bassBoost; engine.setBassBoost(preset.bassBoost)
+                        virtualizer = preset.virtualizer; engine.setVirtualizer(preset.virtualizer)
+                        loudness = preset.loudness; engine.setLoudness(preset.loudness)
                     },
+                    onLongPress = { menuPreset = preset },
                     onDelete = {
                         engine.deleteCustomPreset(preset.name)
                         customPresets = engine.listCustomPresets()
+                        if (selectedPreset == preset.name) {
+                            selectedPreset = "Flat"
+                            engine.setSelectedPresetName("Flat")
+                        }
+                        scope2.launch { snackbarHost.showSnackbar("Deleted '${'$'}{preset.name}'") }
                     }
                 )
             }
@@ -470,18 +487,138 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 TextButton(onClick = {
                     val name = presetNameInput.trim()
                     if (name.isNotEmpty()) {
-                        val levels = ShortArray(31) { i -> round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() }
-                        engine.saveCustomPreset(name, levels)
-                        customPresets = engine.listCustomPresets()
-                        selectedPreset = name
-                        engine.setSelectedPresetName(name)
-                        scope2.launch { snackbarHost.showSnackbar("Preset '$name' saved") }
+                        if (engine.customPresetExists(name)) {
+                            pendingPresetName = name
+                            showSaveDialog = false
+                            showOverwriteDialog = true
+                        } else {
+                            val levels = ShortArray(31) { i -> round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() }
+                            engine.saveCustomPreset(name, levels, bassBoost, virtualizer, loudness)
+                            customPresets = engine.listCustomPresets()
+                            selectedPreset = name
+                            engine.setSelectedPresetName(name)
+                            scope2.launch { snackbarHost.showSnackbar("Preset '$name' saved") }
+                            showSaveDialog = false
+                        }
                     }
-                    showSaveDialog = false
                 }) { Text("Save") }
             },
             dismissButton = {
                 TextButton(onClick = { showSaveDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showOverwriteDialog) {
+        AlertDialog(
+            onDismissRequest = { showOverwriteDialog = false },
+            title = { Text("Overwrite preset?") },
+            text = { Text("A preset named '$pendingPresetName' already exists. Overwrite it with current settings?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val name = pendingPresetName
+                    val levels = ShortArray(31) { i -> round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() }
+                    engine.saveCustomPreset(name, levels, bassBoost, virtualizer, loudness)
+                    customPresets = engine.listCustomPresets()
+                    selectedPreset = name
+                    engine.setSelectedPresetName(name)
+                    scope2.launch { snackbarHost.showSnackbar("Preset '$name' updated") }
+                    showOverwriteDialog = false
+                }) { Text("Overwrite") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showOverwriteDialog = false
+                    showSaveDialog = true
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
+    menuPreset?.let { preset ->
+        DropdownMenu(
+            expanded = menuPreset != null,
+            onDismissRequest = { menuPreset = null },
+        ) {
+            DropdownMenuItem(
+                text = { Text("Apply") },
+                onClick = {
+                    selectedPreset = preset.name
+                    engine.setSelectedPresetName(preset.name)
+                    val levels = Presets.levelsForCount(preset, bandCount)
+                    val newLevels = FloatArray(31) { 0f }
+                    levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
+                    animateLevelsTo(newLevels)
+                    bassBoost = preset.bassBoost; engine.setBassBoost(preset.bassBoost)
+                    virtualizer = preset.virtualizer; engine.setVirtualizer(preset.virtualizer)
+                    loudness = preset.loudness; engine.setLoudness(preset.loudness)
+                    menuPreset = null
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Update with current") },
+                onClick = {
+                    val levels = ShortArray(31) { i -> round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() }
+                    engine.updateCustomPreset(preset.name, levels, bassBoost, virtualizer, loudness)
+                    customPresets = engine.listCustomPresets()
+                    scope2.launch { snackbarHost.showSnackbar("Updated '${'$'}{preset.name}'") }
+                    menuPreset = null
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Rename") },
+                onClick = {
+                    renameInput = preset.name
+                    renamingFrom = preset.name
+                    showRenameDialog = true
+                    menuPreset = null
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Delete", color = Color(0xFFFF4081)) },
+                onClick = {
+                    engine.deleteCustomPreset(preset.name)
+                    customPresets = engine.listCustomPresets()
+                    if (selectedPreset == preset.name) {
+                        selectedPreset = "Flat"
+                        engine.setSelectedPresetName("Flat")
+                    }
+                    scope2.launch { snackbarHost.showSnackbar("Deleted '${'$'}{preset.name}'") }
+                    menuPreset = null
+                }
+            )
+        }
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename preset") },
+            text = {
+                OutlinedTextField(
+                    value = renameInput,
+                    onValueChange = { renameInput = it },
+                    label = { Text("New name") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val newName = renameInput.trim()
+                    if (newName.isNotEmpty() && newName != renamingFrom) {
+                        engine.renameCustomPreset(renamingFrom, newName)
+                        customPresets = engine.listCustomPresets()
+                        if (selectedPreset == renamingFrom) {
+                            selectedPreset = newName
+                            engine.setSelectedPresetName(newName)
+                        }
+                        scope2.launch { snackbarHost.showSnackbar("Renamed to '$newName'") }
+                    }
+                    showRenameDialog = false
+                }) { Text("Rename") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("Cancel") }
             }
         )
     }
@@ -706,7 +843,13 @@ fun PresetChip(name: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-fun CustomPresetChip(name: String, selected: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
+fun CustomPresetChip(
+    name: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit = {},
+    onDelete: () -> Unit
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -721,7 +864,10 @@ fun CustomPresetChip(name: String, selected: Boolean, onClick: () -> Unit, onDel
             fontSize = 12.sp,
             color = if (selected) Color(0xFF7C4DFF) else Color.Gray,
             modifier = Modifier
-                .clickable(onClick = onClick)
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongPress
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         )
         Box(

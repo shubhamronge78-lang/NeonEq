@@ -4,6 +4,16 @@ object Presets {
 
     data class Preset(val name: String, val levels: ShortArray)
 
+    // Extended preset that includes effect settings (bass, virtualizer, loudness)
+    // alongside band levels — used for user-saved custom presets.
+    data class CustomPreset(
+        val name: String,
+        val levels: ShortArray,
+        val bassBoost: Int = 0,
+        val virtualizer: Int = 0,
+        val loudness: Int = 0
+    )
+
     val presets: List<Preset> = listOf(
         Preset("Flat", ShortArray(31) { 0 }),
         Preset("Bass Boost", ShortArray(31) { i ->

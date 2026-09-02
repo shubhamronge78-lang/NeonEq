@@ -143,32 +143,98 @@ class EqualizerEngine private constructor(context: Context) {
         try { prefs.edit().putString(KEY_PRESET_NAME, name).apply() } catch (_: Throwable) { }
     }
 
-    // ── Custom presets: "name1|lvl,lvl,...;name2|lvl,lvl,..." ──
-    fun listCustomPresets(): List<Presets.Preset> {
-        val raw = prefs.getString(KEY_CUSTOM_PRESETS, null) ?: return emptyList()
-        if (raw.isBlank()) return emptyList()
-        return raw.split(";").mapNotNull { entry ->
+    // ── Custom presets (JSON serialization with backward-compat migration) ──
+
+    private fun migrateOldFormat(raw: String): String {
+        // Old format: "name1|lvl,lvl,...;name2|lvl,lvl,..."
+        // If the string contains | and doesn't start with [, it's the old format.
+        if (raw.isBlank() || raw.startsWith("[")) return raw
+        val migrated = org.json.JSONArray()
+        for (entry in raw.split(";")) {
             val parts = entry.split("|")
-            if (parts.size != 2) return@mapNotNull null
+            if (parts.size != 2) continue
             val name = parts[0]
-            val levels = try {
-                ShortArray(31) { i -> parts[1].split(",").getOrElse(i) { "0" }.toShort() }
-            } catch (_: Throwable) { return@mapNotNull null }
-            Presets.Preset(name, levels)
+            val levels = parts[1].split(",").map { it.toShortOrNull() ?: 0 }
+            val obj = org.json.JSONObject()
+            obj.put("name", name)
+            val arr = org.json.JSONArray()
+            for (lvl in levels) arr.put(lvl.toInt())
+            obj.put("levels", arr)
+            obj.put("bass", 0)
+            obj.put("virt", 0)
+            obj.put("loud", 0)
+            migrated.put(obj)
         }
+        val json = migrated.toString()
+        try { prefs.edit().putString(KEY_CUSTOM_PRESETS, json).apply() } catch (_: Throwable) { }
+        return json
     }
 
-    fun saveCustomPreset(name: String, levels: ShortArray) {
+    fun listCustomPresets(): List<Presets.CustomPreset> {
+        val raw = prefs.getString(KEY_CUSTOM_PRESETS, null) ?: return emptyList()
+        val json = migrateOldFormat(raw)
+        if (json.isBlank()) return emptyList()
+        return try {
+            val arr = org.json.JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.getJSONObject(i)
+                val name = obj.getString("name")
+                val levelsArr = obj.getJSONArray("levels")
+                val levels = ShortArray(31) { idx -> levelsArr.optInt(idx, 0).toShort() }
+                Presets.CustomPreset(
+                    name = name,
+                    levels = levels,
+                    bassBoost = obj.optInt("bass", 0),
+                    virtualizer = obj.optInt("virt", 0),
+                    loudness = obj.optInt("loud", 0)
+                )
+            }
+        } catch (_: Throwable) { emptyList() }
+    }
+
+    fun customPresetExists(name: String): Boolean = listCustomPresets().any { it.name == name }
+
+    fun saveCustomPreset(name: String, levels: ShortArray, bass: Int = 0, virt: Int = 0, loud: Int = 0) {
         val existing = listCustomPresets().filter { it.name != name }
-        val entry = "$name|${levels.joinToString(",")}"
-        val serialized = (existing.map { "${it.name}|${it.levels.joinToString(",")}" } + entry).joinToString(";")
-        try { prefs.edit().putString(KEY_CUSTOM_PRESETS, serialized).apply() } catch (_: Throwable) { }
+        val updated = existing + Presets.CustomPreset(name, levels, bass, virt, loud)
+        persistCustomPresets(updated)
+    }
+
+    fun updateCustomPreset(name: String, levels: ShortArray, bass: Int, virt: Int, loud: Int) {
+        val updated = listCustomPresets().map {
+            if (it.name == name) Presets.CustomPreset(name, levels, bass, virt, loud) else it
+        }
+        persistCustomPresets(updated)
+    }
+
+    fun renameCustomPreset(oldName: String, newName: String) {
+        val updated = listCustomPresets().map {
+            if (it.name == oldName) it.copy(name = newName) else it
+        }
+        persistCustomPresets(updated)
     }
 
     fun deleteCustomPreset(name: String) {
         val remaining = listCustomPresets().filter { it.name != name }
-        val serialized = remaining.joinToString(";") { "${it.name}|${it.levels.joinToString(",")}" }
-        try { prefs.edit().putString(KEY_CUSTOM_PRESETS, serialized).apply() } catch (_: Throwable) { }
+        persistCustomPresets(remaining)
+    }
+
+    private fun persistCustomPresets(presets: List<Presets.CustomPreset>) {
+        try {
+            val arr = org.json.JSONArray()
+            for (p in presets) {
+                val obj = org.json.JSONObject()
+                obj.put("name", p.name)
+                val levels = org.json.JSONArray()
+                for (lvl in p.levels) levels.put(lvl.toInt())
+                obj.put("levels", levels)
+                obj.put("bass", p.bassBoost)
+                obj.put("virt", p.virtualizer)
+                obj.put("loud", p.loudness)
+                arr.put(obj)
+            }
+            prefs.edit().putString(KEY_CUSTOM_PRESETS, arr.toString()).apply()
+        } catch (_: Throwable) { }
     }
 
     // Hard watchdog: no matter what happens on the audio thread (native hang, hidden-API
