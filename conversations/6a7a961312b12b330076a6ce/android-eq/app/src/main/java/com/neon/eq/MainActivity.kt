@@ -46,6 +46,10 @@ import kotlinx.coroutines.launch
 import kotlin.math.round
 import android.content.Context
 import android.os.Process
+import android.content.ActivityNotFoundException
+import android.widget.Toast
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -215,6 +219,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var autoApplyPreset by remember { mutableStateOf(engine.isAutoApplyPreset()) }
     var showVisualizer by remember { mutableStateOf(engine.isShowVisualizer()) }
     var showGlow by remember { mutableStateOf(engine.isShowGlow()) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importJsonInput by remember { mutableStateOf("") }
+    var importResultMsg by remember { mutableStateOf("") }
 
     var isReady by remember { mutableStateOf(false) }
     var statusMsg by remember { mutableStateOf("Loading...") }
@@ -376,7 +383,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    "+ Save current",
+                    "+ Save",
                     fontSize = 11.sp,
                     color = Color(0xFF00E5FF),
                     modifier = Modifier.clickable {
@@ -384,12 +391,49 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         showSaveDialog = true
                     }
                 )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "↥ Share",
+                    fontSize = 11.sp,
+                    color = Color(0xFF00E5FF),
+                    modifier = Modifier.clickable {
+                        val json = engine.exportCustomPresets()
+                        if (json == "{"app":"NeonEQ","version":1,"presets":[]}") {
+                            scope2.launch { snackbarHost.showSnackbar("No custom presets to share") }
+                        } else {
+                            try {
+                                val file = File(context.cacheDir, "neoneq_presets.json")
+                                file.writeText(json)
+                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                val share = Intent(Intent.ACTION_SEND).apply {
+                                    type = "application/json"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(share, "Share presets"))
+                            } catch (_: Throwable) {
+                                scope2.launch { snackbarHost.showSnackbar("Share failed") }
+                            }
+                        }
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "↧ Import",
+                    fontSize = 11.sp,
+                    color = Color(0xFF00E5FF),
+                    modifier = Modifier.clickable {
+                        importJsonInput = ""
+                        importResultMsg = ""
+                        showImportDialog = true
+                    }
+                )
             }
         }
         Spacer(Modifier.height(8.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(Presets.presets, key = { "b_" + it.name }) { preset ->
-                PresetChip(preset.name, selectedPreset == preset.name) {
+                PresetChip(preset = preset, selected = selectedPreset == preset.name, onClick = {
                     selectedPreset = preset.name
                     engine.setSelectedPresetName(preset.name)
                     val levels = Presets.levelsForCount(preset, bandCount)
@@ -400,7 +444,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
             items(customPresets, key = { "c_" + it.name }) { preset ->
                 CustomPresetChip(
-                    name = preset.name,
+                    preset = preset,
                     selected = selectedPreset == preset.name,
                     onClick = {
                         selectedPreset = preset.name
@@ -602,6 +646,17 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 }
             )
             DropdownMenuItem(
+                text = { Text("Duplicate") },
+                onClick = {
+                    val dupName = engine.duplicateCustomPreset(preset.name)
+                    if (dupName.isNotEmpty()) {
+                        customPresets = engine.listCustomPresets()
+                        scope2.launch { snackbarHost.showSnackbar("Duplicated to '$dupName'") }
+                    }
+                    menuPreset = null
+                }
+            )
+            DropdownMenuItem(
                 text = { Text("Delete", color = Color(0xFFFF4081)) },
                 onClick = {
                     engine.deleteCustomPreset(preset.name)
@@ -747,7 +802,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #35",
+                        "Neon EQ v1.0 · Build #39",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -757,6 +812,48 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             },
             confirmButton = {
                 TextButton(onClick = { showSettings = false }) { Text("Done") }
+            }
+        )
+    }
+
+    // ── Import dialog ──
+    if (showImportDialog) {
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("Import presets", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Paste the shared preset JSON below:", fontSize = 12.sp, color = Color.Gray)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importJsonInput,
+                        onValueChange = { importJsonInput = it },
+                        label = { Text("JSON") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        maxLines = 8
+                    )
+                    if (importResultMsg.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(importResultMsg, fontSize = 11.sp, color = Color(0xFF00E5FF))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val count = engine.importCustomPresets(importJsonInput.trim())
+                    if (count > 0) {
+                        customPresets = engine.listCustomPresets()
+                        importResultMsg = "Imported $count preset(s)"
+                        scope2.launch { snackbarHost.showSnackbar("Imported $count preset(s)") }
+                        showImportDialog = false
+                    } else {
+                        importResultMsg = "No new presets found or invalid JSON"
+                    }
+                }) { Text("Import") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportDialog = false }) { Text("Cancel") }
             }
         )
     }
@@ -791,7 +888,8 @@ fun BreathingGlow(active: Boolean) {
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
 // Degrades to a gentle idle pulse if no waveform data is available yet (permission
-// denied, unsupported device, or nothing playing) instead of showing nothing.
+// denied, unsupported device, or nothing playing). Includes falling peak markers
+// that decay slowly for a more "pro audio" look.
 @Composable
 fun VisualizerBars(waveform: ByteArray, active: Boolean) {
     val barCount = 32
@@ -802,7 +900,20 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean) {
         label = "idlePhase"
     )
 
-    Canvas(modifier = Modifier.fillMaxWidth().height(56.dp)) {
+    // Per-bar peak hold — each bar remembers its own decaying peak height.
+    val peaks = remember { FloatArray(barCount) { 0f } }
+    var tick by remember { mutableIntStateOf(0) }
+
+    // Drive peak decay at ~30fps — cheaper than recomposing the whole tree.
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(33)
+            for (i in 0 until barCount) peaks[i] = (peaks[i] - 0.015f).coerceAtLeast(0f)
+            tick++
+        }
+    }
+
+    Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
         val slotWidth = size.width / barCount
         val barWidthPx = slotWidth * 0.6f
         val midY = size.height / 2f
@@ -824,6 +935,12 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean) {
             }
             val barH = (size.height * 0.9f * amp).coerceAtLeast(3f)
             val x = i * slotWidth + (slotWidth - barWidthPx) / 2f
+
+            // Update peak — only rises, decays over time
+            if (barH > peaks[i]) peaks[i] = barH
+            val peakH = peaks[i]
+
+            // Main bar with gradient
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF)),
@@ -834,6 +951,16 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean) {
                 size = Size(barWidthPx, barH),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
             )
+
+            // Peak marker — thin bright line at the decaying peak height
+            if (peakH > barH + 4f) {
+                drawRoundRect(
+                    color = Color(0xFF00E5FF).copy(alpha = 0.7f),
+                    topLeft = Offset(x, midY - peakH / 2f),
+                    size = Size(barWidthPx, 3f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f, 2f)
+                )
+            }
         }
     }
 }
@@ -965,25 +1092,48 @@ fun CanvasEQ(
     }
 }
 
+// Built-in preset chip with a mini EQ curve preview sparkline.
 @Composable
-fun PresetChip(name: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
+fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .clickable(onClick = onClick)
             .background(
                 if (selected) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF1A1A2E),
-                RoundedCornerShape(20.dp)
+                RoundedCornerShape(16.dp)
             )
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
-        Text(name, fontSize = 12.sp, color = if (selected) Color(0xFF00E5FF) else Color.Gray)
+        // Mini sparkline preview — 24px tall, draws the EQ curve shape
+        Canvas(modifier = Modifier.width(60.dp).height(24.dp)) {
+            val levels = preset.levels
+            val n = 31
+            val slotW = size.width / n
+            val midY = size.height / 2f
+            val maxLevel = 15f
+            for (i in 0 until n) {
+                val lvl = levels.getOrElse(i) { 0 }.toFloat()
+                val normY = (lvl / maxLevel).coerceIn(-1f, 1f)
+                val barH = size.height * 0.45f * kotlin.math.abs(normY)
+                val y = if (normY >= 0) midY - barH else midY
+                drawRoundRect(
+                    color = if (selected) Color(0xFF00E5FF).copy(alpha = 0.8f) else Color(0xFF7C4DFF).copy(alpha = 0.5f),
+                    topLeft = Offset(i * slotW, y),
+                    size = Size(slotW * 0.7f, barH.coerceAtLeast(1f)),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f, 1f)
+                )
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(preset.name, fontSize = 10.sp, color = if (selected) Color(0xFF00E5FF) else Color.Gray, maxLines = 1)
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CustomPresetChip(
-    name: String,
+    preset: Presets.CustomPreset,
     selected: Boolean,
     onClick: () -> Unit,
     onLongPress: () -> Unit = {},
@@ -994,20 +1144,41 @@ fun CustomPresetChip(
         modifier = Modifier
             .background(
                 if (selected) Color(0xFF7C4DFF).copy(alpha = 0.2f) else Color(0xFF1A1A2E),
-                RoundedCornerShape(20.dp)
+                RoundedCornerShape(16.dp)
             )
             .padding(horizontal = 4.dp)
     ) {
+        // Mini sparkline preview for custom preset
+        Canvas(modifier = Modifier.width(40.dp).height(24.dp)) {
+            val levels = preset.levels
+            val n = 31
+            val slotW = size.width / n
+            val midY = size.height / 2f
+            val maxLevel = 15f
+            for (i in 0 until n) {
+                val lvl = levels.getOrElse(i) { 0 }.toFloat()
+                val normY = (lvl / maxLevel).coerceIn(-1f, 1f)
+                val barH = size.height * 0.45f * kotlin.math.abs(normY)
+                val y = if (normY >= 0) midY - barH else midY
+                drawRoundRect(
+                    color = if (selected) Color(0xFF7C4DFF).copy(alpha = 0.8f) else Color(0xFF7C4DFF).copy(alpha = 0.4f),
+                    topLeft = Offset(i * slotW, y),
+                    size = Size(slotW * 0.7f, barH.coerceAtLeast(1f)),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f, 1f)
+                )
+            }
+        }
         Text(
-            name,
-            fontSize = 12.sp,
+            preset.name,
+            fontSize = 10.sp,
             color = if (selected) Color(0xFF7C4DFF) else Color.Gray,
             modifier = Modifier
                 .combinedClickable(
                     onClick = onClick,
                     onLongClick = onLongPress
                 )
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            maxLines = 1
         )
         Box(
             modifier = Modifier
@@ -1054,6 +1225,7 @@ fun EffectSlider(label: String, value: Int, range: IntRange, onValueChange: (Int
 
 @Composable
 fun CrashScreen(trace: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1067,6 +1239,11 @@ fun CrashScreen(trace: String, onDismiss: () -> Unit) {
             "Screenshot this and send it back — this is the real error, not a guess.",
             fontSize = 12.sp, color = Color.Gray
         )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Tap Copy to clipboard if you can't screenshot.",
+            fontSize = 11.sp, color = Color(0xFF7C4DFF)
+        )
         Spacer(Modifier.height(16.dp))
         Text(
             trace,
@@ -1077,8 +1254,13 @@ fun CrashScreen(trace: String, onDismiss: () -> Unit) {
                 .padding(12.dp)
         )
         Spacer(Modifier.height(16.dp))
-        Button(onClick = onDismiss) {
-            Text("Dismiss & Retry")
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onDismiss) { Text("Dismiss & Retry") }
+            OutlinedButton(onClick = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("NeonEQ crash log", trace))
+                Toast.makeText(context, "Crash log copied", Toast.LENGTH_SHORT).show()
+            }) { Text("Copy") }
         }
     }
 }

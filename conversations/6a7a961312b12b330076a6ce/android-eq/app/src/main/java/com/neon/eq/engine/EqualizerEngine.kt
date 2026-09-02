@@ -261,6 +261,48 @@ class EqualizerEngine private constructor(context: Context) {
         persistCustomPresets(remaining)
     }
 
+    // Duplicate a custom preset — creates a copy with " (copy)" suffix.
+    // If that name also exists, append a number until unique.
+    fun duplicateCustomPreset(name: String): String {
+        val list = listCustomPresets().toMutableList()
+        val src = list.find { it.name == name } ?: return ""
+        var newName = "$name (copy)"
+        var n = 2
+        while (list.any { it.name == newName }) {
+            newName = "$name (copy $n)"
+            n++
+        }
+        list.add(src.copy(name = newName))
+        persistCustomPresets(list)
+        return newName
+    }
+
+    // ── Export / Import ──
+
+    // Export ALL custom presets as a shareable JSON string.
+    fun exportCustomPresets(): String {
+        return Presets.exportToJson(listCustomPresets())
+    }
+
+    // Import presets from a JSON string. Returns the count of presets actually
+    // imported (skipping duplicates with the same name).
+    fun importCustomPresets(json: String): Int {
+        val imported = Presets.importFromJson(json)
+        if (imported.isEmpty()) return 0
+        val existing = listCustomPresets().toMutableList()
+        val existingNames = existing.map { it.name }.toMutableSet()
+        var added = 0
+        for (p in imported) {
+            if (p.name !in existingNames) {
+                existing.add(p)
+                existingNames.add(p.name)
+                added++
+            }
+        }
+        if (added > 0) persistCustomPresets(existing)
+        return added
+    }
+
     private fun persistCustomPresets(presets: List<Presets.CustomPreset>) {
         try {
             val arr = org.json.JSONArray()
