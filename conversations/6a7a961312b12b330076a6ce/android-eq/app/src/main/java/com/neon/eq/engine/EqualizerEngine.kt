@@ -180,7 +180,7 @@ class EqualizerEngine private constructor(context: Context) {
             uiNotified = true
             statusMessage = "Limited EQ support on this device — try again or reduce bands"
             isReady = true
-            enabled = true
+            enabled = currentEnabled
             if (bands.isEmpty()) bands = fallbackBands(bandCount)
             onReady?.invoke(isReady, statusMessage, bands)
         }
@@ -272,7 +272,7 @@ class EqualizerEngine private constructor(context: Context) {
                 Log.e(TAG, "attachToGlobalSession fatal, degrading gracefully", t)
                 statusMessage = "EQ running in limited mode on this device"
                 isReady = true
-                enabled = true
+                enabled = currentEnabled
                 if (bands.isEmpty()) bands = fallbackBands(bandCount)
             } finally {
                 mainHandler.removeCallbacks(watchdogRunnable)
