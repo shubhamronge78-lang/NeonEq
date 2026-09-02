@@ -28,6 +28,7 @@ class EQService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // ACTION_STOP — explicit user "Turn Off" from notification or UI.
         if (intent?.action == ACTION_STOP) {
             engine.setEnabled(false)
             engine.release()
@@ -36,8 +37,25 @@ class EQService : Service() {
             return START_NOT_STICKY
         }
 
+        // System sticky restart (intent == null): the OS killed us for memory and is
+        // recreating the service. We must NOT blindly force setEnabled(true) here —
+        // the user may have turned the EQ off before the kill. Respect the persisted
+        // state: if it was off, we re-attach the engine (so the UI stays in sync when
+        // reopened) but keep effects disabled. If it was on, restore everything.
+        val isStickyRestart = intent == null
+
         engine.attachToGlobalSession()
-        engine.setEnabled(true)
+        if (isStickyRestart) {
+            // Restore persisted state without forcing it on.
+            if (engine.isBoot()) {
+                engine.setEnabled(true)
+            } else {
+                engine.setEnabled(false)
+            }
+        } else {
+            // User-initiated start (from Activity or BootReceiver) — turn it on.
+            engine.setEnabled(true)
+        }
 
         val stopIntent = Intent(this, EQService::class.java).setAction(ACTION_STOP)
         val stopPendingIntent = PendingIntent.getService(
