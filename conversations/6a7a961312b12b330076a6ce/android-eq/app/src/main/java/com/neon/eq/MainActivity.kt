@@ -209,6 +209,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf("") }
     var renamingFrom by remember { mutableStateOf("") }
+    var showSettings by remember { mutableStateOf(false) }
+    // Settings preferences — read once, then kept in local state
+    var startOnBoot by remember { mutableStateOf(engine.isStartOnBoot()) }
+    var autoApplyPreset by remember { mutableStateOf(engine.isAutoApplyPreset()) }
+    var showVisualizer by remember { mutableStateOf(engine.isShowVisualizer()) }
+    var showGlow by remember { mutableStateOf(engine.isShowGlow()) }
 
     var isReady by remember { mutableStateOf(false) }
     var statusMsg by remember { mutableStateOf("Loading...") }
@@ -236,6 +242,17 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             bands = engine.bands
         }
         engine.onWaveform = { data -> waveform = data }
+
+        // Auto-apply last preset if setting is enabled
+        if (engine.isAutoApplyPreset()) {
+            if (engine.applyLastPreset()) {
+                val snapshot = engine.currentLevelsSnapshot()
+                bandLevels = FloatArray(31) { i -> snapshot.getOrElse(i) { 0 }.toFloat() }
+                bassBoost = engine.currentBassBoostValue()
+                virtualizer = engine.currentVirtualizerValue()
+                loudness = engine.currentLoudnessValue()
+            }
+        }
     }
 
     // Clear callbacks on dispose (rotation, back press) — without this the old
@@ -295,13 +312,22 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     ) {
         // ── Header with breathing glow ──
         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
-            BreathingGlow(active = enabled)
+            if (showGlow) BreathingGlow(active = enabled)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("NEON EQ", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E5FF))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("NEON EQ", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E5FF))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "⚙",
+                        fontSize = 20.sp,
+                        color = Color(0xFF7C4DFF),
+                        modifier = Modifier.clickable { showSettings = true }
+                    )
+                }
                 Switch(
                     checked = enabled,
                     onCheckedChange = {
@@ -322,9 +348,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(16.dp))
 
         // ── Live spectrum visualizer ──
-        VisualizerBars(waveform = waveform, active = enabled)
-
-        Spacer(Modifier.height(16.dp))
+        if (showVisualizer) {
+            VisualizerBars(waveform = waveform, active = enabled)
+            Spacer(Modifier.height(16.dp))
+        }
 
         // ── Presets ──
         Row(
@@ -619,6 +646,117 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             },
             dismissButton = {
                 TextButton(onClick = { showRenameDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // ── Settings dialog ──
+    if (showSettings) {
+        AlertDialog(
+            onDismissRequest = { showSettings = false },
+            title = { Text("Settings", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // Start on boot
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Start on Boot", fontSize = 14.sp, color = Color.White)
+                            Text("Auto-start EQ after device reboot", fontSize = 11.sp, color = Color.Gray)
+                        }
+                        Switch(
+                            checked = startOnBoot,
+                            onCheckedChange = {
+                                startOnBoot = it
+                                engine.setStartOnBoot(it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00E5FF),
+                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                    // Auto-apply last preset
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Auto-apply Preset", fontSize = 14.sp, color = Color.White)
+                            Text("Restore last preset on app launch", fontSize = 11.sp, color = Color.Gray)
+                        }
+                        Switch(
+                            checked = autoApplyPreset,
+                            onCheckedChange = {
+                                autoApplyPreset = it
+                                engine.setAutoApplyPreset(it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00E5FF),
+                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                    // Show visualizer
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Visualizer", fontSize = 14.sp, color = Color.White)
+                            Text("Show live spectrum bars", fontSize = 11.sp, color = Color.Gray)
+                        }
+                        Switch(
+                            checked = showVisualizer,
+                            onCheckedChange = {
+                                showVisualizer = it
+                                engine.setShowVisualizer(it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00E5FF),
+                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                    // Show breathing glow
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Breathing Glow", fontSize = 14.sp, color = Color.White)
+                            Text("Animated glow behind header", fontSize = 11.sp, color = Color.Gray)
+                        }
+                        Switch(
+                            checked = showGlow,
+                            onCheckedChange = {
+                                showGlow = it
+                                engine.setShowGlow(it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00E5FF),
+                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Neon EQ v1.0 · Build #35",
+                        fontSize = 10.sp,
+                        color = Color(0xFF7C4DFF),
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSettings = false }) { Text("Done") }
             }
         )
     }

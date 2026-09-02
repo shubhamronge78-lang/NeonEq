@@ -36,6 +36,10 @@ class EqualizerEngine private constructor(context: Context) {
         private const val KEY_ENABLED = "enabled"
         private const val KEY_PRESET_NAME = "preset_name"
         private const val KEY_CUSTOM_PRESETS = "custom_presets"
+        private const val KEY_START_ON_BOOT = "start_on_boot"
+        private const val KEY_AUTO_APPLY_PRESET = "auto_apply_preset"
+        private const val KEY_SHOW_VISUALIZER = "show_visualizer"
+        private const val KEY_SHOW_GLOW = "show_glow"
 
         @Volatile private var instance: EqualizerEngine? = null
 
@@ -141,6 +145,45 @@ class EqualizerEngine private constructor(context: Context) {
     fun setSelectedPresetName(name: String) {
         selectedPresetName = name
         try { prefs.edit().putString(KEY_PRESET_NAME, name).apply() } catch (_: Throwable) { }
+    }
+
+    // Called on startup when auto-apply preset setting is enabled.
+    // Restores the last saved preset's band levels + effects into the live engine.
+    fun applyLastPreset(): Boolean {
+        if (!isAutoApplyPreset()) return false
+        val name = selectedPresetName
+        if (name == "Flat" || name == "Custom") return false
+
+        // Check built-in presets first
+        val builtIn = Presets.presets.find { it.name == name }
+        if (builtIn != null) {
+            val target = ShortArray(31) { i -> builtIn.levels.getOrElse(i) { 0 } }
+            try {
+                for (i in 0 until 31) {
+                    bands.getOrNull(i)?.let { it.level = target[i] }
+                }
+                currentBandLevels = target
+                persistLevels()
+            } catch (_: Throwable) { }
+            return true
+        }
+
+        // Check custom presets
+        val custom = listCustomPresets().find { it.name == name }
+        if (custom != null) {
+            try {
+                for (i in 0 until 31) {
+                    bands.getOrNull(i)?.let { it.level = custom.levels.getOrElse(i) { 0 } }
+                }
+                currentBandLevels = ShortArray(31) { i -> custom.levels.getOrElse(i) { 0 } }
+                persistLevels()
+                setBassBoost(custom.bassBoost)
+                setVirtualizer(custom.virtualizer)
+                setLoudness(custom.loudness)
+            } catch (_: Throwable) { }
+            return true
+        }
+        return false
     }
 
     // ── Custom presets (JSON serialization with backward-compat migration) ──
@@ -672,6 +715,28 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun isBoot(): Boolean = prefs.getBoolean(KEY_ENABLED, true)
+
+    // ── User preferences (settings panel) ──
+
+    fun isStartOnBoot(): Boolean = prefs.getBoolean(KEY_START_ON_BOOT, true)
+    fun setStartOnBoot(on: Boolean) {
+        try { prefs.edit().putBoolean(KEY_START_ON_BOOT, on).apply() } catch (_: Throwable) { }
+    }
+
+    fun isAutoApplyPreset(): Boolean = prefs.getBoolean(KEY_AUTO_APPLY_PRESET, false)
+    fun setAutoApplyPreset(on: Boolean) {
+        try { prefs.edit().putBoolean(KEY_AUTO_APPLY_PRESET, on).apply() } catch (_: Throwable) { }
+    }
+
+    fun isShowVisualizer(): Boolean = prefs.getBoolean(KEY_SHOW_VISUALIZER, true)
+    fun setShowVisualizer(on: Boolean) {
+        try { prefs.edit().putBoolean(KEY_SHOW_VISUALIZER, on).apply() } catch (_: Throwable) { }
+    }
+
+    fun isShowGlow(): Boolean = prefs.getBoolean(KEY_SHOW_GLOW, true)
+    fun setShowGlow(on: Boolean) {
+        try { prefs.edit().putBoolean(KEY_SHOW_GLOW, on).apply() } catch (_: Throwable) { }
+    }
 
     fun reattach() {
         audioExecutor.execute {

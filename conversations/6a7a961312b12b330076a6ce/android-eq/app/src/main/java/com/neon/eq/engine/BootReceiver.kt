@@ -13,7 +13,9 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         try {
             val engine = EqualizerEngine.getInstance(context)
-            if (engine.isBoot()) {
+            // Only auto-start if BOTH the EQ was left on AND the user hasn't
+            // disabled the start-on-boot setting.
+            if (engine.isBoot() && engine.isStartOnBoot()) {
                 val serviceIntent = Intent(context, EQService::class.java)
                 ContextCompat.startForegroundService(context, serviceIntent)
             }
