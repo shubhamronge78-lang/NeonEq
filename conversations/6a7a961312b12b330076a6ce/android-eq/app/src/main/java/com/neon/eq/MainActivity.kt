@@ -393,7 +393,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("PRESETS", fontSize = 11.sp, color = Color(0xFF7C4DFF), fontWeight = FontWeight.Bold)
+            GradientText("PRESETS", 11.sp, Brush.horizontalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))))
             Row {
                 Text(
                     "↺ Reset All",
@@ -522,7 +522,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(16.dp))
 
         // ── Band count selector ──
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        NeonCard {
+            GradientText("BANDS", 11.sp, Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))))
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(5, 10, 15, 31).forEach { count ->
                 FilterChip(
                     selected = bandCount == count,
@@ -540,6 +543,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                 )
             }
+        }
         }
 
         Spacer(Modifier.height(20.dp))
@@ -575,7 +579,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Effect sliders ──
         NeonCard {
-            Text("EFFECTS", fontSize = 11.sp, color = Color(0xFFFF4081), fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+            GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(Color(0xFFFF4081), Color(0xFF7C4DFF))))
             Spacer(Modifier.height(4.dp))
         EffectSlider("BASS BOOST", bassBoost, 0..300) { v ->
             bassBoost = v
@@ -601,8 +605,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showSaveDialog) {
         AlertDialog(
+            containerColor = Color(0xFF12121F),
+            shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showSaveDialog = false },
-            title = { Text("Save current EQ as preset") },
+            title = { Text("Save current EQ as preset", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = presetNameInput,
@@ -639,8 +645,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showOverwriteDialog) {
         AlertDialog(
+            containerColor = Color(0xFF12121F),
+            shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showOverwriteDialog = false },
-            title = { Text("Overwrite preset?") },
+            title = { Text("Overwrite preset?", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
             text = { Text("A preset named '$pendingPresetName' already exists. Overwrite it with current settings?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -747,8 +755,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showRenameDialog) {
         AlertDialog(
+            containerColor = Color(0xFF12121F),
+            shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showRenameDialog = false },
-            title = { Text("Rename preset") },
+            title = { Text("Rename preset", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = renameInput,
@@ -781,6 +791,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // ── Settings dialog ──
     if (showSettings) {
         AlertDialog(
+            containerColor = Color(0xFF12121F),
+            shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showSettings = false },
             title = { Text("Settings", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
             text = {
@@ -943,7 +955,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #52",
+                        "Neon EQ v1.0 · Build #53",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -960,6 +972,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // ── Import dialog ──
     if (showImportDialog) {
         AlertDialog(
+            containerColor = Color(0xFF12121F),
+            shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showImportDialog = false },
             title = { Text("Import presets", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
             text = {
@@ -1001,6 +1015,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showRestoreDialog) {
         AlertDialog(
+            containerColor = Color(0xFF12121F),
+            shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showRestoreDialog = false },
             title = { Text("Restore backup", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
             text = {
@@ -1071,6 +1087,19 @@ fun NeonCard(
             .border(1.dp, Color(0xFF00E5FF).copy(alpha = 0.10f), RoundedCornerShape(20.dp))
             .padding(12.dp),
         content = content
+    )
+}
+
+// Gradient section header — matches the wordmark language.
+@Composable
+fun GradientText(text: String, fontSize: androidx.compose.ui.unit.TextUnit, brush: Brush) {
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(brush = brush)) { append(text) }
+        },
+        fontSize = fontSize,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 2.sp
     )
 }
 
@@ -1528,7 +1557,18 @@ fun EffectSlider(label: String, value: Int, range: IntRange, onValueChange: (Int
                 activeTrackColor = Color(0xFFFF4081).copy(alpha = 0.4f)
             )
         )
-        Text("$value", fontSize = 11.sp, color = Color(0xFFFF4081), modifier = Modifier.width(40.dp), textAlign = TextAlign.End)
+        Text(
+            "$value",
+            fontSize = 11.sp,
+            color = Color(0xFFFF4081),
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .width(40.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFFFF4081).copy(alpha = 0.10f))
+                .border(1.dp, Color(0xFFFF4081).copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                .padding(vertical = 2.dp)
+        )
     }
 }
 
@@ -1560,6 +1600,7 @@ fun CrashScreen(trace: String, onDismiss: () -> Unit) {
             color = Color(0xFF00E5FF),
             modifier = Modifier
                 .background(Color(0xFF0D0D14))
+                .border(1.dp, Color(0xFFFF4081).copy(alpha = 0.25f), RoundedCornerShape(12.dp))
                 .padding(12.dp)
         )
         Spacer(Modifier.height(16.dp))
