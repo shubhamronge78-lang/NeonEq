@@ -664,6 +664,22 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 }
             )
             DropdownMenuItem(
+                text = { Text("Move left") },
+                onClick = {
+                    engine.moveCustomPreset(preset.name, -1)
+                    customPresets = engine.listCustomPresets()
+                    menuPreset = null
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Move right") },
+                onClick = {
+                    engine.moveCustomPreset(preset.name, 1)
+                    customPresets = engine.listCustomPresets()
+                    menuPreset = null
+                }
+            )
+            DropdownMenuItem(
                 text = { Text("Delete", color = Color(0xFFFF4081)) },
                 onClick = {
                     engine.deleteCustomPreset(preset.name)
@@ -809,7 +825,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #45",
+                        "Neon EQ v1.0 · Build #48",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),

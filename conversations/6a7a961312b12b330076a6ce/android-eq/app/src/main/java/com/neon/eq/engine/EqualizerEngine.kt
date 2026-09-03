@@ -293,6 +293,20 @@ class EqualizerEngine private constructor(context: Context) {
         return newName
     }
 
+    // Reorder: move a custom preset one slot left (delta -1) or right (delta +1)
+    // in the saved order. Returns false if already at the edge or not found.
+    fun moveCustomPreset(name: String, delta: Int): Boolean {
+        val list = listCustomPresets().toMutableList()
+        val idx = list.indexOfFirst { it.name == name }
+        if (idx < 0) return false
+        val newIdx = (idx + delta).coerceIn(0, list.size - 1)
+        if (newIdx == idx) return false
+        val item = list.removeAt(idx)
+        list.add(newIdx, item)
+        persistCustomPresets(list)
+        return true
+    }
+
     // ── Export / Import ──
 
     // Export ALL custom presets as a shareable JSON string.
