@@ -218,6 +218,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var startOnBoot by remember { mutableStateOf(engine.isStartOnBoot()) }
     var autoApplyPreset by remember { mutableStateOf(engine.isAutoApplyPreset()) }
     var showVisualizer by remember { mutableStateOf(engine.isShowVisualizer()) }
+    var visStyle by remember { mutableStateOf(engine.getVisualizerStyle()) }
     var showGlow by remember { mutableStateOf(engine.isShowGlow()) }
     var showImportDialog by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
@@ -359,7 +360,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Live spectrum visualizer ──
         if (showVisualizer) {
-            VisualizerBars(waveform = waveform, active = enabled)
+            VisualizerBars(waveform = waveform, active = enabled, style = visStyle)
             Spacer(Modifier.height(16.dp))
         }
 
@@ -804,6 +805,30 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             )
                         )
                     }
+                    // Visualizer style picker
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("Visualizer Style", fontSize = 14.sp, color = Color.White)
+                        Text("Bars, wave or circle pulse", fontSize = 11.sp, color = Color.Gray)
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("bars" to "Bars", "wave" to "Wave", "circle" to "Circle").forEach { (key, label) ->
+                                val sel = visStyle == key
+                                Text(
+                                    label,
+                                    fontSize = 11.sp,
+                                    color = if (sel) Color(0xFF0D0D14) else Color(0xFF00E5FF),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(if (sel) Color(0xFF00E5FF) else Color(0xFF00E5FF).copy(alpha = 0.12f))
+                                        .clickable {
+                                            visStyle = key
+                                            engine.setVisualizerStyle(key)
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
                     // Show breathing glow
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -872,7 +897,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #49",
+                        "Neon EQ v1.0 · Build #50",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1011,7 +1036,7 @@ fun BreathingGlow(active: Boolean) {
 // denied, unsupported device, or nothing playing). Includes falling peak markers
 // that decay slowly for a more "pro audio" look.
 @Composable
-fun VisualizerBars(waveform: ByteArray, active: Boolean) {
+fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars") {
     val barCount = 32
     val infinite = rememberInfiniteTransition(label = "idlePulse")
     val idlePhase by infinite.animateFloat(
@@ -1034,6 +1059,90 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean) {
     }
 
     Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
+        // Extract the amplitude for a single logical bar — shared by all three
+        // styles so they react identically to the same waveform data.
+        fun ampFor(i: Int, count: Int): Float {
+            if (waveform.isNotEmpty()) {
+                val chunk = waveform.size / count
+                val startIdx = (i * chunk).coerceIn(0, waveform.size - 1)
+                val endIdx = ((i + 1) * chunk).coerceIn(startIdx + 1, waveform.size)
+                var sum = 0f
+                for (j in startIdx until endIdx) {
+                    val v = (waveform[j].toInt() and 0xFF) - 128
+                    sum += kotlin.math.abs(v)
+                }
+                return ((sum / (endIdx - startIdx)) / 128f).coerceIn(0.03f, 1f)
+            }
+            val wave = kotlin.math.sin((i / count.toFloat() + idlePhase) * Math.PI * 2).toFloat()
+            return (0.08f + 0.05f * wave).coerceIn(0.03f, 0.2f)
+        }
+
+        when (style) {
+            "wave" -> {
+                // Smooth glowing line traced through 64 sample points.
+                val points = 64
+                val stepX = size.width / (points - 1).toFloat()
+                val path = androidx.compose.ui.graphics.Path()
+                for (i in 0 until points) {
+                    val amp = ampFor(i, points)
+                    val x = i * stepX
+                    val y = size.height / 2f - (amp - 0.03f) * size.height * 0.8f
+                    if (i == 0) path.moveTo(x, y)
+                    else path.lineTo(x, y)
+                }
+                // Glow underlay: same path, thicker and faint
+                drawPath(
+                    path = path,
+                    color = Color(0xFF00E5FF).copy(alpha = 0.25f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 7f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                )
+                drawPath(
+                    path = path,
+                    brush = Brush.horizontalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                )
+                // Mirrored faint reflection for depth
+                val mirror = androidx.compose.ui.graphics.Path()
+                for (i in 0 until points) {
+                    val amp = ampFor(i, points)
+                    val x = i * stepX
+                    val y = size.height / 2f + (amp - 0.03f) * size.height * 0.8f * 0.5f
+                    if (i == 0) mirror.moveTo(x, y)
+                    else mirror.lineTo(x, y)
+                }
+                drawPath(
+                    path = mirror,
+                    color = Color(0xFF7C4DFF).copy(alpha = 0.15f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                )
+            }
+            "circle" -> {
+                // Radial pulse ring — 40 spokes around a core.
+                val spokes = 40
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val coreR = size.height * 0.18f
+                drawCircle(
+                    brush = Brush.radialGradient(listOf(Color(0xFF7C4DFF), Color(0x007C4DFF)), center = Offset(cx, cy), radius = coreR * 1.6f),
+                    radius = coreR * 1.6f, center = Offset(cx, cy)
+                )
+                for (i in 0 until spokes) {
+                    val amp = ampFor(i, spokes)
+                    val angle = (i / spokes.toFloat()) * Math.PI * 2
+                    val inner = coreR + 3f
+                    val outer = coreR + 3f + (size.height * 0.3f * amp)
+                    val cosA = kotlin.math.cos(angle).toFloat()
+                    val sinA = kotlin.math.sin(angle).toFloat()
+                    drawLine(
+                        brush = Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))),
+                        start = Offset(cx + cosA * inner, cy + sinA * inner),
+                        end = Offset(cx + cosA * outer, cy + sinA * outer),
+                        strokeWidth = 3f,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round
+                    )
+                }
+            }
+            else -> {
         val slotWidth = size.width / barCount
         val barWidthPx = slotWidth * 0.6f
         val midY = size.height / 2f
@@ -1080,6 +1189,8 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean) {
                     size = Size(barWidthPx, 3f),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f, 2f)
                 )
+            }
+        }
             }
         }
     }

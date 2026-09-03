@@ -32,6 +32,7 @@ class EQService : Service() {
         if (intent?.action == ACTION_STOP) {
             engine.setEnabled(false)
             engine.release()
+            EQWidgetProvider.pushUpdate(this)
             stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
@@ -74,6 +75,9 @@ class EQService : Service() {
             .addAction(android.R.drawable.ic_media_pause, "Turn Off", stopPendingIntent)
             .build()
         startForeground(NOTIF_ID, notif)
+        // Keep any home screen widgets in sync with the engine's state —
+        // covers app toggles, boot starts, tile clicks and widget clicks.
+        EQWidgetProvider.pushUpdate(this)
         return START_STICKY
     }
 

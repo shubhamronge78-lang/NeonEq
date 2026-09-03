@@ -40,6 +40,7 @@ class EqualizerEngine private constructor(context: Context) {
         private const val KEY_AUTO_APPLY_PRESET = "auto_apply_preset"
         private const val KEY_SHOW_VISUALIZER = "show_visualizer"
         private const val KEY_SHOW_GLOW = "show_glow"
+        private const val KEY_VIS_STYLE = "vis_style"
 
         @Volatile private var instance: EqualizerEngine? = null
 
@@ -971,6 +972,16 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun isShowGlow(): Boolean = prefs.getBoolean(KEY_SHOW_GLOW, true)
+
+    fun getVisualizerStyle(): String {
+        return try {
+            prefs.getString(KEY_VIS_STYLE, "bars") ?: "bars"
+        } catch (_: Throwable) { "bars" }
+    }
+
+    fun setVisualizerStyle(style: String) {
+        try { prefs.edit().putString(KEY_VIS_STYLE, style).apply() } catch (_: Throwable) { }
+    }
     fun setShowGlow(on: Boolean) {
         try { prefs.edit().putBoolean(KEY_SHOW_GLOW, on).apply() } catch (_: Throwable) { }
     }
