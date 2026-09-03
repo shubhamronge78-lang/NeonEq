@@ -64,15 +64,17 @@ jobs:
           4. Grant audio permissions when prompted
           5. Toggle the EQ on and enjoy!
 
-          ## ✨ What's New in 2.0.0
+          ## ✨ What's New in 2.0.1
+          - 🎚️ **New band canvas** — smooth neon curve through band tops, dashed 0 dB reference line, active-band glow with floating value bubble while dragging
+          - ⚡ **Zero-allocation rendering** — all Paths, Paints, Brushes and buffers in the redraw paths are hoisted and reused; no GC pauses mid-playback on low-end devices
           - 🎯 **Per-app audio profiles** — auto-switch presets based on which app is playing
           - ✏️ **Custom presets** — create, rename, duplicate, reorder, share & import
           - 📳 **Haptic fine-tuning** — feel a tick at every dB step while dragging bands
           - 📱 **Home screen widget + Quick Settings tile**
           - 💾 **Backup & Restore** — full-state export/import
           - 📊 **Visualizer styles** — Bars, Wave & Circle
-          - 🔊 **Speaker-safe effects** — Bass/Virtualizer/Loudness capped at 300 with preamp compensation
-          - 🌙 **Glass-morphism UI overhaul** — neon cards, gradient headers, AMOLED black
+          - 🔊 **Speaker-safe effects** — capped at 300 with preamp compensation
+          - 🌙 **Glass-morphism UI** — neon cards, gradient headers, AMOLED black
 
           ## ✨ Core Features
           - System-wide audio equalization (all apps)
