@@ -253,11 +253,15 @@ class EqualizerEngine private constructor(context: Context) {
     // Resolve the package name of the app producing audio. AudioPlaybackConfiguration
     // exposes the client UID via public API; PackageManager maps UID → package.
     // Fully public-API path, no reflection needed — but Throwable-caught anyway.
+    private fun reflectClientUid(config: AudioPlaybackConfiguration): Int {
+        return try { (clientUidMethod?.invoke(config) as? Int) ?: -1 } catch (t: Throwable) { -1 }
+    }
+
     private fun resolvePlayingPackage(config: AudioPlaybackConfiguration?): String? {
         if (config == null) return null
         return try {
-            val uid = config.clientUid
-            context.packageManager.getPackagesForUid(uid)?.firstOrNull()
+            val uid = reflectClientUid(config)
+            if (uid < 0) null else context.packageManager.getPackagesForUid(uid)?.firstOrNull()
         } catch (_: Throwable) { null }
     }
 
@@ -716,6 +720,13 @@ class EqualizerEngine private constructor(context: Context) {
     private val isActiveMethod by lazy {
         try {
             AudioPlaybackConfiguration::class.java.getMethod("isActive").also { it.isAccessible = true }
+        } catch (t: Throwable) { null }
+    }
+    // getClientUid() is @SystemApi (hidden) on compileSdk 34 — same treatment as
+    // the session-id methods above: reflect, and fall back gracefully if blocked.
+    private val clientUidMethod by lazy {
+        try {
+            AudioPlaybackConfiguration::class.java.getMethod("getClientUid").also { it.isAccessible = true }
         } catch (t: Throwable) { null }
     }
 
