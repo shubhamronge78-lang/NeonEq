@@ -1,0 +1,94 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v2.0.0)'
+        required: true
+        default: 'v2.0.0'
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      gradle-version: '8.5'
+
+    - name: Build Debug APK
+      working-directory: conversations/6a7a961312b12b330076a6ce/android-eq
+      run: |
+        chmod +x gradlew
+        ./gradlew assembleDebug --no-daemon -x test
+
+    - name: Rename APK with version
+      run: |
+        VERSION="${{ github.ref_name }}"
+        if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        fi
+        VERSION="${VERSION#v}"
+        cp conversations/6a7a961312b12b330076a6ce/android-eq/app/build/outputs/apk/debug/app-debug.apk "NeonEQ-v${VERSION}.apk"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "APK_FILE=NeonEQ-v${VERSION}.apk" >> $GITHUB_ENV
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ env.VERSION }}
+        name: "Neon EQ v${{ env.VERSION }}"
+        body: |
+          # 🎧 Neon EQ v${{ env.VERSION }}
+
+          ## 📦 Installation
+          1. Download the APK file below
+          2. Enable "Install from unknown sources" in Android Settings
+          3. Tap the downloaded APK to install
+          4. Grant audio permissions when prompted
+          5. Toggle the EQ on and enjoy!
+
+          ## ✨ What's New in 2.0.0
+          - 🎯 **Per-app audio profiles** — auto-switch presets based on which app is playing
+          - ✏️ **Custom presets** — create, rename, duplicate, reorder, share & import
+          - 📳 **Haptic fine-tuning** — feel a tick at every dB step while dragging bands
+          - 📱 **Home screen widget + Quick Settings tile**
+          - 💾 **Backup & Restore** — full-state export/import
+          - 📊 **Visualizer styles** — Bars, Wave & Circle
+          - 🔊 **Speaker-safe effects** — Bass/Virtualizer/Loudness capped at 300 with preamp compensation
+          - 🌙 **Glass-morphism UI overhaul** — neon cards, gradient headers, AMOLED black
+
+          ## ✨ Core Features
+          - System-wide audio equalization (all apps)
+          - 10 built-in presets + unlimited custom presets
+          - 5/10/15/31 band equalizer
+          - Auto-apply last preset on startup
+          - Neon AMOLED dark theme
+          - Background foreground service
+
+          ## 📋 Requirements
+          - Android 5.0+ (API 21+)
+          - ~10 MB storage space
+
+          ---
+          Built from commit ${{ github.sha }}
+        files: ${{ env.APK_FILE }}
+        prerelease: false
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
