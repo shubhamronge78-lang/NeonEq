@@ -4,15 +4,40 @@ A system-wide audio equalizer for Android with a neon AMOLED UI. Processes ALL d
 
 ## ✨ Features
 
-- 🎚️ **System-wide EQ** — hooks into global audio session (session 0)
-- 🎵 **10 presets** — Flat, Bass Boost, Rock, Pop, Jazz, EDM, Classical, Dance, Bass Extreme, Treble Boost
+- 🎚️ **System-wide EQ** — hooks into global audio session (session 0) with dynamic session polling
+- 🎵 **10 built-in presets** — Flat, Bass Boost, Rock, Pop, Jazz, EDM, Classical, Dance, Bass Extreme, Treble Boost
+- ✏️ **Custom presets** — create, rename, duplicate, reorder, update, delete, share & import (JSON); auto-apply last preset on startup
+- 🎯 **Per-app audio profiles** — auto-switch preset based on which app is playing (see v54 below)
 - 📊 **Selectable bands** — 5, 10, 15, or 31-band equalizer
-- 🔊 **Bass Boost** (0–1000)
-- 🎧 **3D Sound / Virtualizer** (0–1000)
-- 📈 **Loudness Enhancer / Volume Booster** (0–4000)
-- 🌙 **Neon AMOLED dark theme** — cyan/purple/pink gradients on pure black
+- 🔊 **Bass Boost** (0–300, speaker-safe range with preamp compensation)
+- 🎧 **3D Sound / Virtualizer** (0–300)
+- 📈 **Loudness Enhancer / Volume Booster** (0–300)
+- 📊 **Visualizer** — Bars, Wave & Circle styles, on-canvas rendered
+- 📱 **Home screen toggle widget** + **Quick Settings tile** — switch EQ without opening the app
+- 💾 **Backup & Restore** — full-state export/import incl. presets and per-app profiles
+- 🌙 **Glass-morphism AMOLED theme** — neon cards, gradient headers, cyan/purple/pink on pure black
+- 📳 **Haptic fine-tuning** — feel a tick at every dB step while dragging bands
 - 🔧 **Foreground service** — keeps EQ running in background
 - ⚡ **On/off toggle** switch
+
+## 🆕 What's New in Build #54
+
+### 🎯 Per-App Audio Profiles
+
+Assign a preset to any audio app — the EQ switches automatically when that app plays, and restores your previous preset when it stops.
+
+- **How it works:** the engine's existing session-scan loop detects the playing app via `AudioPlaybackConfiguration` client UID (reflection, `Throwable`-guarded) → `PackageManager` package lookup. No new background service or polling.
+- **Assign:** start the app playing audio, open Neon EQ → the **APP PROFILES** card shows the playing app with a row of preset pills. Tap one to assign; tap × on any listed profile to remove.
+- **Manual input always wins** — if you tweak bands, effects, or pick a preset yourself while a profiled app is playing, auto-switching stays suppressed for that app until playback changes.
+- **Detection details:** package resolution uses public `PackageManager` API; reflection (with fallback) for the hidden client-UID call — consistent with the MI-safe session detection approach.
+- **Backup & Restore** includes your per-app profiles.
+
+### 📳 Haptic Fine-Tuning
+
+- Subtle tick at every integer dB step while dragging an EQ band — dial in levels by feel.
+- Light tick on preset selection; double-tap band reset keeps its firmer haptic.
+
+*(Build #53: full glass-morphism UI pass — all dialogs, cards and headers unified under the neon design language.)*
 
 ---
 
