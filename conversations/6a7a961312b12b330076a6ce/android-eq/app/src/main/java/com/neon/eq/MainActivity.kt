@@ -897,7 +897,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #50",
+                        "Neon EQ v1.0 · Build #51",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1080,15 +1080,20 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
+                // Amplitudes are computed ONCE and reused for the main path and
+                // its mirror — halving the per-frame byte-loop cost on low-end CPUs.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
+                val amps = FloatArray(points) { i -> ampFor(i, points) }
                 val path = androidx.compose.ui.graphics.Path()
+                val mirror = androidx.compose.ui.graphics.Path()
                 for (i in 0 until points) {
-                    val amp = ampFor(i, points)
+                    val amp = amps[i]
                     val x = i * stepX
                     val y = size.height / 2f - (amp - 0.03f) * size.height * 0.8f
-                    if (i == 0) path.moveTo(x, y)
-                    else path.lineTo(x, y)
+                    val ym = size.height / 2f + (amp - 0.03f) * size.height * 0.8f * 0.5f
+                    if (i == 0) { path.moveTo(x, y); mirror.moveTo(x, ym) }
+                    else { path.lineTo(x, y); mirror.lineTo(x, ym) }
                 }
                 // Glow underlay: same path, thicker and faint
                 drawPath(
@@ -1102,14 +1107,6 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                 )
                 // Mirrored faint reflection for depth
-                val mirror = androidx.compose.ui.graphics.Path()
-                for (i in 0 until points) {
-                    val amp = ampFor(i, points)
-                    val x = i * stepX
-                    val y = size.height / 2f + (amp - 0.03f) * size.height * 0.8f * 0.5f
-                    if (i == 0) mirror.moveTo(x, y)
-                    else mirror.lineTo(x, y)
-                }
                 drawPath(
                     path = mirror,
                     color = Color(0xFF7C4DFF).copy(alpha = 0.15f),
@@ -1126,6 +1123,8 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
                     brush = Brush.radialGradient(listOf(Color(0xFF7C4DFF), Color(0x007C4DFF)), center = Offset(cx, cy), radius = coreR * 1.6f),
                     radius = coreR * 1.6f, center = Offset(cx, cy)
                 )
+                // Hoisted out of the loop — one list allocation per frame, not 40.
+                val spokeColors = listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))
                 for (i in 0 until spokes) {
                     val amp = ampFor(i, spokes)
                     val angle = (i / spokes.toFloat()) * Math.PI * 2
@@ -1134,7 +1133,7 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
                     val cosA = kotlin.math.cos(angle).toFloat()
                     val sinA = kotlin.math.sin(angle).toFloat()
                     drawLine(
-                        brush = Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))),
+                        brush = Brush.linearGradient(spokeColors),
                         start = Offset(cx + cosA * inner, cy + sinA * inner),
                         end = Offset(cx + cosA * outer, cy + sinA * outer),
                         strokeWidth = 3f,
@@ -1146,6 +1145,8 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
         val slotWidth = size.width / barCount
         val barWidthPx = slotWidth * 0.6f
         val midY = size.height / 2f
+        // Hoisted out of the bar loop — one list allocation per frame, not 32.
+        val barColors = listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))
 
         for (i in 0 until barCount) {
             val amp: Float = if (waveform.isNotEmpty()) {
@@ -1172,7 +1173,7 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
             // Main bar with gradient
             drawRoundRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF)),
+                    colors = barColors,
                     startY = midY - barH / 2f,
                     endY = midY + barH / 2f
                 ),
