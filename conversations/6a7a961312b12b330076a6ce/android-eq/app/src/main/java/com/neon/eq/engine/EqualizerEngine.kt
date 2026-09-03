@@ -188,6 +188,7 @@ class EqualizerEngine private constructor(context: Context) {
 
     private fun rampBands(from: IntArray, to: IntArray) {
         val gen = ++rampGeneration
+        rampActiveUntil = SystemClock.elapsedRealtime() + 250L  // heal must not hard-jump the glide
         audioExecutor.execute {
             var maxDelta = 0
             for (i in to.indices) {
@@ -250,6 +251,7 @@ class EqualizerEngine private constructor(context: Context) {
 
             val fxEnabled = try { sessionEq?.enabled } catch (_: Throwable) { null }
             sb.append("\nsession EQ enabled: ").append(fxEnabled ?: "n/a")
+            sb.append(" | heals: ").append(healCount)
             if (activeProfilePackage != null) sb.append("\nprofile active: ").append(activeProfilePackage)
         } catch (t: Throwable) {
             sb.append("\ndiag error: ").append(t.message)
@@ -901,7 +903,11 @@ class EqualizerEngine private constructor(context: Context) {
 
     // Track whether we've already done a brute-force scan for this audio-playing state.
     // Avoids re-scanning 48 session IDs every 1.5s poll when reflection is blocked.
-    @Volatile private var bruteForceDone = false
+    // Build #62: brute-force retry gate (replaces the once-only flag — a scan
+    // that ran too early, before the session was allocated, never retried).
+    @Volatile private var lastBruteForceAt = 0L
+    @Volatile private var rampActiveUntil = 0L   // drift heal must not fight the preset ramp
+    @Volatile var healCount = 0L                 // surfaced in the diagnostics panel
 
     private fun scanForActiveSessions() {
         try {
@@ -929,12 +935,15 @@ class EqualizerEngine private constructor(context: Context) {
 
             // Method 2: Brute-force fallback — if configs exist (audio is playing) but
             // reflection found no session IDs (hidden API blocked on MIUI), try to
-            // create an Equalizer on sessions 1..48. If it has bands, it's a real
-            // audio session. Only do this once per audio-playing state to avoid churn.
-            if (activeSessionIds.isEmpty() && configs.isNotEmpty() && !bruteForceDone) {
+            // create an Equalizer on candidate sessions. If it has bands, it's a
+            // real audio session. Build #62: retried with a 3s cooldown while
+            // audio plays but nothing is attached (was once per playing state —
+            // a scan that ran before the session was allocated never retried).
+            if (activeSessionIds.isEmpty() && configs.isNotEmpty() && activeFX.isEmpty() &&
+                SystemClock.elapsedRealtime() - lastBruteForceAt > 3000L) {
                 Log.d(TAG, "Reflection found nothing with ${configs.size} configs — brute-force scan")
-                bruteForceDone = true
-                for (sid in 1..48) {
+                lastBruteForceAt = SystemClock.elapsedRealtime()
+                for (sid in 1..64) {
                     if (activeFX.containsKey(sid) || sid == 0) continue
                     try {
                         val testEq = Equalizer(0, sid)
@@ -950,9 +959,6 @@ class EqualizerEngine private constructor(context: Context) {
                     } catch (e: Throwable) { /* session doesn't exist, skip */ }
                 }
             }
-
-            // Reset brute-force flag when no audio is playing so we re-scan next time
-            if (configs.isEmpty()) bruteForceDone = false
 
             // Build #58: visualizer self-heal — if the EQ is enabled and audio is
             // playing but no waveform has arrived for a while, the MIUI capture is
@@ -990,6 +996,37 @@ class EqualizerEngine private constructor(context: Context) {
                     val usable = minOf(numBands, MAX_BANDS)
                     bands = pickBands(anyEQ, bandCount, usable)
                 }
+            }
+
+            // Build #62: MIUI drift self-heal. MIUI can silently disable our
+            // effects or reset band levels (its own audio chain restarting,
+            // effectsframework churn). Every scan: re-assert enabled, and verify
+            // the hardware actually holds our band-0 gain — if not, re-apply the
+            // full state. Skipped while a preset ramp is in flight so the heal
+            // can't hard-jump a ~120ms glide.
+            if (activeFX.isNotEmpty()) {
+                try {
+                    var drifted = false
+                    val idx = bands.getOrNull(0)?.index
+                    val expect = applyPreamp(currentBandLevels.getOrNull(0)?.toInt() ?: 0)
+                    for ((_, sfx) in activeFX) {
+                        try {
+                            if (sfx.equalizer.enabled != currentEnabled) sfx.equalizer.enabled = currentEnabled
+                            if (idx != null && enabled &&
+                                SystemClock.elapsedRealtime() >= rampActiveUntil &&
+                                sfx.equalizer.getBandLevel(idx.toShort()) != expect) drifted = true
+                        } catch (_: Throwable) {}
+                    }
+                    val g = globalEQ  // local copy so Kotlin can smart-cast
+                    if (g != null) {
+                        try { if (g.enabled != currentEnabled) g.enabled = currentEnabled } catch (_: Throwable) {}
+                    }
+                    if (drifted) {
+                        healCount++
+                        Log.w(TAG, "Band-level drift detected (heal #${healCount}) — re-applying full state")
+                        reapplyStateToSessions()
+                    }
+                } catch (t: Throwable) { Log.w(TAG, "drift heal failed: ${t.message}") }
             }
 
             activeSessionCount = activeFX.size
@@ -1050,6 +1087,13 @@ class EqualizerEngine private constructor(context: Context) {
             eq.enabled = currentEnabled
 
             val numBands = eq.numberOfBands.toInt()
+            if (numBands <= 0) {
+                // Build #62: a 0-band equalizer is a stub — attaching it gives a
+                // false "EQ active" status while doing nothing to the audio.
+                Log.w(TAG, "Session $sessionId: EQ has 0 bands (stub) — skipping")
+                try { eq.release() } catch (_: Throwable) {}
+                return
+            }
             val usable = minOf(numBands, MAX_BANDS)
 
             for (i in 0 until minOf(bandCount, usable)) {
