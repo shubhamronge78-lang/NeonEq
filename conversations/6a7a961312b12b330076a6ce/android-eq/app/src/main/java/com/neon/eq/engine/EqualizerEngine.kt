@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
 import android.media.audiofx.*
+import android.os.Build
 import android.os.Handler
 import android.os.SystemClock
 import android.os.Looper
@@ -175,6 +176,54 @@ class EqualizerEngine private constructor(context: Context) {
     private fun applyPreamp(level: Int): Short {
         val adjusted = (level - computePreampDb()).coerceIn(-15, 15)
         return (adjusted * DB_TO_MILLIBEL).toShort()
+    }
+
+    // Build #59: ramped band transitions. Hard gain jumps (preset switch, per-app
+    // profile auto-switch, auto-apply on startup) click/pop on many devices and
+    // sound harsh on live audio. We ease the hardware curve from the old shape
+    // to the new one across ~120ms with a smoothstep profile instead. The
+    // generation counter lets a newer ramp — or a direct band drag — cancel the
+    // in-flight one, so user input always wins.
+    @Volatile private var rampGeneration = 0
+
+    private fun rampBands(from: IntArray, to: IntArray) {
+        val gen = ++rampGeneration
+        audioExecutor.execute {
+            var maxDelta = 0
+            for (i in to.indices) {
+                val d = kotlin.math.abs(to[i] - from.getOrElse(i) { 0 })
+                if (d > maxDelta) maxDelta = d
+            }
+            // Micro-adjustments (<=2dB) apply instantly — no perceptible click,
+            // and ramping them would just add lag.
+            if (maxDelta <= 2) { applyBands(to); return@execute }
+            val steps = 8
+            for (s in 1..steps) {
+                if (rampGeneration != gen) return@execute  // superseded — newer ramp or drag
+                val t = s.toFloat() / steps
+                val eased = t * t * (3f - 2f * t)   // smoothstep: soft start & end
+                val frame = IntArray(to.size) { i ->
+                    val start = from.getOrElse(i) { 0 }
+                    start + ((to[i] - start) * eased).toInt()
+                }
+                applyBands(frame)
+                if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { return@execute }
+            }
+        }
+    }
+
+    // Apply one full band frame (with preamp compensation) to the global EQ and
+    // every active per-session EQ.
+    private fun applyBands(levels: IntArray) {
+        for (band in levels.indices) {
+            val millibel = applyPreamp(levels[band])
+            bands.getOrNull(band)?.let { bi ->
+                try { globalEQ?.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
+                for ((_, sfx) in activeFX) {
+                    try { sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
+                }
+            }
+        }
     }
 
 
@@ -749,6 +798,28 @@ class EqualizerEngine private constructor(context: Context) {
     private fun startSessionPolling() {
         pollHandler.removeCallbacks(pollRunnable)
         pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+
+        // Build #59: react to playback config changes the moment they happen
+        // instead of waiting for the 1.5s poll — the first second of every new
+        // track used to play unprocessed while the poller caught up. Public
+        // API on 26+; the 1.5s polling stays as the MIUI fallback.
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.registerAudioPlaybackCallback(object : AudioManager.AudioPlaybackCallback() {
+                    override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>) {
+                        // Scan on the poll handler so session attach stays
+                        // single-threaded with the regular polling.
+                        pollHandler.post {
+                            try { scanForActiveSessions() } catch (t: Throwable) { Log.e(TAG, "playback-callback scan failed", t) }
+                        }
+                    }
+                }, null)
+                Log.d(TAG, "AudioPlaybackCallback registered — instant session attach")
+            } catch (t: Throwable) {
+                Log.w(TAG, "registerAudioPlaybackCallback failed: ${t.message}")
+            }
+        }
     }
 
     private fun stopSessionPolling() {
@@ -1009,6 +1080,7 @@ class EqualizerEngine private constructor(context: Context) {
 
     fun setBandLevel(band: Int, level: Short) {
         markUserOverrideIfApplicable()
+        rampGeneration++   // a direct drag supersedes any in-flight preset ramp
         currentBandLevels[band] = level
         persistLevels()
         val millibel = applyPreamp(level.toInt())
@@ -1115,21 +1187,17 @@ class EqualizerEngine private constructor(context: Context) {
     // far less thread contention and native API churn.
     fun setBandLevels(levels: ShortArray) {
         markUserOverrideIfApplicable()
+        // Capture the pre-change curve BEFORE overwriting so the hardware can
+        // ramp from old → new (Build #59 — click-free preset switches).
+        // currentBandLevels jumps to the target immediately so the UI stays
+        // truthful; only the hardware curve eases over ~120ms.
+        val from = IntArray(levels.size) { i -> currentBandLevels.getOrNull(i)?.toInt() ?: 0 }
+        val to = IntArray(levels.size) { i -> levels[i].toInt() }
         for (i in levels.indices) {
             if (i < currentBandLevels.size) currentBandLevels[i] = levels[i]
         }
         persistLevels()
-        audioExecutor.execute {
-            for (band in 0 until levels.size) {
-                val millibel = applyPreamp(levels[band].toInt())
-                bands.getOrNull(band)?.let { bi ->
-                    try { globalEQ?.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
-                    for ((_, sfx) in activeFX) {
-                        try { sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
-                    }
-                }
-            }
-        }
+        rampBands(from, to)
     }
 
     fun setEnabled(on: Boolean) {

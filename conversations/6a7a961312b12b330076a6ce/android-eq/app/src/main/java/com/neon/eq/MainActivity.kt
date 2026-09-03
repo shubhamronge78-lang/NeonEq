@@ -1055,7 +1055,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #58",
+                        "Neon EQ v1.0 · Build #59",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1229,7 +1229,7 @@ fun BreathingGlow(active: Boolean) {
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
 // Degrades to a gentle idle pulse if no waveform data is available yet (permission
-// denied, unsupported device, or nothing playing) — and since Build #58 also when
+// denied, unsupported device, or nothing playing) — and since Build #59 also when
 // the EQ toggle is OFF: the capture is disabled then, so the last buffer is stale
 // and drawing it would look frozen. `active` gates which mode we render.
 // Includes falling peak markers that decay slowly for a more "pro audio" look.
@@ -1247,7 +1247,7 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
     val peaks = remember { FloatArray(barCount) { 0f } }
     var tick by remember { mutableIntStateOf(0) }
 
-    // ---- Build #58: zero steady-state allocations in the visualizer ----
+    // ---- Build #59: zero steady-state allocations in the visualizer ----
     // This composable redraws EVERY frame (idle breathing + live waveform),
     // so every object below is created once and reused. The previous version
     // allocated per frame: wave = 2 Paths + 1 FloatArray + 3 brushes,
@@ -1296,7 +1296,7 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
-                // Build #58: paths, amp buffer and brushes are hoisted and
+                // Build #59: paths, amp buffer and brushes are hoisted and
                 // reset() per frame — the wave costs zero allocations now.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
@@ -1418,7 +1418,7 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #58: allocation-free hot path ----
+    // ---- Build #59: allocation-free hot path ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the
