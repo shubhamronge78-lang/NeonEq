@@ -92,7 +92,9 @@ class EqualizerEngine private constructor(context: Context) {
     // capture and re-attach it; visRetryCount grows the retry backoff so a
     // device that never delivers data doesn't get hammered.
     @Volatile private var lastWaveformAt = 0L
-    private var visRetryCount = 0
+    // @Volatile: written by the audio capture thread (reset on every healthy
+    // callback) and by the session-poll thread (incremented on stall retries).
+    @Volatile private var visRetryCount = 0
 
     @Volatile var bandCount = prefs.getInt(KEY_BAND_COUNT, 5)
         private set
