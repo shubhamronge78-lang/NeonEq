@@ -307,6 +307,77 @@ class EqualizerEngine private constructor(context: Context) {
         return true
     }
 
+    // ── Full backup / restore ──
+
+    // Export EVERYTHING — band levels, effect strengths, selected preset,
+    // custom presets, and settings toggles — as one JSON blob for device
+    // migration or safekeeping.
+    fun exportFullBackup(): String {
+        val root = org.json.JSONObject()
+        root.put("type", "neoneq_backup")
+        root.put("version", 1)
+        root.put("levels", currentBandLevels.joinToString(","))
+        root.put("bass", currentBassBoost)
+        root.put("virt", currentVirtualizer)
+        root.put("loud", currentLoudness)
+        root.put("preset", selectedPresetName)
+        root.put("enabled", currentEnabled)
+        root.put("startOnBoot", isStartOnBoot())
+        root.put("autoApplyPreset", isAutoApplyPreset())
+        root.put("showVisualizer", isShowVisualizer())
+        root.put("showGlow", isShowGlow())
+        // Embed custom presets using the same format Presets.exportToJson emits.
+        root.put("presets", org.json.JSONObject(exportCustomPresets()).optJSONArray("presets"))
+        return root.toString(2)
+    }
+
+    // Restore from a full backup blob. Returns false if the JSON is not a
+    // valid NeonEQ backup. Custom presets are replaced wholesale (backup
+    // semantics, not merge) — current levels and effects are applied live.
+    fun importFullBackup(json: String): Boolean {
+        try {
+            val root = org.json.JSONObject(json)
+            if (root.optString("type") != "neoneq_backup") return false
+
+            val levelsStr = root.optString("levels", "")
+            if (levelsStr.isNotEmpty()) {
+                val lv = ShortArray(31) { 0 }
+                levelsStr.split(",").forEachIndexed { i, s ->
+                    if (i < 31) lv[i] = (s.trim().toIntOrNull() ?: 0).toShort()
+                }
+                setBandLevels(lv)
+            }
+            setBassBoost(root.optInt("bass", 0))
+            setVirtualizer(root.optInt("virt", 0))
+            setLoudness(root.optInt("loud", 0))
+            setSelectedPresetName(root.optString("preset", "Flat"))
+            setStartOnBoot(root.optBoolean("startOnBoot", true))
+            setAutoApplyPreset(root.optBoolean("autoApplyPreset", false))
+            setShowVisualizer(root.optBoolean("showVisualizer", true))
+            setShowGlow(root.optBoolean("showGlow", true))
+
+            val arr = root.optJSONArray("presets")
+            if (arr != null) {
+                val restored = mutableListOf<Presets.CustomPreset>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val levelsArr = obj.optJSONArray("levels") ?: continue
+                    restored.add(Presets.CustomPreset(
+                        name = obj.optString("name", "Imported"),
+                        levels = ShortArray(31) { idx -> levelsArr.optInt(idx, 0).toShort() },
+                        bassBoost = obj.optInt("bass", 0),
+                        virtualizer = obj.optInt("virt", 0),
+                        loudness = obj.optInt("loud", 0)
+                    ))
+                }
+                persistCustomPresets(restored)
+            }
+            return true
+        } catch (_: Throwable) {
+            return false
+        }
+    }
+
     // ── Export / Import ──
 
     // Export ALL custom presets as a shareable JSON string.

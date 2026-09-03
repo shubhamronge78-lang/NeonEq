@@ -220,6 +220,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var showVisualizer by remember { mutableStateOf(engine.isShowVisualizer()) }
     var showGlow by remember { mutableStateOf(engine.isShowGlow()) }
     var showImportDialog by remember { mutableStateOf(false) }
+    var showRestoreDialog by remember { mutableStateOf(false) }
+    var restoreJsonInput by remember { mutableStateOf("") }
+    var restoreResultMsg by remember { mutableStateOf("") }
     var importJsonInput by remember { mutableStateOf("") }
     var importResultMsg by remember { mutableStateOf("") }
 
@@ -824,8 +827,52 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         )
                     }
                     Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        Text(
+                            "⇩ Backup",
+                            fontSize = 12.sp,
+                            color = Color(0xFF00E5FF),
+                            modifier = Modifier.clickable {
+                                try {
+                                    val json = engine.exportFullBackup()
+                                    val file = File(context.cacheDir, "neoneq_backup.json")
+                                    file.writeText(json)
+                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                    val share = Intent(Intent.ACTION_SEND).apply {
+                                        type = "application/json"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(share, "Backup Neon EQ"))
+                                } catch (_: Throwable) {
+                                    scope2.launch { snackbarHost.showSnackbar("Backup failed") }
+                                }
+                            }
+                        )
+                        Text(
+                            "⇪ Restore",
+                            fontSize = 12.sp,
+                            color = Color(0xFF00E5FF),
+                            modifier = Modifier.clickable {
+                                restoreJsonInput = ""
+                                restoreResultMsg = ""
+                                showRestoreDialog = true
+                            }
+                        )
+                    }
                     Text(
-                        "Neon EQ v1.0 · Build #48",
+                        "Backup saves bands, effects, presets & settings",
+                        fontSize = 9.sp,
+                        color = Color.Gray,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Neon EQ v1.0 · Build #49",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -877,6 +924,56 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             },
             dismissButton = {
                 TextButton(onClick = { showImportDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showRestoreDialog) {
+        AlertDialog(
+            onDismissRequest = { showRestoreDialog = false },
+            title = { Text("Restore backup", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Paste a Neon EQ backup JSON to restore all settings. This replaces current bands, effects, presets and toggles.", fontSize = 11.sp, color = Color.Gray)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = restoreJsonInput,
+                        onValueChange = { restoreJsonInput = it },
+                        label = { Text("Backup JSON") },
+                        minLines = 3,
+                        maxLines = 8
+                    )
+                    if (restoreResultMsg.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(restoreResultMsg, fontSize = 11.sp, color = Color(0xFFFF4081))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ok = engine.importFullBackup(restoreJsonInput.trim())
+                    if (ok) {
+                        // Re-sync all local UI state from the restored engine config
+                        selectedPreset = engine.selectedPresetName
+                        customPresets = engine.listCustomPresets()
+                        bassBoost = engine.currentBassBoostValue().coerceIn(0, 300)
+                        virtualizer = engine.currentVirtualizerValue().coerceIn(0, 300)
+                        loudness = engine.currentLoudnessValue().coerceIn(0, 300)
+                        startOnBoot = engine.isStartOnBoot()
+                        autoApplyPreset = engine.isAutoApplyPreset()
+                        showVisualizer = engine.isShowVisualizer()
+                        showGlow = engine.isShowGlow()
+                        val lv = engine.currentLevelsSnapshot()
+                        animateLevelsTo(FloatArray(31) { i -> lv.getOrElse(i) { 0 }.toFloat() })
+                        scope2.launch { snackbarHost.showSnackbar("Backup restored") }
+                        showRestoreDialog = false
+                    } else {
+                        restoreResultMsg = "Invalid backup JSON"
+                    }
+                }) { Text("Restore") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestoreDialog = false }) { Text("Cancel") }
             }
         )
     }
