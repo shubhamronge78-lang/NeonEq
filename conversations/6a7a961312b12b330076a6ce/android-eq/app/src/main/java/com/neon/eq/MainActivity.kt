@@ -19,6 +19,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,7 +38,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.neon.eq.engine.EQService
@@ -330,14 +335,29 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("NEON EQ", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E5FF))
-                    Spacer(Modifier.width(8.dp))
+                    // Gradient wordmark — the signature of the modernized header
                     Text(
-                        "⚙",
-                        fontSize = 20.sp,
-                        color = Color(0xFF7C4DFF),
-                        modifier = Modifier.clickable { showSettings = true }
+                        buildAnnotatedString {
+                            withStyle(SpanStyle(brush = Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))))) {
+                                append("NEON EQ")
+                            }
+                        },
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 2.sp
                     )
+                    Spacer(Modifier.width(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF7C4DFF).copy(alpha = 0.15f))
+                            .border(1.dp, Color(0xFF7C4DFF).copy(alpha = 0.4f), CircleShape)
+                            .clickable { showSettings = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("⚙", fontSize = 16.sp, color = Color(0xFFB39DFF))
+                    }
                 }
                 Switch(
                     checked = enabled,
@@ -360,11 +380,14 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Live spectrum visualizer ──
         if (showVisualizer) {
-            VisualizerBars(waveform = waveform, active = enabled, style = visStyle)
+            NeonCard {
+                VisualizerBars(waveform = waveform, active = enabled, style = visStyle)
+            }
             Spacer(Modifier.height(16.dp))
         }
 
         // ── Presets ──
+        NeonCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -376,7 +399,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     "↺ Reset All",
                     fontSize = 11.sp,
                     color = Color(0xFFFF4081),
-                    modifier = Modifier.clickable {
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFFFF4081).copy(alpha = 0.10f))
+                        .clickable {
                         animateLevelsTo(FloatArray(31) { 0f })
                         selectedPreset = "Flat"
                         engine.setSelectedPresetName("Flat")
@@ -390,7 +417,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     "+ Save",
                     fontSize = 11.sp,
                     color = Color(0xFF00E5FF),
-                    modifier = Modifier.clickable {
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFF00E5FF).copy(alpha = 0.10f))
+                        .clickable {
                         presetNameInput = ""
                         showSaveDialog = true
                     }
@@ -400,7 +431,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     "↥ Share",
                     fontSize = 11.sp,
                     color = Color(0xFF00E5FF),
-                    modifier = Modifier.clickable {
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFF00E5FF).copy(alpha = 0.10f))
+                        .clickable {
                         val json = engine.exportCustomPresets()
                         if (customPresets.isEmpty()) {
                             scope2.launch { snackbarHost.showSnackbar("No custom presets to share") }
@@ -426,7 +461,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     "↧ Import",
                     fontSize = 11.sp,
                     color = Color(0xFF00E5FF),
-                    modifier = Modifier.clickable {
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFF00E5FF).copy(alpha = 0.10f))
+                        .clickable {
                         importJsonInput = ""
                         importResultMsg = ""
                         showImportDialog = true
@@ -478,6 +517,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 )
             }
         }
+        }
 
         Spacer(Modifier.height(16.dp))
 
@@ -507,6 +547,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // ── Canvas-based EQ — ONE composable, no Slider widgets ──
         val bandList = bands.take(bandCount)
 
+        NeonCard {
         CanvasEQ(
             bandCount = bandCount,
             bands = bandList,
@@ -528,10 +569,14 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 engine.setSelectedPresetName("Custom")
             }
         )
+        }
 
         Spacer(Modifier.height(16.dp))
 
         // ── Effect sliders ──
+        NeonCard {
+            Text("EFFECTS", fontSize = 11.sp, color = Color(0xFFFF4081), fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+            Spacer(Modifier.height(4.dp))
         EffectSlider("BASS BOOST", bassBoost, 0..300) { v ->
             bassBoost = v
             engine.setBassBoost(v)
@@ -540,9 +585,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             virtualizer = v
             engine.setVirtualizer(v)
         }
-        EffectSlider("LOUDNESS", loudness, 0..300) { v ->
-            loudness = v
-            engine.setLoudness(v)
+            EffectSlider("LOUDNESS", loudness, 0..300) { v ->
+                loudness = v
+                engine.setLoudness(v)
+            }
         }
 
         Spacer(Modifier.height(32.dp))
@@ -897,7 +943,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #51",
+                        "Neon EQ v1.0 · Build #52",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1007,6 +1053,27 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 // Soft pulsing radial glow behind the header — brighter/faster when the EQ is on,
 // dim and idle when off. Purely cosmetic, but this is the "alive" feeling that
 // makes a neon UI actually feel neon instead of just colored.
+// Reusable "glass card" container — the backbone of the modernized UI.
+// Elevated tonal surface with a subtle vertical gradient and a hair-thin
+// neon border, floating on the AMOLED black background.
+@Composable
+fun NeonCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.verticalGradient(listOf(Color(0xFF12121F), Color(0xFF0C0C15)))
+            )
+            .border(1.dp, Color(0xFF00E5FF).copy(alpha = 0.10f), RoundedCornerShape(20.dp))
+            .padding(12.dp),
+        content = content
+    )
+}
+
 @Composable
 fun BreathingGlow(active: Boolean) {
     val infinite = rememberInfiniteTransition(label = "glow")
@@ -1331,8 +1398,13 @@ fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .clickable(onClick = onClick)
+            .clip(RoundedCornerShape(16.dp))
             .background(
-                if (selected) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF1A1A2E),
+                if (selected) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF1A1A2E)
+            )
+            .border(
+                1.dp,
+                if (selected) Color(0xFF00E5FF).copy(alpha = 0.6f) else Color(0xFF00E5FF).copy(alpha = 0.12f),
                 RoundedCornerShape(16.dp)
             )
             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -1374,8 +1446,13 @@ fun CustomPresetChip(
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
             .background(
-                if (selected) Color(0xFF7C4DFF).copy(alpha = 0.2f) else Color(0xFF1A1A2E),
+                if (selected) Color(0xFF7C4DFF).copy(alpha = 0.2f) else Color(0xFF1A1A2E)
+            )
+            .border(
+                1.dp,
+                if (selected) Color(0xFF7C4DFF).copy(alpha = 0.6f) else Color(0xFF7C4DFF).copy(alpha = 0.15f),
                 RoundedCornerShape(16.dp)
             )
             .padding(horizontal = 4.dp)
