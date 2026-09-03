@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
 import android.media.audiofx.*
 import android.os.Handler
+import android.os.SystemClock
 import android.os.Looper
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
@@ -85,6 +86,14 @@ class EqualizerEngine private constructor(context: Context) {
     private var visualizer: Visualizer? = null
     var onWaveform: ((ByteArray) -> Unit)? = null
 
+    // Build #58: MIUI silently stops Visualizer callbacks (screen-off, track
+    // change, output switch) without any error — the object stays "enabled" but
+    // delivers nothing. lastWaveformAt lets the session poller detect a stalled
+    // capture and re-attach it; visRetryCount grows the retry backoff so a
+    // device that never delivers data doesn't get hammered.
+    @Volatile private var lastWaveformAt = 0L
+    private var visRetryCount = 0
+
     @Volatile var bandCount = prefs.getInt(KEY_BAND_COUNT, 5)
         private set
     @Volatile var bands: List<BandInfo> = emptyList()
@@ -139,17 +148,26 @@ class EqualizerEngine private constructor(context: Context) {
         try { prefs.edit().putInt(key, value).apply() } catch (_: Throwable) { }
     }
 
-    // Pre-amp compensation: when bass boost, virtualizer, or loudness are active,
-    // they add gain on top of the EQ. On phone speakers this causes clipping/distortion.
-    // We subtract a computed offset from all band levels sent to the hardware so the
-    // total output stays within the speaker's headroom. The UI shows the user's intended
-    // levels — only the hardware values are reduced.
+    // Pre-amp compensation: bass boost and very hot band boosts can push the output
+    // past a small speaker's headroom. We subtract a small offset from the levels sent
+    // to the hardware; the UI still shows the user's intended values.
+    // Build #58 fix: LoudnessEnhancer and Virtualizer are NOT compensated anymore.
+    // Loudness is the user explicitly asking for more volume — subtracting gain for
+    // it made "EQ on" quieter than "EQ off" with the default 150/150/150 settings
+    // (reported on Redmi 10C). The virtualizer is a stereo-width effect with
+    // negligible level gain. Bass boost (the actual distortion source) is still
+    // compensated but at half the old rate, and band boosts only count above +6dB —
+    // so typical settings are now transparent, and only extreme shapes get trimmed.
     private fun computePreampDb(): Int {
         var preamp = 0
-        if (currentBassBoost > 0) preamp += currentBassBoost / 100   // ~1dB per 100 strength
-        if (currentVirtualizer > 0) preamp += currentVirtualizer / 200  // ~0.5dB per 100
-        if (currentLoudness > 0) preamp += currentLoudness / 100     // ~1dB per 100mB
-        return preamp.coerceAtMost(6)  // never reduce by more than -6dB total
+        if (currentBassBoost > 0) preamp += currentBassBoost / 200   // ~0.5dB per 100 strength
+        var maxBand = 0
+        for (i in currentBandLevels.indices) {
+            val v = currentBandLevels[i].toInt()
+            if (v > maxBand) maxBand = v
+        }
+        if (maxBand > 6) preamp += (maxBand - 6) / 2                  // half the excess above +6dB
+        return preamp.coerceAtMost(4)  // never reduce by more than -4dB total
     }
 
     private fun applyPreamp(level: Int): Short {
@@ -700,15 +718,22 @@ class EqualizerEngine private constructor(context: Context) {
                 captureSize = range[1].coerceAtMost(1024).coerceAtLeast(range[0])
                 setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
                     override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
+                        // Data is flowing — capture is healthy, reset the retry backoff.
+                        lastWaveformAt = SystemClock.elapsedRealtime()
+                        visRetryCount = 0
                         waveform?.let { data -> mainHandler.post { onWaveform?.invoke(data) } }
                     }
                     override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) { }
                 }, (Visualizer.getMaxCaptureRate() / 2).coerceAtLeast(1), true, false)
                 enabled = true
             }
+            // Grace period so the stall detector doesn't fire before the first callback.
+            lastWaveformAt = SystemClock.elapsedRealtime()
         } catch (t: Throwable) {
             Log.w(TAG, "attachVisualizer failed: ${t.message}")
             visualizer = null
+            // Back the stall detector off — permission may not be granted yet.
+            lastWaveformAt = SystemClock.elapsedRealtime()
         }
     }
 
@@ -810,6 +835,18 @@ class EqualizerEngine private constructor(context: Context) {
 
             // Reset brute-force flag when no audio is playing so we re-scan next time
             if (configs.isEmpty()) bruteForceDone = false
+
+            // Build #58: visualizer self-heal — if the EQ is enabled and audio is
+            // playing but no waveform has arrived for a while, the MIUI capture is
+            // silently dead. Re-attach it, with a growing backoff on repeat failures.
+            if (enabled && configs.isNotEmpty() &&
+                SystemClock.elapsedRealtime() - lastWaveformAt > 4000L * (visRetryCount + 1)) {
+                Log.w(TAG, "Visualizer stalled ${(SystemClock.elapsedRealtime() - lastWaveformAt) / 1000}s — re-attaching")
+                audioExecutor.execute {
+                    try { attachVisualizer() } catch (t: Throwable) { Log.w(TAG, "self-heal re-attach failed: ${t.message}") }
+                }
+                visRetryCount = (visRetryCount + 1).coerceAtMost(14)  // cap backoff at ~60s
+            }
 
             val stale = activeFX.keys - activeSessionIds
             for (id in stale) {
