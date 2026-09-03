@@ -34,6 +34,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -1051,7 +1055,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #55",
+                        "Neon EQ v1.0 · Build #56",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1397,20 +1401,63 @@ fun CanvasEQ(
     onLevelChange: (Int, Float) -> Unit,
     onResetBand: (Int) -> Unit = {}
 ) {
-    val bgColor = Color(0xFF1A1A2E)
-    val gradientTop = Color(0xFF7C4DFF)
-    val gradientBottom = Color(0xFF00E5FF)
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // Everything below is computed in real pixels derived from dp, and — critically —
-    // touch mapping and drawing both use the exact SAME "track" rectangle. Previously
-    // touch used the full canvas height while the visual bar was confined to a fixed
-    // 180px strip near the bottom regardless of screen density/canvas size, so where
-    // you touched and where the bar actually moved didn't match. Fixed here.
+    // ---- Build #56: allocation-free hot path ----
+    // The previous version created a new android.graphics.Paint for EVERY band
+    // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
+    // gradient brush per band. Everything below is hoisted and reused, so the
+    // steady-state draw allocates nothing measurable.
+    val labelPaint = remember {
+        android.graphics.Paint().apply {
+            isAntiAlias = true
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+    }
+    val curvePath = remember { Path() }
+    val centerLinePath = remember { Path() }
+    val centerDash = remember(density) { with(density) { PathEffect.dashPathEffect(3.dp.toPx(), 5.dp.toPx()) } }
+    val bgColor = Color(0xFF1A1A2E)
+    val bgDim = bgColor.copy(alpha = 0.45f)
+    val barColors = remember { listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF)) }
+    val curveColors = remember { listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF)) }
+    val curveGlow = Color(0xFF00E5FF).copy(alpha = 0.20f)
+    val centerColor = Color(0xFF00E5FF).copy(alpha = 0.16f)
+    val bubbleBg = Color(0xFF00E5FF).copy(alpha = 0.16f)
+    val bubbleBorder = Color(0xFF00E5FF).copy(alpha = 0.55f)
+    val bubbleText = android.graphics.Color.rgb(220, 248, 255)
+    val grayLabel = android.graphics.Color.rgb(140, 140, 158)
+    val grayDim = android.graphics.Color.rgb(88, 88, 102)
+    val cyanLabel = android.graphics.Color.rgb(0, 229, 255)
+    val cyanDim = android.graphics.Color.rgb(0, 145, 158)
+    val topsX = remember { FloatArray(31) }
+    val topsY = remember { FloatArray(31) }
+    var activeBand by remember { mutableIntStateOf(-1) }
+
+    // Frequency labels are static per band set — cache the strings once instead
+    // of building them for every band on every frame.
+    val freqLabels = remember(bands, bandCount) {
+        Array(bandCount) { i ->
+            val f = bands.getOrNull(i)?.freq
+            when {
+                f == null -> ""
+                f >= 1000 -> "${f / 1000}k"
+                else -> "$f"
+            }
+        }
+    }
+
     val barWidthPx = with(density) { 10.dp.toPx() }
     val minHeightPx = with(density) { 3.dp.toPx() }
     val labelAreaPx = with(density) { 46.dp.toPx() }
+    val cornerPx = with(density) { 3.dp.toPx() }
+    val freqSizePx = with(density) { 11.sp.toPx() }
+    val lvlSizePx = with(density) { 10.sp.toPx() }
+    val curveGlowPx = with(density) { 6.dp.toPx() }
+    val curvePx = with(density) { 2.dp.toPx() }
+    val centerPx = with(density) { 1.dp.toPx() }
+    val handlePx = with(density) { 4.dp.toPx() }
 
     fun levelFromY(y: Float, trackHeight: Float): Float {
         val clampedY = y.coerceIn(0f, trackHeight)
@@ -1431,14 +1478,18 @@ fun CanvasEQ(
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
                         val lvl = levelFromY(offset.y, trackHeight)
                         onLevelChange(band, lvl)
+                        activeBand = band
                         lastTick = round(lvl).toInt()
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
+                    onDragEnd = { activeBand = -1 },
+                    onDragCancel = { activeBand = -1 },
                     onDrag = { change, _ ->
                         val slotWidth = size.width / bandCount
                         val band = (change.position.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
                         val lvl = levelFromY(change.position.y, trackHeight)
                         onLevelChange(band, lvl)
+                        activeBand = band
                         // Fine-tuning haptic: a subtle tick as the band crosses
                         // each integer dB step — you can feel the steps without looking.
                         val tickAt = round(lvl).toInt()
@@ -1470,6 +1521,17 @@ fun CanvasEQ(
         val slotWidth = size.width / bandCount
         val trackHeight = size.height - labelAreaPx
 
+        // 0 dB dashed reference line across the track.
+        val centerY = trackHeight / 2f
+        centerLinePath.reset()
+        centerLinePath.moveTo(0f, centerY)
+        centerLinePath.lineTo(size.width, centerY)
+        drawPath(centerLinePath, color = centerColor, style = Stroke(width = centerPx, pathEffect = centerDash))
+
+        // ONE gradient brush spans the full track for all bars — purple at the
+        // top, cyan at the bottom — instead of a fresh brush per band per frame.
+        val barBrush = Brush.verticalGradient(barColors, 0f, trackHeight)
+
         for (i in 0 until bandCount) {
             val level = levels.getOrElse(i) { 0f }
             val normLevel = (level + 15f) / 30f
@@ -1477,50 +1539,107 @@ fun CanvasEQ(
             val barH = (trackHeight * normLevel).coerceAtLeast(minHeightPx)
             val y = trackHeight - barH
 
+            topsX[i] = x + barWidthPx / 2f
+            topsY[i] = y
+
+            val dimmed = activeBand >= 0 && i != activeBand
+
             // Background bar — spans the FULL track, same rect touch mapping uses.
             drawRoundRect(
-                color = bgColor,
+                color = if (dimmed) bgDim else bgColor,
                 topLeft = Offset(x, 0f),
                 size = Size(barWidthPx, trackHeight),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
             )
 
             // Gradient fill bar
             drawRoundRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(gradientTop, gradientBottom),
-                    startY = y,
-                    endY = y + barH
-                ),
+                brush = barBrush,
                 topLeft = Offset(x, y),
                 size = Size(barWidthPx, barH),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
             )
 
             // Frequency + level labels, drawn in the reserved label area below the track.
-            val band = bands.getOrNull(i)
-            val freqText = if (band != null) {
-                if (band.freq >= 1000) "${band.freq / 1000}k" else "${band.freq}"
-            } else ""
             drawIntoCanvas {
-                val paint = android.graphics.Paint().apply {
-                    color = android.graphics.Color.GRAY
-                    textSize = with(density) { 11.sp.toPx() }
-                    textAlign = android.graphics.Paint.Align.CENTER
-                }
+                labelPaint.textSize = freqSizePx
+                labelPaint.color = if (dimmed) grayDim else grayLabel
                 it.nativeCanvas.drawText(
-                    freqText,
+                    freqLabels.getOrElse(i) { "" },
                     x + barWidthPx / 2f,
                     trackHeight + labelAreaPx * 0.45f,
-                    paint
+                    labelPaint
                 )
-                paint.color = android.graphics.Color.rgb(0, 229, 255)
-                paint.textSize = with(density) { 10.sp.toPx() }
+                labelPaint.textSize = lvlSizePx
+                labelPaint.color = if (dimmed) cyanDim else cyanLabel
                 it.nativeCanvas.drawText(
                     "${round(level).toInt()}",
                     x + barWidthPx / 2f,
                     trackHeight + labelAreaPx * 0.85f,
-                    paint
+                    labelPaint
+                )
+            }
+        }
+
+        // Smooth neon curve traced through the band tops — quadratic beziers with
+        // band peaks as control points, glowing wide underlay + crisp gradient on top.
+        if (bandCount > 1) {
+            curvePath.reset()
+            curvePath.moveTo(topsX[0], topsY[0])
+            for (i in 1 until bandCount - 1) {
+                val midX = (topsX[i] + topsX[i + 1]) / 2f
+                val midY = (topsY[i] + topsY[i + 1]) / 2f
+                curvePath.quadraticBezierTo(topsX[i], topsY[i], midX, midY)
+            }
+            curvePath.lineTo(topsX[bandCount - 1], topsY[bandCount - 1])
+            drawPath(curvePath, color = curveGlow, style = Stroke(width = curveGlowPx, cap = StrokeCap.Round))
+            drawPath(curvePath, brush = Brush.horizontalGradient(curveColors), style = Stroke(width = curvePx, cap = StrokeCap.Round))
+        }
+
+        // Active-band emphasis: glow halo + handle dot + floating value bubble.
+        if (activeBand in 0 until bandCount) {
+            val cx = topsX[activeBand]
+            val topY = topsY[activeBand]
+            val glowR = barWidthPx * 2.2f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    listOf(Color(0xFF00E5FF).copy(alpha = 0.35f), Color(0x0000E5FF)),
+                    center = Offset(cx, topY),
+                    radius = glowR
+                ),
+                radius = glowR,
+                center = Offset(cx, topY)
+            )
+            drawCircle(color = Color(0xFF00E5FF), radius = handlePx, center = Offset(cx, topY))
+
+            val lvl = round(levels.getOrElse(activeBand) { 0f }).toInt()
+            val text = (if (lvl > 0) "+$lvl" else "$lvl") + " dB"
+            labelPaint.textSize = lvlSizePx
+            labelPaint.color = bubbleText
+            val textW = labelPaint.measureText(text)
+            val bubbleH = lvlSizePx * 1.9f
+            val bubbleW = textW + bubbleH
+            val bx = (cx - bubbleW / 2f).coerceIn(0f, size.width - bubbleW)
+            val by = (topY - bubbleH - handlePx - 6f).coerceAtLeast(0f)
+            drawRoundRect(
+                color = bubbleBg,
+                topLeft = Offset(bx, by),
+                size = Size(bubbleW, bubbleH),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(bubbleH / 2f, bubbleH / 2f)
+            )
+            drawRoundRect(
+                color = bubbleBorder,
+                topLeft = Offset(bx, by),
+                size = Size(bubbleW, bubbleH),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(bubbleH / 2f, bubbleH / 2f),
+                style = Stroke(width = 1f)
+            )
+            drawIntoCanvas {
+                it.nativeCanvas.drawText(
+                    text,
+                    bx + bubbleW / 2f,
+                    by + bubbleH / 2f - (labelPaint.descent() + labelPaint.ascent()) / 2f,
+                    labelPaint
                 )
             }
         }
@@ -1575,6 +1694,9 @@ fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
             .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         // Mini sparkline preview — 24px tall, draws the EQ curve shape
+        // Hoisted out of the draw loop — the old version allocated two Color
+        // objects per band per frame while the row scrolled (31 bands x N chips).
+        val thumbColor = if (selected) Color(0xFF00E5FF).copy(alpha = 0.8f) else Color(0xFF7C4DFF).copy(alpha = 0.5f)
         Canvas(modifier = Modifier.width(60.dp).height(24.dp)) {
             val levels = preset.levels
             val n = 31
@@ -1587,7 +1709,7 @@ fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
                 val barH = size.height * 0.45f * kotlin.math.abs(normY)
                 val y = if (normY >= 0) midY - barH else midY
                 drawRoundRect(
-                    color = if (selected) Color(0xFF00E5FF).copy(alpha = 0.8f) else Color(0xFF7C4DFF).copy(alpha = 0.5f),
+                    color = thumbColor,
                     topLeft = Offset(i * slotW, y),
                     size = Size(slotW * 0.7f, barH.coerceAtLeast(1f)),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f, 1f)
