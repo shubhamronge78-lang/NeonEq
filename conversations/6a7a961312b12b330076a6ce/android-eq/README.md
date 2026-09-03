@@ -139,9 +139,12 @@ app/src/main/java/com/neon/eq/
 - `RECORD_AUDIO` — may be needed on some devices for audio processing
 - `FOREGROUND_SERVICE` — keep EQ running in background
 
-## ⚡ Performance (Build #51 optimizations)
+## ⚡ Performance (Build #51 + #56/#57 optimizations)
 
 The visualizer and EQ canvas are tuned for low-end hardware (tested on a Redmi 10C).
+
+- **Zero steady-state allocations** (Builds #56–57) — every `Path`, `Paint`, `Brush` and buffer in the redraw paths is hoisted with `remember` and reused. The band canvas previously created a `Paint` per band per frame (up to 31/frame), the visualizer 32–41 gradient brushes per frame; both now allocate nothing while drawing. Unpositioned brushes size themselves to the drawn geometry, so one remembered brush serves every bar/spoke with identical visuals.
+- **Smooth band curve** (Build #56) — quadratic bezier traced through band tops with a glow underlay, dashed 0 dB reference line, and an active-band glow + floating value bubble while dragging.
 
 - **Custom Canvas rendering** — visualizer (Bars / Wave / Circle styles) and EQ sliders are drawn with Compose Canvas directly. No AndroidView, no XML, no per-frame view invalidation.
 - **Zero per-frame allocation in hot loops** — `Path`, `Brush`, and color lists are hoisted out of render loops: one allocation per frame instead of one per bar/spoke (32+ objects per frame eliminated in Bars mode, 40 in Circle mode). Peak-marker arrays are reused across frames.

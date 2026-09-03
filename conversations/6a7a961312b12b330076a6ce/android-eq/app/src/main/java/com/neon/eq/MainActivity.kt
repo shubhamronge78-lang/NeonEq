@@ -1055,7 +1055,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #56",
+                        "Neon EQ v1.0 · Build #57",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1245,6 +1245,22 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
     val peaks = remember { FloatArray(barCount) { 0f } }
     var tick by remember { mutableIntStateOf(0) }
 
+    // ---- Build #57: zero steady-state allocations in the visualizer ----
+    // This composable redraws EVERY frame (idle breathing + live waveform),
+    // so every object below is created once and reused. The previous version
+    // allocated per frame: wave = 2 Paths + 1 FloatArray + 3 brushes,
+    // circle = 41 gradient brushes, bars = 32 positioned gradient brushes.
+    val waveMainPath = remember { Path() }
+    val waveMirrorPath = remember { Path() }
+    val waveAmps = remember { FloatArray(64) }
+    val waveBrush = remember { Brush.horizontalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))) }
+    val waveGlowColor = remember { Color(0xFF00E5FF).copy(alpha = 0.25f) }
+    val waveMirrorColor = remember { Color(0xFF7C4DFF).copy(alpha = 0.15f) }
+    val spokeBrush = remember { Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))) }
+    val coreBrush = remember { Brush.radialGradient(listOf(Color(0xFF7C4DFF), Color(0x007C4DFF))) }
+    val barBrush = remember { Brush.verticalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))) }
+    val peakColor = remember { Color(0xFF00E5FF).copy(alpha = 0.7f) }
+
     // Drive peak decay at ~30fps — cheaper than recomposing the whole tree.
     LaunchedEffect(Unit) {
         while (true) {
@@ -1276,37 +1292,37 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
-                // Amplitudes are computed ONCE and reused for the main path and
-                // its mirror — halving the per-frame byte-loop cost on low-end CPUs.
+                // Build #57: paths, amp buffer and brushes are hoisted and
+                // reset() per frame — the wave costs zero allocations now.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
-                val amps = FloatArray(points) { i -> ampFor(i, points) }
-                val path = androidx.compose.ui.graphics.Path()
-                val mirror = androidx.compose.ui.graphics.Path()
+                for (i in 0 until points) waveAmps[i] = ampFor(i, points)
+                waveMainPath.reset()
+                waveMirrorPath.reset()
                 for (i in 0 until points) {
-                    val amp = amps[i]
+                    val amp = waveAmps[i]
                     val x = i * stepX
                     val y = size.height / 2f - (amp - 0.03f) * size.height * 0.8f
                     val ym = size.height / 2f + (amp - 0.03f) * size.height * 0.8f * 0.5f
-                    if (i == 0) { path.moveTo(x, y); mirror.moveTo(x, ym) }
-                    else { path.lineTo(x, y); mirror.lineTo(x, ym) }
+                    if (i == 0) { waveMainPath.moveTo(x, y); waveMirrorPath.moveTo(x, ym) }
+                    else { waveMainPath.lineTo(x, y); waveMirrorPath.lineTo(x, ym) }
                 }
                 // Glow underlay: same path, thicker and faint
                 drawPath(
-                    path = path,
-                    color = Color(0xFF00E5FF).copy(alpha = 0.25f),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 7f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                    path = waveMainPath,
+                    color = waveGlowColor,
+                    style = Stroke(width = 7f, cap = StrokeCap.Round)
                 )
                 drawPath(
-                    path = path,
-                    brush = Brush.horizontalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                    path = waveMainPath,
+                    brush = waveBrush,
+                    style = Stroke(width = 3f, cap = StrokeCap.Round)
                 )
                 // Mirrored faint reflection for depth
                 drawPath(
-                    path = mirror,
-                    color = Color(0xFF7C4DFF).copy(alpha = 0.15f),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                    path = waveMirrorPath,
+                    color = waveMirrorColor,
+                    style = Stroke(width = 2f, cap = StrokeCap.Round)
                 )
             }
             "circle" -> {
@@ -1315,12 +1331,12 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
                 val cx = size.width / 2f
                 val cy = size.height / 2f
                 val coreR = size.height * 0.18f
+                // Unpositioned brushes size themselves to the drawn geometry,
+                // so one remembered brush covers every frame and every spoke.
                 drawCircle(
-                    brush = Brush.radialGradient(listOf(Color(0xFF7C4DFF), Color(0x007C4DFF)), center = Offset(cx, cy), radius = coreR * 1.6f),
+                    brush = coreBrush,
                     radius = coreR * 1.6f, center = Offset(cx, cy)
                 )
-                // Hoisted out of the loop — one list allocation per frame, not 40.
-                val spokeColors = listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))
                 for (i in 0 until spokes) {
                     val amp = ampFor(i, spokes)
                     val angle = (i / spokes.toFloat()) * Math.PI * 2
@@ -1329,11 +1345,11 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
                     val cosA = kotlin.math.cos(angle).toFloat()
                     val sinA = kotlin.math.sin(angle).toFloat()
                     drawLine(
-                        brush = Brush.linearGradient(spokeColors),
+                        brush = spokeBrush,
                         start = Offset(cx + cosA * inner, cy + sinA * inner),
                         end = Offset(cx + cosA * outer, cy + sinA * outer),
                         strokeWidth = 3f,
-                        cap = androidx.compose.ui.graphics.StrokeCap.Round
+                        cap = StrokeCap.Round
                     )
                 }
             }
@@ -1341,9 +1357,6 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
         val slotWidth = size.width / barCount
         val barWidthPx = slotWidth * 0.6f
         val midY = size.height / 2f
-        // Hoisted out of the bar loop — one list allocation per frame, not 32.
-        val barColors = listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))
-
         for (i in 0 until barCount) {
             val amp: Float = if (waveform.isNotEmpty()) {
                 val chunk = waveform.size / barCount
@@ -1366,13 +1379,10 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
             if (barH > peaks[i]) peaks[i] = barH
             val peakH = peaks[i]
 
-            // Main bar with gradient
+            // Main bar with gradient — one remembered unpositioned brush maps
+            // to each bar's own rect, so the gradient still spans barH exactly.
             drawRoundRect(
-                brush = Brush.verticalGradient(
-                    colors = barColors,
-                    startY = midY - barH / 2f,
-                    endY = midY + barH / 2f
-                ),
+                brush = barBrush,
                 topLeft = Offset(x, midY - barH / 2f),
                 size = Size(barWidthPx, barH),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
@@ -1381,7 +1391,7 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
             // Peak marker — thin bright line at the decaying peak height
             if (peakH > barH + 4f) {
                 drawRoundRect(
-                    color = Color(0xFF00E5FF).copy(alpha = 0.7f),
+                    color = peakColor,
                     topLeft = Offset(x, midY - peakH / 2f),
                     size = Size(barWidthPx, 3f),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f, 2f)
@@ -1404,7 +1414,7 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #56: allocation-free hot path ----
+    // ---- Build #57: allocation-free hot path ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the
@@ -1422,6 +1432,7 @@ fun CanvasEQ(
     val bgDim = bgColor.copy(alpha = 0.45f)
     val barColors = remember { listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF)) }
     val curveColors = remember { listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF)) }
+    val curveBrush = remember { Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))) }
     val curveGlow = Color(0xFF00E5FF).copy(alpha = 0.20f)
     val centerColor = Color(0xFF00E5FF).copy(alpha = 0.16f)
     val bubbleBg = Color(0xFF00E5FF).copy(alpha = 0.16f)
@@ -1593,7 +1604,7 @@ fun CanvasEQ(
             }
             curvePath.lineTo(topsX[bandCount - 1], topsY[bandCount - 1])
             drawPath(curvePath, color = curveGlow, style = Stroke(width = curveGlowPx, cap = StrokeCap.Round))
-            drawPath(curvePath, brush = Brush.horizontalGradient(curveColors), style = Stroke(width = curvePx, cap = StrokeCap.Round))
+            drawPath(curvePath, brush = curveBrush, style = Stroke(width = curvePx, cap = StrokeCap.Round))
         }
 
         // Active-band emphasis: glow halo + handle dot + floating value bubble.
