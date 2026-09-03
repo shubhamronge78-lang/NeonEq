@@ -252,6 +252,14 @@ class EqualizerEngine private constructor(context: Context) {
             val fxEnabled = try { sessionEq?.enabled } catch (_: Throwable) { null }
             sb.append("\nsession EQ enabled: ").append(fxEnabled ?: "n/a")
             sb.append(" | heals: ").append(healCount)
+            val fxProbe = activeFX.values.firstOrNull()
+            val bRead = try { fxProbe?.bassBoost?.properties?.strength?.toInt() } catch (_: Throwable) { null }
+            val vRead = try { fxProbe?.virtualizer?.properties?.strength?.toInt() } catch (_: Throwable) { null }
+            val lRead = try { fxProbe?.loudnessEnhancer?.targetGain } catch (_: Throwable) { null }
+            sb.append("\nfx set: bass=").append(currentBassBoost)
+            sb.append(" virt=").append(currentVirtualizer)
+            sb.append(" loud=").append(currentLoudness)
+            sb.append(" | read: ").append(bRead ?: -1).append("/").append(vRead ?: -1).append("/").append(lRead ?: -1)
             if (activeProfilePackage != null) sb.append("\nprofile active: ").append(activeProfilePackage)
         } catch (t: Throwable) {
             sb.append("\ndiag error: ").append(t.message)
@@ -750,6 +758,7 @@ class EqualizerEngine private constructor(context: Context) {
 
                     try {
                         globalLoudness = LoudnessEnhancer(0).also { le ->
+                            le.enabled = currentEnabled && currentLoudness > 0
                             if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 300))
                         }
                         Log.d(TAG, "Global LoudnessEnhancer created")
@@ -1021,6 +1030,38 @@ class EqualizerEngine private constructor(context: Context) {
                     if (g != null) {
                         try { if (g.enabled != currentEnabled) g.enabled = currentEnabled } catch (_: Throwable) {}
                     }
+                    // Build #63: effects drift — MIUI can disable or reset
+                    // BassBoost/Virtualizer/Loudness the same way it resets EQ
+                    // bands. Verify enabled flags and applied strengths; a
+                    // missing (unsupported) effect is NOT drift — only
+                    // present-but-wrong triggers a heal.
+                    val wantBass = currentEnabled && currentBassBoost > 0
+                    val wantVirt = currentEnabled && currentVirtualizer > 0
+                    val wantLoud = currentEnabled && currentLoudness > 0
+                    if (wantBass || wantVirt || wantLoud) {
+                        for ((_, sfx) in activeFX) {
+                            if (wantBass) {
+                                try {
+                                    val b = sfx.bassBoost
+                                    if (b != null && (!b.enabled ||
+                                        b.properties.strength.toInt() != currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX))) drifted = true
+                                } catch (_: Throwable) {}
+                            }
+                            if (wantVirt) {
+                                try {
+                                    val v = sfx.virtualizer
+                                    if (v != null && (!v.enabled ||
+                                        v.properties.strength.toInt() != currentVirtualizer.coerceIn(0, VIRTUALIZER_STRENGTH_MAX))) drifted = true
+                                } catch (_: Throwable) {}
+                            }
+                            if (wantLoud) {
+                                try {
+                                    val l = sfx.loudnessEnhancer
+                                    if (l != null && (!l.enabled || l.targetGain != currentLoudness)) drifted = true
+                                } catch (_: Throwable) {}
+                            }
+                        }
+                    }
                     if (drifted) {
                         healCount++
                         Log.w(TAG, "Band-level drift detected (heal #${healCount}) — re-applying full state")
@@ -1075,6 +1116,7 @@ class EqualizerEngine private constructor(context: Context) {
             } } catch (e: Throwable) { Log.e(TAG, "reapply virt for session", e) }
 
             try { sfx.loudnessEnhancer?.apply {
+                enabled = currentEnabled && currentLoudness > 0
                 if (currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 300))
             } } catch (e: Throwable) { Log.e(TAG, "reapply loud for session", e) }
         }
@@ -1118,8 +1160,13 @@ class EqualizerEngine private constructor(context: Context) {
                 }
             } catch (e: Throwable) { Log.w(TAG, "Virtualizer N/A for session $sessionId", e) }
             try {
-                loud = LoudnessEnhancer(sessionId)
-                if (currentLoudness > 0) loud.setTargetGain(currentLoudness.coerceIn(0, 300))
+                loud = LoudnessEnhancer(sessionId).also { le ->
+                    // Build #63: LoudnessEnhancer was NEVER enabled — AudioEffect
+                    // starts disabled and setTargetGain alone does nothing. The
+                    // loudness slider has been a silent no-op until now.
+                    le.enabled = currentEnabled && currentLoudness > 0
+                    if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 300))
+                }
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
             activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud)
@@ -1214,12 +1261,12 @@ class EqualizerEngine private constructor(context: Context) {
             try {
                 globalBassBoost?.apply {
                     setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
-                    enabled = strength > 0
+                    enabled = currentEnabled && strength > 0
                 }
             } catch (e: Throwable) { Log.e(TAG, "Global BassBoost", e) }
 
             for ((_, sfx) in activeFX) {
-                try { sfx.bassBoost?.apply { setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort()); enabled = strength > 0 } }
+                try { sfx.bassBoost?.apply { setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort()); enabled = currentEnabled && strength > 0 } }
                 catch (e: Throwable) { Log.e(TAG, "Session BassBoost", e) }
             }
 
@@ -1236,12 +1283,12 @@ class EqualizerEngine private constructor(context: Context) {
             try {
                 globalVirtualizer?.apply {
                     setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort())
-                    enabled = strength > 0
+                    enabled = currentEnabled && strength > 0
                 }
             } catch (e: Throwable) { Log.e(TAG, "Global Virtualizer", e) }
 
             for ((_, sfx) in activeFX) {
-                try { sfx.virtualizer?.apply { setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort()); enabled = strength > 0 } }
+                try { sfx.virtualizer?.apply { setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort()); enabled = currentEnabled && strength > 0 } }
                 catch (e: Throwable) { Log.e(TAG, "Session Virtualizer", e) }
             }
 
@@ -1257,11 +1304,17 @@ class EqualizerEngine private constructor(context: Context) {
         persistScalar(KEY_LOUD, safeGain)
         audioExecutor.execute {
             try {
-                globalLoudness?.setTargetGain(safeGain)
+                globalLoudness?.apply {
+                    enabled = currentEnabled && safeGain > 0
+                    if (safeGain > 0) setTargetGain(safeGain)
+                }
             } catch (e: Throwable) { Log.e(TAG, "Global Loudness", e) }
 
             for ((_, sfx) in activeFX) {
-                try { sfx.loudnessEnhancer?.setTargetGain(safeGain) }
+                try { sfx.loudnessEnhancer?.apply {
+                    enabled = currentEnabled && safeGain > 0
+                    if (safeGain > 0) setTargetGain(safeGain)
+                } }
                 catch (e: Throwable) { Log.e(TAG, "Session Loudness", e) }
             }
 
@@ -1297,14 +1350,14 @@ class EqualizerEngine private constructor(context: Context) {
             try { globalEQ?.enabled = on } catch (_: Throwable) {}
             try { globalBassBoost?.enabled = on && currentBassBoost > 0 } catch (_: Throwable) {}
             try { globalVirtualizer?.enabled = on && currentVirtualizer > 0 } catch (_: Throwable) {}
-            try { if (!on) globalLoudness?.setTargetGain(0) else globalLoudness?.setTargetGain(currentLoudness.coerceIn(0, 300)) } catch (_: Throwable) {}
+            try { globalLoudness?.apply { enabled = on && currentLoudness > 0; if (on && currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 300)) } } catch (_: Throwable) {}
             try { visualizer?.enabled = on } catch (_: Throwable) {}
 
             for ((_, sfx) in activeFX) {
                 try { sfx.equalizer.enabled = on } catch (_: Throwable) {}
                 try { sfx.bassBoost?.enabled = on && (sfx.bassBoost?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
                 try { sfx.virtualizer?.enabled = on && (sfx.virtualizer?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
-                try { if (!on) sfx.loudnessEnhancer?.setTargetGain(0) else sfx.loudnessEnhancer?.setTargetGain(currentLoudness.coerceIn(0, 300)) } catch (_: Throwable) {}
+                try { sfx.loudnessEnhancer?.apply { enabled = on && currentLoudness > 0; if (on && currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 300)) } } catch (_: Throwable) {}
             }
         }
     }
