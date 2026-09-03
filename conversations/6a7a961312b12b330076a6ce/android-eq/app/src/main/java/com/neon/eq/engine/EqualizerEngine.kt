@@ -41,6 +41,7 @@ class EqualizerEngine private constructor(context: Context) {
         private const val KEY_SHOW_VISUALIZER = "show_visualizer"
         private const val KEY_SHOW_GLOW = "show_glow"
         private const val KEY_VIS_STYLE = "vis_style"
+        private const val KEY_APP_PROFILES = "app_profiles"
 
         @Volatile private var instance: EqualizerEngine? = null
 
@@ -164,20 +165,57 @@ class EqualizerEngine private constructor(context: Context) {
     fun currentLoudnessValue(): Int = currentLoudness
 
     fun setSelectedPresetName(name: String) {
+        markUserOverrideIfApplicable()
         selectedPresetName = name
         try { prefs.edit().putString(KEY_PRESET_NAME, name).apply() } catch (_: Throwable) { }
     }
 
-    // Called on startup when auto-apply preset setting is enabled.
-    // Restores the last saved preset's band levels + effects into the live engine.
-    // Uses batched setBandLevels() — one audio-thread task instead of 31 separate
-    // setBandLevel() calls (31 persist + 31 enqueue vs 1 persist + 1 enqueue).
-    fun applyLastPreset(): Boolean {
-        if (!isAutoApplyPreset()) return false
-        val name = selectedPresetName
-        if (name == "Flat" || name == "Custom") return false
+    // ── Per-app audio profiles ──
+    // Maps a playing app's package name to a preset name (built-in or custom).
+    // The session polling loop detects which app is producing audio and swaps
+    // the EQ to that app's profile automatically, restoring the user's
+    // previous preset when the app stops. Manual user input always wins:
+    // any direct band/effect/preset change suppresses the profile for the
+    // currently playing app until a different app starts playing.
 
-        // Check built-in presets first
+    @Volatile private var appProfiles: MutableMap<String, String> = loadAppProfiles()
+    @Volatile private var activeProfilePackage: String? = null
+    @Volatile private var suppressedProfilePackage: String? = null
+    @Volatile private var restorePresetName: String? = null
+    @Volatile private var applyingProfile = false
+    @Volatile private var lastPlayingPackage: String? = null
+
+    fun listAppProfiles(): Map<String, String> = LinkedHashMap(appProfiles)
+    fun playingPackage(): String? = lastPlayingPackage
+
+    fun setAppProfile(pkg: String, preset: String?) {
+        try {
+            if (preset == null) appProfiles.remove(pkg) else appProfiles[pkg] = preset
+            persistAppProfiles()
+        } catch (_: Throwable) { }
+    }
+
+    private fun loadAppProfiles(): MutableMap<String, String> {
+        val map = LinkedHashMap<String, String>()
+        try {
+            val raw = prefs.getString(KEY_APP_PROFILES, null) ?: return map
+            val obj = org.json.JSONObject(raw)
+            for (key in obj.keys()) map[key] = obj.getString(key)
+        } catch (_: Throwable) { }
+        return map
+    }
+
+    private fun persistAppProfiles() {
+        try {
+            val obj = org.json.JSONObject()
+            for ((k, v) in appProfiles) obj.put(k, v)
+            prefs.edit().putString(KEY_APP_PROFILES, obj.toString()).apply()
+        } catch (_: Throwable) { }
+    }
+
+    // Apply a preset (built-in or custom) by name. Returns false if no preset
+    // with that name exists.
+    fun applyPresetByName(name: String): Boolean {
         val builtIn = Presets.presets.find { it.name == name }
         if (builtIn != null) {
             try {
@@ -186,8 +224,6 @@ class EqualizerEngine private constructor(context: Context) {
             } catch (_: Throwable) { }
             return true
         }
-
-        // Check custom presets
         val custom = listCustomPresets().find { it.name == name }
         if (custom != null) {
             try {
@@ -200,6 +236,80 @@ class EqualizerEngine private constructor(context: Context) {
             return true
         }
         return false
+    }
+
+    // Called at the top of every user-facing setter. If a per-app profile is
+    // currently auto-applied, the user's direct change suppresses the profile
+    // for the playing app (their manual choice wins until playback changes).
+    private fun markUserOverrideIfApplicable() {
+        if (applyingProfile) return
+        if (activeProfilePackage != null) {
+            suppressedProfilePackage = activeProfilePackage
+            activeProfilePackage = null
+            restorePresetName = null
+        }
+    }
+
+    // Resolve the package name of the app producing audio. AudioPlaybackConfiguration
+    // exposes the client UID via public API; PackageManager maps UID → package.
+    // Fully public-API path, no reflection needed — but Throwable-caught anyway.
+    private fun resolvePlayingPackage(config: AudioPlaybackConfiguration?): String? {
+        if (config == null) return null
+        return try {
+            val uid = config.clientUid
+            context.packageManager.getPackagesForUid(uid)?.firstOrNull()
+        } catch (_: Throwable) { null }
+    }
+
+    // Core auto-switch logic, invoked once per session scan tick.
+    private fun maybeApplyAppProfile(playingPkg: String?) {
+        lastPlayingPackage = playingPkg
+        // A suppressed profile stays suppressed only while its app is playing.
+        if (playingPkg != suppressedProfilePackage) suppressedProfilePackage = null
+
+        val profilePreset = playingPkg?.let { appProfiles[it] }
+        if (playingPkg != null && profilePreset != null && playingPkg != suppressedProfilePackage) {
+            if (activeProfilePackage != playingPkg) {
+                if (activeProfilePackage == null) restorePresetName = selectedPresetName
+                activeProfilePackage = playingPkg
+                applyingProfile = true
+                try {
+                    if (applyPresetByName(profilePreset)) {
+                        selectedPresetName = profilePreset
+                        try { prefs.edit().putString(KEY_PRESET_NAME, profilePreset).apply() } catch (_: Throwable) { }
+                    }
+                } finally { applyingProfile = false }
+            }
+        } else {
+            if (activeProfilePackage != null) {
+                activeProfilePackage = null
+                val restore = restorePresetName
+                restorePresetName = null
+                applyingProfile = true
+                try {
+                    if (restore != null && applyPresetByName(restore)) {
+                        selectedPresetName = restore
+                        try { prefs.edit().putString(KEY_PRESET_NAME, restore).apply() } catch (_: Throwable) { }
+                    } else {
+                        val flat = ShortArray(31) { 0 }
+                        setBandLevels(flat)
+                        selectedPresetName = "Flat"
+                        try { prefs.edit().putString(KEY_PRESET_NAME, "Flat").apply() } catch (_: Throwable) { }
+                    }
+                } finally { applyingProfile = false }
+            }
+        }
+    }
+
+    // Called on startup when auto-apply preset setting is enabled.
+    // Restores the last saved preset's band levels + effects into the live engine.
+    // Uses batched setBandLevels() — one audio-thread task instead of 31 separate
+    // setBandLevel() calls (31 persist + 31 enqueue vs 1 persist + 1 enqueue).
+    fun applyLastPreset(): Boolean {
+        if (!isAutoApplyPreset()) return false
+        val name = selectedPresetName
+        if (name == "Flat" || name == "Custom") return false
+        return applyPresetByName(name)
     }
 
     // ── Custom presets (JSON serialization with backward-compat migration) ──
@@ -329,6 +439,7 @@ class EqualizerEngine private constructor(context: Context) {
         root.put("showGlow", isShowGlow())
         // Embed custom presets using the same format Presets.exportToJson emits.
         root.put("presets", org.json.JSONObject(exportCustomPresets()).optJSONArray("presets"))
+        root.put("appProfiles", org.json.JSONObject(appProfiles as Map<*, *>))
         return root.toString(2)
     }
 
@@ -356,6 +467,14 @@ class EqualizerEngine private constructor(context: Context) {
             setAutoApplyPreset(root.optBoolean("autoApplyPreset", false))
             setShowVisualizer(root.optBoolean("showVisualizer", true))
             setShowGlow(root.optBoolean("showGlow", true))
+
+            val profObj = root.optJSONObject("appProfiles")
+            if (profObj != null) {
+                val restored = LinkedHashMap<String, String>()
+                for (key in profObj.keys()) restored[key] = profObj.getString(key)
+                appProfiles = restored
+                persistAppProfiles()
+            }
 
             val arr = root.optJSONArray("presets")
             if (arr != null) {
@@ -616,6 +735,12 @@ class EqualizerEngine private constructor(context: Context) {
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val configs = am.getActivePlaybackConfigurations()
 
+            // Per-app profiles: pick the config we'd attach an EQ to (one with a
+            // real session id; falls back to first config when reflection is
+            // blocked) and swap presets if that app has a profile.
+            val profileConfig = configs.firstOrNull { reflectSessionId(it) != 0 } ?: configs.firstOrNull()
+            maybeApplyAppProfile(resolvePlayingPackage(profileConfig))
+
             val activeSessionIds = mutableSetOf<Int>()
 
             // Method 1: AudioPlaybackConfiguration reflection — don't require isActive()
@@ -814,6 +939,7 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun setBandLevel(band: Int, level: Short) {
+        markUserOverrideIfApplicable()
         currentBandLevels[band] = level
         persistLevels()
         val millibel = applyPreamp(level.toInt())
@@ -828,6 +954,7 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun setBandCount(count: Int) {
+        markUserOverrideIfApplicable()
         bandCount = count.coerceIn(MIN_BANDS, MAX_BANDS)
         persistScalar(KEY_BAND_COUNT, bandCount)
         audioExecutor.execute {
@@ -850,6 +977,7 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun setBassBoost(strength: Int) {
+        markUserOverrideIfApplicable()
         currentBassBoost = strength
         persistScalar(KEY_BASS, strength)
         audioExecutor.execute {
@@ -871,6 +999,7 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun setVirtualizer(strength: Int) {
+        markUserOverrideIfApplicable()
         currentVirtualizer = strength
         persistScalar(KEY_VIRT, strength)
         audioExecutor.execute {
@@ -892,6 +1021,7 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun setLoudness(gain: Int) {
+        markUserOverrideIfApplicable()
         val safeGain = gain.coerceIn(0, 300)
         currentLoudness = safeGain
         persistScalar(KEY_LOUD, safeGain)
@@ -915,6 +1045,7 @@ class EqualizerEngine private constructor(context: Context) {
     // setBandLevel calls (372 total during a 12-frame animation). Same result,
     // far less thread contention and native API churn.
     fun setBandLevels(levels: ShortArray) {
+        markUserOverrideIfApplicable()
         for (i in levels.indices) {
             if (i < currentBandLevels.size) currentBandLevels[i] = levels[i]
         }

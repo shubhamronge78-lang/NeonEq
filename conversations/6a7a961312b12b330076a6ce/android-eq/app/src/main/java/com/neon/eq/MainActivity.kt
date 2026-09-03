@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -47,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import com.neon.eq.engine.EQService
 import com.neon.eq.engine.EqualizerEngine
 import com.neon.eq.engine.Presets
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.round
 import android.content.Context
@@ -300,6 +302,34 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 engine.setBandLevels(ShortArray(31) { i -> round(frame.getOrElse(i) { 0f }).toInt().toShort() })
                 kotlinx.coroutines.delay(16L)
             }
+        }
+    }
+
+    // ── Per-app profiles state ──
+    var playingApp by remember { mutableStateOf(engine.playingPackage()) }
+    var appProfiles by remember { mutableStateOf(engine.listAppProfiles()) }
+    fun appLabel(pkg: String): String = try {
+        context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
+    } catch (_: Throwable) { pkg }
+
+    // The per-app auto-switch happens inside the engine's session scan (outside
+    // Compose), so poll it and mirror any changes back into the UI state.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(2000)
+            val p = engine.playingPackage()
+            if (p != playingApp) playingApp = p
+            if (engine.selectedPresetName != selectedPreset) {
+                selectedPreset = engine.selectedPresetName
+                // Direct state copy — no engine calls here, the engine already
+                // holds these values (calling setters would suppress the profile).
+                val snap = engine.currentLevelsSnapshot()
+                bandLevels = FloatArray(31) { i -> snap.getOrElse(i) { 0 }.toFloat() }
+                bassBoost = engine.currentBassBoostValue().coerceIn(0, 300)
+                virtualizer = engine.currentVirtualizerValue().coerceIn(0, 300)
+                loudness = engine.currentLoudnessValue().coerceIn(0, 300)
+            }
+            appProfiles = engine.listAppProfiles()
         }
     }
 
@@ -592,6 +622,72 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             EffectSlider("LOUDNESS", loudness, 0..300) { v ->
                 loudness = v
                 engine.setLoudness(v)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Per-app profiles ──
+        NeonCard {
+            GradientText("APP PROFILES", 11.sp, Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))))
+            Spacer(Modifier.height(6.dp))
+            val pkg = playingApp
+            if (pkg != null) {
+                Text("♪ ${appLabel(pkg)}", fontSize = 12.sp, color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, maxLines = 1)
+                val assigned = appProfiles[pkg]
+                Text(
+                    if (assigned != null) "Profile: $assigned" else "Tap a preset to assign a profile to this app",
+                    fontSize = 10.sp, color = Color.Gray
+                )
+                Spacer(Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(Presets.presets, key = { "pa_" + it.name }) { p ->
+                        AppProfileChip(p.name, assigned == p.name) {
+                            engine.setAppProfile(pkg, p.name)
+                            appProfiles = engine.listAppProfiles()
+                        }
+                    }
+                    items(customPresets, key = { "pc_" + it.name }) { p ->
+                        AppProfileChip(p.name, assigned == p.name) {
+                            engine.setAppProfile(pkg, p.name)
+                            appProfiles = engine.listAppProfiles()
+                        }
+                    }
+                    if (assigned != null) {
+                        item(key = "pa_remove") {
+                            AppProfileChip("Remove", false) {
+                                engine.setAppProfile(pkg, null)
+                                appProfiles = engine.listAppProfiles()
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text("No app is playing audio right now — start music, then assign a profile.", fontSize = 10.sp, color = Color.Gray)
+            }
+            if (appProfiles.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                appProfiles.forEach { (p, presetName) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("${appLabel(p)} → $presetName", fontSize = 10.sp, color = Color.Gray, maxLines = 1, modifier = Modifier.weight(1f))
+                        Text(
+                            "×",
+                            fontSize = 14.sp,
+                            color = Color(0xFFFF4081),
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable {
+                                    engine.setAppProfile(p, null)
+                                    appProfiles = engine.listAppProfiles()
+                                }
+                                .padding(horizontal = 6.dp)
+                        )
+                    }
+                }
             }
         }
 
@@ -955,7 +1051,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #53",
+                        "Neon EQ v1.0 · Build #54",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1328,17 +1424,28 @@ fun CanvasEQ(
             .height(240.dp)
             .pointerInput(bandCount) {
                 val trackHeight = size.height.toFloat() - labelAreaPx
+                var lastTick = Int.MIN_VALUE
                 detectDragGestures(
                     onDragStart = { offset ->
                         val slotWidth = size.width / bandCount
                         val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
-                        onLevelChange(band, levelFromY(offset.y, trackHeight))
+                        val lvl = levelFromY(offset.y, trackHeight)
+                        onLevelChange(band, lvl)
+                        lastTick = round(lvl).toInt()
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
                     onDrag = { change, _ ->
                         val slotWidth = size.width / bandCount
                         val band = (change.position.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
-                        onLevelChange(band, levelFromY(change.position.y, trackHeight))
+                        val lvl = levelFromY(change.position.y, trackHeight)
+                        onLevelChange(band, lvl)
+                        // Fine-tuning haptic: a subtle tick as the band crosses
+                        // each integer dB step — you can feel the steps without looking.
+                        val tickAt = round(lvl).toInt()
+                        if (tickAt != lastTick) {
+                            lastTick = tickAt
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        }
                         change.consume()
                     }
                 )
@@ -1421,12 +1528,41 @@ fun CanvasEQ(
 }
 
 // Built-in preset chip with a mini EQ curve preview sparkline.
+// Small pill used to assign a preset to the currently playing app.
+@Composable
+fun AppProfileChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Text(
+        label,
+        fontSize = 10.sp,
+        color = if (selected) Color(0xFF00E5FF) else Color.Gray,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF1A1A2E))
+            .border(
+                1.dp,
+                if (selected) Color(0xFF00E5FF).copy(alpha = 0.5f) else Color(0xFF00E5FF).copy(alpha = 0.12f),
+                RoundedCornerShape(50)
+            )
+            .clickable {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            }
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    )
+}
+
 @Composable
 fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .clickable(onClick = onClick)
+            .clickable {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            }
             .clip(RoundedCornerShape(16.dp))
             .background(
                 if (selected) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF1A1A2E)
@@ -1472,6 +1608,7 @@ fun CustomPresetChip(
     onLongPress: () -> Unit = {},
     onDelete: () -> Unit
 ) {
+    val haptic = LocalHapticFeedback.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -1512,7 +1649,10 @@ fun CustomPresetChip(
             color = if (selected) Color(0xFF7C4DFF) else Color.Gray,
             modifier = Modifier
                 .combinedClickable(
-                    onClick = onClick,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    },
                     onLongClick = onLongPress
                 )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
