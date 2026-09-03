@@ -1417,7 +1417,7 @@ fun CanvasEQ(
     }
     val curvePath = remember { Path() }
     val centerLinePath = remember { Path() }
-    val centerDash = remember(density) { with(density) { PathEffect.dashPathEffect(3.dp.toPx(), 5.dp.toPx()) } }
+    val centerDash = remember(density) { with(density) { PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 5.dp.toPx())) } }
     val bgColor = Color(0xFF1A1A2E)
     val bgDim = bgColor.copy(alpha = 0.45f)
     val barColors = remember { listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF)) }
