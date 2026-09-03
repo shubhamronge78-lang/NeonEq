@@ -64,13 +64,21 @@ jobs:
           4. Grant audio permissions when prompted
           5. Toggle the EQ on and enjoy!
 
-          ## ✨ Features
+          ## ✨ What's New in 2.0.0
+          - 🎯 **Per-app audio profiles** — auto-switch presets based on which app is playing
+          - ✏️ **Custom presets** — create, rename, duplicate, reorder, share & import
+          - 📳 **Haptic fine-tuning** — feel a tick at every dB step while dragging bands
+          - 📱 **Home screen widget + Quick Settings tile**
+          - 💾 **Backup & Restore** — full-state export/import
+          - 📊 **Visualizer styles** — Bars, Wave & Circle
+          - 🔊 **Speaker-safe effects** — Bass/Virtualizer/Loudness capped at 300 with preamp compensation
+          - 🌙 **Glass-morphism UI overhaul** — neon cards, gradient headers, AMOLED black
+
+          ## ✨ Core Features
           - System-wide audio equalization (all apps)
-          - 10 presets (Flat, Bass Boost, Rock, Pop, Jazz, EDM, Classical, Dance, Bass Extreme, Treble Boost)
+          - 10 built-in presets + unlimited custom presets
           - 5/10/15/31 band equalizer
-          - Bass Boost (0-1000)
-          - 3D Sound / Virtualizer (0-1000)
-          - Loudness Enhancer (0-4000)
+          - Auto-apply last preset on startup
           - Neon AMOLED dark theme
           - Background foreground service
 
