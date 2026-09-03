@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -249,7 +250,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     }
 
     var waveform by remember { mutableStateOf(ByteArray(0)) }
-    // Build #60: timestamp of the last capture delivery — lets the visualizer
+    // Build #61: timestamp of the last capture delivery — lets the visualizer
     // detect a MIUI capture stall while the EQ is ON (the self-heal watchdog
     // needs up to ~4s to re-attach) and drop to the idle pulse instead of
     // drawing the frozen stale buffer.
@@ -1062,9 +1063,35 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         modifier = Modifier.fillMaxWidth(),
                         textAlign = TextAlign.Center
                     )
+                    Spacer(Modifier.height(12.dp))
+                    // Build #61: live engine diagnostics — the on-device window
+                    // into session attach (no adb on the Redmi 10C).
+                    Text(
+                        "ENGINE DIAGNOSTICS",
+                        fontSize = 11.sp,
+                        color = Color.Gray,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    var diagText by remember { mutableStateOf("starting…") }
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            diagText = try { engine.diagnostics() } catch (t: Throwable) { "diag error: ${t.message}" }
+                            delay(1000)
+                        }
+                    }
+                    Text(
+                        diagText,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 14.sp,
+                        color = Color(0xFF00E5FF),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #60",
+                        "Neon EQ v1.0 · Build #61",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1238,8 +1265,8 @@ fun BreathingGlow(active: Boolean) {
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
 // Degrades to a gentle idle pulse if no waveform data is available yet (permission
-// denied, unsupported device, or nothing playing) — and since Build #60 also when
-// the EQ toggle is OFF, or (Build #60) when capture data goes stale mid-playback
+// denied, unsupported device, or nothing playing) — and since Build #61 also when
+// the EQ toggle is OFF, or (Build #61) when capture data goes stale mid-playback
 // for >1.5s while the engine's self-heal watchdog re-attaches a MIUI-killed
 // capture. In both cases the stale buffer would render frozen; the idle pulse
 // renders instead. `active` + waveform freshness gate which mode we render.
@@ -1258,7 +1285,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     val peaks = remember { FloatArray(barCount) { 0f } }
     var tick by remember { mutableIntStateOf(0) }
 
-    // ---- Build #60: zero steady-state allocations in the visualizer ----
+    // ---- Build #61: zero steady-state allocations in the visualizer ----
     // This composable redraws EVERY frame (idle breathing + live waveform),
     // so every object below is created once and reused. The previous version
     // allocated per frame: wave = 2 Paths + 1 FloatArray + 3 brushes,
@@ -1286,7 +1313,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
         // Extract the amplitude for a single logical bar — shared by all three
         // styles so they react identically to the same waveform data.
-        // `live` = EQ on AND fresh capture data. The freshness check (Build #60)
+        // `live` = EQ on AND fresh capture data. The freshness check (Build #61)
         // closes the gap while the engine's self-heal watchdog re-attaches a
         // MIUI-killed capture: without it the stale buffer renders frozen for
         // up to ~4s mid-song. The idlePulse animation invalidates this Canvas
@@ -1313,7 +1340,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
-                // Build #60: paths, amp buffer and brushes are hoisted and
+                // Build #61: paths, amp buffer and brushes are hoisted and
                 // reset() per frame — the wave costs zero allocations now.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
@@ -1435,7 +1462,7 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #60: allocation-free hot path ----
+    // ---- Build #61: allocation-free hot path ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the

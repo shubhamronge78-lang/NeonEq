@@ -212,6 +212,49 @@ class EqualizerEngine private constructor(context: Context) {
         }
     }
 
+    // Build #61: on-device diagnostics. No adb on the Redmi 10C — this surfaces
+    // the live session-attach internals so we can see exactly what MIUI is
+    // doing when the EQ goes silent. Polled once a second from the Settings
+    // diagnostics panel; reads are cheap and Throwable-caught throughout.
+    fun diagnostics(): String {
+        val sb = StringBuilder()
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val configs = try { am.getActivePlaybackConfigurations() } catch (_: Throwable) { emptyList<AudioPlaybackConfiguration>() }
+            val pkgs = configs.mapNotNull { resolvePlayingPackage(it) }.distinct()
+            sb.append("configs: ").append(configs.size)
+            sb.append(" | playing: ").append(if (pkgs.isEmpty()) "—" else pkgs.joinToString(","))
+
+            val sessionList = activeFX.keys.sorted()
+            sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
+            sb.append("\nglobalEQ: ").append(if (globalEQ != null) "attached" else "null")
+            sb.append(" | enabled: ").append(enabled)
+
+            val anyEQ = activeFX.values.firstOrNull()?.equalizer ?: globalEQ
+            val hwBands = try { anyEQ?.numberOfBands?.toInt() ?: 0 } catch (_: Throwable) { 0 }
+            sb.append("\nUI bands: ").append(bandCount).append(" | hw bands: ").append(hwBands)
+
+            // Read back the ACTUAL hardware gain on UI band 0 — proves whether
+            // the device is applying our levels or silently ignoring them.
+            val idx = bands.getOrNull(0)?.index ?: (-1).toShort()
+            val sessionEq = activeFX.values.firstOrNull()?.equalizer
+            val sessionLvl = try { if (sessionEq != null && idx >= 0) sessionEq.getBandLevel(idx) else null } catch (_: Throwable) { null }
+            val globalLvl = try { if (globalEQ != null && idx >= 0) globalEQ.getBandLevel(idx) else null } catch (_: Throwable) { null }
+            sb.append("\nband0 readback: session=")
+            sb.append(if (sessionLvl != null) "${sessionLvl / 100}dB" else "n/a")
+            sb.append(" global=").append(if (globalLvl != null) "${globalLvl / 100}dB" else "n/a")
+            sb.append(" | set=").append(currentBandLevels.getOrNull(0) ?: 0)
+            sb.append("dB preamp=").append(computePreampDb()).append("dB")
+
+            val fxEnabled = try { sessionEq?.enabled } catch (_: Throwable) { null }
+            sb.append("\nsession EQ enabled: ").append(fxEnabled ?: "n/a")
+            if (activeProfilePackage != null) sb.append("\nprofile active: ").append(activeProfilePackage)
+        } catch (t: Throwable) {
+            sb.append("\ndiag error: ").append(t.message)
+        }
+        return sb.toString()
+    }
+
     // Apply one full band frame (with preamp compensation) to the global EQ and
     // every active per-session EQ.
     private fun applyBands(levels: IntArray) {
