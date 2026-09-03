@@ -182,6 +182,10 @@ class EqualizerEngine private constructor(context: Context) {
     @Volatile private var activeProfilePackage: String? = null
     @Volatile private var suppressedProfilePackage: String? = null
     @Volatile private var restorePresetName: String? = null
+    // Bass/Virtualizer/Loudness the user had before a profile engaged — restored
+    // on revert so built-in restore presets (which only set band levels) don't
+    // leave the profiled app's effect values stuck on.
+    @Volatile private var restoreEffects: IntArray? = null
     @Volatile private var applyingProfile = false
     @Volatile private var lastPlayingPackage: String? = null
 
@@ -247,6 +251,7 @@ class EqualizerEngine private constructor(context: Context) {
             suppressedProfilePackage = activeProfilePackage
             activeProfilePackage = null
             restorePresetName = null
+            restoreEffects = null
         }
     }
 
@@ -274,7 +279,10 @@ class EqualizerEngine private constructor(context: Context) {
         val profilePreset = playingPkg?.let { appProfiles[it] }
         if (playingPkg != null && profilePreset != null && playingPkg != suppressedProfilePackage) {
             if (activeProfilePackage != playingPkg) {
-                if (activeProfilePackage == null) restorePresetName = selectedPresetName
+                if (activeProfilePackage == null) {
+                    restorePresetName = selectedPresetName
+                    restoreEffects = intArrayOf(currentBassBoost, currentVirtualizer, currentLoudness)
+                }
                 activeProfilePackage = playingPkg
                 applyingProfile = true
                 try {
@@ -299,6 +307,17 @@ class EqualizerEngine private constructor(context: Context) {
                         setBandLevels(flat)
                         selectedPresetName = "Flat"
                         try { prefs.edit().putString(KEY_PRESET_NAME, "Flat").apply() } catch (_: Throwable) { }
+                    }
+                    // Put the user's pre-profile Bass/Virtualizer/Loudness back.
+                    // (applyPresetByName only restores effects for custom presets,
+                    // so a built-in restore target would leave the profiled app's
+                    // effect values stuck on without this.)
+                    val fx = restoreEffects
+                    restoreEffects = null
+                    if (fx != null) {
+                        setBassBoost(fx[0].coerceIn(0, 300))
+                        setVirtualizer(fx[1].coerceIn(0, 300))
+                        setLoudness(fx[2].coerceIn(0, 300))
                     }
                 } finally { applyingProfile = false }
             }
