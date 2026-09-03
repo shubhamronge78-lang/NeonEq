@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.LinearEasing
@@ -248,6 +249,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     }
 
     var waveform by remember { mutableStateOf(ByteArray(0)) }
+    // Build #60: timestamp of the last capture delivery — lets the visualizer
+    // detect a MIUI capture stall while the EQ is ON (the self-heal watchdog
+    // needs up to ~4s to re-attach) and drop to the idle pulse instead of
+    // drawing the frozen stale buffer.
+    var waveformAt by remember { mutableStateOf(0L) }
     val snackbarHost = remember { SnackbarHostState() }
     val haptic = LocalHapticFeedback.current
     val scope2 = rememberCoroutineScope()
@@ -263,7 +269,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             statusMsg = engine.statusMessage
             bands = engine.bands
         }
-        engine.onWaveform = { data -> waveform = data }
+        engine.onWaveform = { data ->
+            waveform = data
+            waveformAt = SystemClock.elapsedRealtime()
+        }
 
         // Auto-apply last preset if setting is enabled
         if (engine.isAutoApplyPreset()) {
@@ -415,7 +424,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // ── Live spectrum visualizer ──
         if (showVisualizer) {
             NeonCard {
-                VisualizerBars(waveform = waveform, active = enabled, style = visStyle)
+                VisualizerBars(waveform = waveform, waveformAt = waveformAt, active = enabled, style = visStyle)
             }
             Spacer(Modifier.height(16.dp))
         }
@@ -1055,7 +1064,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #59",
+                        "Neon EQ v1.0 · Build #60",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1229,12 +1238,14 @@ fun BreathingGlow(active: Boolean) {
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
 // Degrades to a gentle idle pulse if no waveform data is available yet (permission
-// denied, unsupported device, or nothing playing) — and since Build #59 also when
-// the EQ toggle is OFF: the capture is disabled then, so the last buffer is stale
-// and drawing it would look frozen. `active` gates which mode we render.
+// denied, unsupported device, or nothing playing) — and since Build #60 also when
+// the EQ toggle is OFF, or (Build #60) when capture data goes stale mid-playback
+// for >1.5s while the engine's self-heal watchdog re-attaches a MIUI-killed
+// capture. In both cases the stale buffer would render frozen; the idle pulse
+// renders instead. `active` + waveform freshness gate which mode we render.
 // Includes falling peak markers that decay slowly for a more "pro audio" look.
 @Composable
-fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars") {
+fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, style: String = "bars") {
     val barCount = 32
     val infinite = rememberInfiniteTransition(label = "idlePulse")
     val idlePhase by infinite.animateFloat(
@@ -1247,7 +1258,7 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
     val peaks = remember { FloatArray(barCount) { 0f } }
     var tick by remember { mutableIntStateOf(0) }
 
-    // ---- Build #59: zero steady-state allocations in the visualizer ----
+    // ---- Build #60: zero steady-state allocations in the visualizer ----
     // This composable redraws EVERY frame (idle breathing + live waveform),
     // so every object below is created once and reused. The previous version
     // allocated per frame: wave = 2 Paths + 1 FloatArray + 3 brushes,
@@ -1275,8 +1286,14 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
     Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
         // Extract the amplitude for a single logical bar — shared by all three
         // styles so they react identically to the same waveform data.
-        // `live` = EQ on AND we actually have capture data; otherwise idle pulse.
-        val live = active && waveform.isNotEmpty()
+        // `live` = EQ on AND fresh capture data. The freshness check (Build #60)
+        // closes the gap while the engine's self-heal watchdog re-attaches a
+        // MIUI-killed capture: without it the stale buffer renders frozen for
+        // up to ~4s mid-song. The idlePulse animation invalidates this Canvas
+        // every frame, so the clock check re-evaluates continuously even when
+        // recomposition has stopped (no waveform updates = nothing to recompose).
+        val live = active && waveform.isNotEmpty() &&
+            waveformAt > 0 && SystemClock.elapsedRealtime() - waveformAt < 1500
         fun ampFor(i: Int, count: Int): Float {
             if (live) {
                 val chunk = waveform.size / count
@@ -1296,7 +1313,7 @@ fun VisualizerBars(waveform: ByteArray, active: Boolean, style: String = "bars")
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
-                // Build #59: paths, amp buffer and brushes are hoisted and
+                // Build #60: paths, amp buffer and brushes are hoisted and
                 // reset() per frame — the wave costs zero allocations now.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
@@ -1418,7 +1435,7 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #59: allocation-free hot path ----
+    // ---- Build #60: allocation-free hot path ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the

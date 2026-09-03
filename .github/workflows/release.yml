@@ -66,7 +66,7 @@ jobs:
 
           ## ✨ What's New in 2.0.2
           - 🔊 **Fixed: EQ toggle no longer reduces volume** — preamp compensation no longer cancels out the Loudness slider; EQ on now sounds the same as off, or slightly louder. Distortion protection still engages at extreme settings
-          - 📊 **Fixed: Visualizer no longer stalls or freezes** — self-heal watchdog re-attaches waveform capture when MIUI silently kills it (screen-off, track change), and the idle pulse shows while the EQ is off instead of a frozen frame
+          - 📊 **Fixed: Visualizer no longer stalls or freezes** — self-heal watchdog re-attaches waveform capture when MIUI silently kills it (screen-off, track change), and the idle pulse shows whenever data is stale — even mid-playback — instead of a frozen frame
           - 🎚️ **New band canvas** — smooth neon curve through band tops, dashed 0 dB reference line, active-band glow with floating value bubble while dragging
           - ⚡ **Zero-allocation rendering** — all Paths, Paints, Brushes and buffers in the redraw paths are hoisted and reused; no GC pauses mid-playback on low-end devices
           - 🎯 **Per-app audio profiles** — auto-switch presets based on which app is playing

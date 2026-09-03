@@ -53,6 +53,13 @@ When the EQ is off (or no capture data exists), the idle breathing pulse
 renders instead of a frozen spectrum. Applies to all three styles (Bars, Wave,
 Circle) via the shared `ampFor()` amplitude extractor.
 
+**Build #60 follow-up:** the freshness of the capture data is now also gated —
+if the waveform goes stale for >1.5s while the EQ is ON (during the watchdog's
+re-attach window after a MIUI kill), the idle pulse takes over immediately
+instead of drawing a frozen frame for up to ~4s. The idlePulse animation
+invalidates the canvas every frame, so the clock check re-evaluates continuously
+even though the stale buffer no longer triggers recomposition.
+
 ### Prior release — v2.0.1 (Build #57)
 - New band canvas: smooth neon bezier curve through band tops, dashed 0 dB
   reference line, active-band glow + floating value bubble while dragging.
