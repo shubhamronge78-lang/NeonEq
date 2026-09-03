@@ -236,10 +236,12 @@ class EqualizerEngine private constructor(context: Context) {
 
             // Read back the ACTUAL hardware gain on UI band 0 — proves whether
             // the device is applying our levels or silently ignoring them.
-            val idx = bands.getOrNull(0)?.index ?: (-1).toShort()
+            // BandInfo.index is Int; the AudioEffect API takes Short.
+            val idx: Short = (bands.getOrNull(0)?.index ?: -1).toShort()
             val sessionEq = activeFX.values.firstOrNull()?.equalizer
-            val sessionLvl = try { if (sessionEq != null && idx >= 0) sessionEq.getBandLevel(idx) else null } catch (_: Throwable) { null }
-            val globalLvl = try { if (globalEQ != null && idx >= 0) globalEQ.getBandLevel(idx) else null } catch (_: Throwable) { null }
+            val sessionLvl = try { if (idx >= 0) sessionEq?.getBandLevel(idx) else null } catch (_: Throwable) { null }
+            val globalEqLocal = globalEQ  // local copy so Kotlin can smart-cast
+            val globalLvl = try { if (idx >= 0) globalEqLocal?.getBandLevel(idx) else null } catch (_: Throwable) { null }
             sb.append("\nband0 readback: session=")
             sb.append(if (sessionLvl != null) "${sessionLvl / 100}dB" else "n/a")
             sb.append(" global=").append(if (globalLvl != null) "${globalLvl / 100}dB" else "n/a")
