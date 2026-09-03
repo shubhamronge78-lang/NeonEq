@@ -53,7 +53,8 @@ Assign a preset to any audio app — the EQ switches automatically when that app
 
 | Version | Status | Download | Changelog |
 |---------|--------|----------|-----------|
-| **v2.0.1** | 🔥 **Latest** | [Download APK](https://github.com/shubhamronge78-lang/NeonEq/releases/tag/v2.0.1) | New band canvas (smooth curve, 0 dB line, drag glow + value bubble), zero-allocation rendering across all redraw paths, per-app audio profiles, custom presets, haptics, widget, QS tile, backup & restore |
+| **v2.0.2** | 🔥 **Latest** | [Download APK](https://github.com/shubhamronge78-lang/NeonEq/releases/tag/v2.0.2) | Volume fix (preamp no longer cancels loudness — EQ on ≈ EQ off), visualizer self-heal watchdog (MIUI stall fix) + idle pulse when toggled off; everything from 2.0.1 |
+| v2.0.1 | ✅ Stable | [Download APK](https://github.com/shubhamronge78-lang/NeonEq/releases/tag/v2.0.1) | New band canvas (smooth curve, 0 dB line, drag glow + value bubble), zero-allocation rendering across all redraw paths, per-app audio profiles, custom presets, haptics, widget, QS tile, backup & restore |
 | v2.0.0 | ✅ Stable | [Download APK](https://github.com/shubhamronge78-lang/NeonEq/releases/tag/v2.0.0) | Per-app audio profiles, custom presets (share/import/reorder), haptic fine-tuning, home widget, QS tile, backup & restore, visualizer styles, speaker-safe effect ranges (0–300) with preamp compensation, glass-morphism UI overhaul |
 | v1.0.0 | ✅ Stable | [Download APK](https://github.com/shubhamronge78-lang/NeonEq/releases/tag/v1.0.0) | Initial release — 10 presets, 5/10/15/31 bands, bass boost, virtualizer, loudness enhancer |
 | v0.9.0 | 🧪 Beta | [Download APK](https://github.com/shubhamronge78-lang/NeonEq/releases/tag/v0.9.0) | Pre-release build with core EQ functionality |
