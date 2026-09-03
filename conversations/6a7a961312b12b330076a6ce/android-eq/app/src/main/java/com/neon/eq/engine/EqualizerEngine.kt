@@ -255,7 +255,7 @@ class EqualizerEngine private constructor(context: Context) {
             val fxProbe = activeFX.values.firstOrNull()
             val bRead = try { fxProbe?.bassBoost?.properties?.strength?.toInt() } catch (_: Throwable) { null }
             val vRead = try { fxProbe?.virtualizer?.properties?.strength?.toInt() } catch (_: Throwable) { null }
-            val lRead = try { fxProbe?.loudnessEnhancer?.targetGain } catch (_: Throwable) { null }
+            val lRead = try { fxProbe?.loudnessEnhancer?.targetGain?.toInt() } catch (_: Throwable) { null }
             sb.append("\nfx set: bass=").append(currentBassBoost)
             sb.append(" virt=").append(currentVirtualizer)
             sb.append(" loud=").append(currentLoudness)
@@ -1057,7 +1057,7 @@ class EqualizerEngine private constructor(context: Context) {
                             if (wantLoud) {
                                 try {
                                     val l = sfx.loudnessEnhancer
-                                    if (l != null && (!l.enabled || l.targetGain != currentLoudness)) drifted = true
+                                    if (l != null && (!l.enabled || l.targetGain.toInt() != currentLoudness)) drifted = true
                                 } catch (_: Throwable) {}
                             }
                         }
