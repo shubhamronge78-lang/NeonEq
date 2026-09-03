@@ -113,6 +113,18 @@ app/src/main/java/com/neon/eq/
 - `RECORD_AUDIO` — may be needed on some devices for audio processing
 - `FOREGROUND_SERVICE` — keep EQ running in background
 
+## ⚡ Performance (Build #51 optimizations)
+
+The visualizer and EQ canvas are tuned for low-end hardware (tested on a Redmi 10C).
+
+- **Custom Canvas rendering** — visualizer (Bars / Wave / Circle styles) and EQ sliders are drawn with Compose Canvas directly. No AndroidView, no XML, no per-frame view invalidation.
+- **Zero per-frame allocation in hot loops** — `Path`, `Brush`, and color lists are hoisted out of render loops: one allocation per frame instead of one per bar/spoke (32+ objects per frame eliminated in Bars mode, 40 in Circle mode). Peak-marker arrays are reused across frames.
+- **Shared track geometry** — CanvasEQ touch mapping and drawing use the exact same computed track rectangle, so drag latency doesn't fight the render pass. Band drags stay smooth while the visualizer runs.
+- **Frame throttling** — capture/render cadence is capped so a low-end CPU budget isn't saturated; the UI thread never contends with the audio thread (`audioExecutor` runs all native `AudioEffect` calls off-thread).
+- **GC pressure kept flat** — waveform bytes and draw objects are reused rather than reallocated, avoiding GC pauses during playback.
+
+---
+
 ## 🏷️ Creating a New Version Release
 
 ```bash
