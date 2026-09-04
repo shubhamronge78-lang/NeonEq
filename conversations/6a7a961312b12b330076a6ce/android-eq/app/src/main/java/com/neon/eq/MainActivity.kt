@@ -101,6 +101,11 @@ class MainActivity : ComponentActivity() {
         }
 
         super.onCreate(savedInstanceState)
+        // Build #71: restore the persisted theme before the first frame.
+        try {
+            appThemeState.value = Themes.byId(
+                getSharedPreferences("ui_prefs", android.content.Context.MODE_PRIVATE).getString("theme", null))
+        } catch (_: Throwable) { }
 
         val perms = mutableListOf(Manifest.permission.MODIFY_AUDIO_SETTINGS, Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -190,13 +195,39 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// ── Build #71: app themes ──
+// Three-slot palette: primary (sliders, borders, glow), secondary (gradient
+// partner / dial cores), accent (badges, highlights). appThemeState is read
+// throughout composition — swapping it recomposes the whole UI with the new
+// palette. Selection persists in ui_prefs.
+data class NeonTheme(
+    val id: String,
+    val label: String,
+    val primary: Color,
+    val secondary: Color,
+    val accent: Color
+)
+
+object Themes {
+    val CLASSIC = NeonTheme("classic", "Classic Neon", Color(0xFF00E5FF), Color(0xFF7C4DFF), Color(0xFFFF4081))
+    val SYNTHWAVE = NeonTheme("synthwave", "Synthwave", Color(0xFFFF4FD8), Color(0xFF7C4DFF), Color(0xFF00E5FF))
+    val EMBER = NeonTheme("ember", "Ember", Color(0xFFFF9500), Color(0xFFFF3D5A), Color(0xFFFFD54F))
+    val EMERALD = NeonTheme("emerald", "Emerald", Color(0xFF00E676), Color(0xFF00BFA5), Color(0xFFB2FF59))
+    val GLACIER = NeonTheme("glacier", "Glacier", Color(0xFF40C4FF), Color(0xFF5C6BC0), Color(0xFF80D8FF))
+    val ALL = listOf(CLASSIC, SYNTHWAVE, EMBER, EMERALD, GLACIER)
+    fun byId(id: String?): NeonTheme = ALL.firstOrNull { it.id == id } ?: CLASSIC
+}
+
+val appThemeState = mutableStateOf(Themes.CLASSIC)
+private val T: NeonTheme get() = appThemeState.value
+
 @Composable
 fun NeonEQTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = Color(0xFF00E5FF),
-            secondary = Color(0xFF7C4DFF),
-            tertiary = Color(0xFFFF4081),
+            primary = T.primary,
+            secondary = T.secondary,
+            tertiary = T.accent,
             background = Color(0xFF050508),
             surface = Color(0xFF0D0D14),
             onPrimary = Color.Black,
@@ -250,7 +281,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     }
 
     var waveform by remember { mutableStateOf(ByteArray(0)) }
-    // Build #70: timestamp of the last capture delivery — lets the visualizer
+    // Build #71: timestamp of the last capture delivery — lets the visualizer
     // detect a MIUI capture stall while the EQ is ON (the self-heal watchdog
     // needs up to ~4s to re-attach) and drop to the idle pulse instead of
     // drawing the frozen stale buffer.
@@ -352,7 +383,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(color = Color(0xFF00E5FF))
+                CircularProgressIndicator(color = T.primary)
                 Spacer(Modifier.height(16.dp))
                 Text(statusMsg, fontSize = 12.sp, color = Color.Gray)
             }
@@ -381,7 +412,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     // Gradient wordmark — the signature of the modernized header
                     Text(
                         buildAnnotatedString {
-                            withStyle(SpanStyle(brush = Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))))) {
+                            withStyle(SpanStyle(brush = Brush.horizontalGradient(listOf(T.primary, T.secondary)))) {
                                 append("NEON EQ")
                             }
                         },
@@ -394,12 +425,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         modifier = Modifier
                             .size(34.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF7C4DFF).copy(alpha = 0.15f))
-                            .border(1.dp, Color(0xFF7C4DFF).copy(alpha = 0.4f), CircleShape)
+                            .background(T.secondary.copy(alpha = 0.15f))
+                            .border(1.dp, T.secondary.copy(alpha = 0.4f), CircleShape)
                             .clickable { showSettings = true },
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("⚙", fontSize = 16.sp, color = Color(0xFFB39DFF))
+                        Text("⚙", fontSize = 16.sp, color = T.secondary)
                     }
                 }
                 Switch(
@@ -410,14 +441,14 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         if (context is MainActivity) context.onEnabledToggled(it)
                     },
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color(0xFF00E5FF),
-                        checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                        checkedThumbColor = T.primary,
+                        checkedTrackColor = T.primary.copy(alpha = 0.3f)
                     )
                 )
             }
         }
         Text("System-Wide Audio Equalizer", fontSize = 12.sp, color = Color.Gray)
-        Text(statusMsg, fontSize = 9.sp, color = Color(0xFF7C4DFF))
+        Text(statusMsg, fontSize = 9.sp, color = T.secondary)
 
         Spacer(Modifier.height(16.dp))
 
@@ -436,16 +467,16 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            GradientText("PRESETS", 11.sp, Brush.horizontalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))))
+            GradientText("PRESETS", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
             Row {
                 Text(
                     "↺ Reset All",
                     fontSize = 11.sp,
-                    color = Color(0xFFFF4081),
+                    color = T.accent,
                     modifier = Modifier
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color(0xFFFF4081).copy(alpha = 0.10f))
+                        .background(T.accent.copy(alpha = 0.10f))
                         .clickable {
                         animateLevelsTo(FloatArray(31) { 0f })
                         selectedPreset = "Flat"
@@ -458,11 +489,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 Text(
                     "+ Save",
                     fontSize = 11.sp,
-                    color = Color(0xFF00E5FF),
+                    color = T.primary,
                     modifier = Modifier
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color(0xFF00E5FF).copy(alpha = 0.10f))
+                        .background(T.primary.copy(alpha = 0.10f))
                         .clickable {
                         presetNameInput = ""
                         showSaveDialog = true
@@ -472,11 +503,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 Text(
                     "↥ Share",
                     fontSize = 11.sp,
-                    color = Color(0xFF00E5FF),
+                    color = T.primary,
                     modifier = Modifier
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color(0xFF00E5FF).copy(alpha = 0.10f))
+                        .background(T.primary.copy(alpha = 0.10f))
                         .clickable {
                         val json = engine.exportCustomPresets()
                         if (customPresets.isEmpty()) {
@@ -502,11 +533,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 Text(
                     "↧ Import",
                     fontSize = 11.sp,
-                    color = Color(0xFF00E5FF),
+                    color = T.primary,
                     modifier = Modifier
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color(0xFF00E5FF).copy(alpha = 0.10f))
+                        .background(T.primary.copy(alpha = 0.10f))
                         .clickable {
                         importJsonInput = ""
                         importResultMsg = ""
@@ -528,7 +559,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         val newLevels = FloatArray(31) { 0f }
                         levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
                         animateLevelsTo(newLevels)
-                        // Build #70: ONE coordinated hardware transition; built-ins
+                        // Build #71: ONE coordinated hardware transition; built-ins
                         // leave the effect sliders at their current values.
                         engine.applyFullState(
                             ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
@@ -573,7 +604,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Band count selector ──
         NeonCard {
-            GradientText("BANDS", 11.sp, Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))))
+            GradientText("BANDS", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(5, 10, 15, 31).forEach { count ->
@@ -589,8 +620,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     },
                     label = { Text("$count", fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = Color(0xFF00E5FF).copy(alpha = 0.2f),
-                        selectedLabelColor = Color(0xFF00E5FF)
+                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
+                        selectedLabelColor = T.primary
                     )
                 )
             }
@@ -630,7 +661,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Effect sliders ──
         NeonCard {
-            GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(Color(0xFFFF4081), Color(0xFF7C4DFF))))
+            GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
             Spacer(Modifier.height(4.dp))
         EffectSlider("BASS BOOST", bassBoost, 0..300) { v ->
             bassBoost = v
@@ -650,11 +681,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Per-app profiles ──
         NeonCard {
-            GradientText("APP PROFILES", 11.sp, Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))))
+            GradientText("APP PROFILES", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
             Spacer(Modifier.height(6.dp))
             val pkg = playingApp
             if (pkg != null) {
-                Text("♪ ${appLabel(pkg)}", fontSize = 12.sp, color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold, maxLines = 1)
+                Text("♪ ${appLabel(pkg)}", fontSize = 12.sp, color = T.primary, fontWeight = FontWeight.Bold, maxLines = 1)
                 val assigned = appProfiles[pkg]
                 Text(
                     if (assigned != null) "Profile: $assigned" else "Tap a preset to assign a profile to this app",
@@ -698,7 +729,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         Text(
                             "×",
                             fontSize = 14.sp,
-                            color = Color(0xFFFF4081),
+                            color = T.accent,
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .clickable {
@@ -725,7 +756,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             containerColor = Color(0xFF12121F),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showSaveDialog = false },
-            title = { Text("Save current EQ as preset", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            title = { Text("Save current EQ as preset", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = presetNameInput,
@@ -765,7 +796,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             containerColor = Color(0xFF12121F),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showOverwriteDialog = false },
-            title = { Text("Overwrite preset?", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            title = { Text("Overwrite preset?", color = T.primary, fontWeight = FontWeight.Bold) },
             text = { Text("A preset named '$pendingPresetName' already exists. Overwrite it with current settings?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -858,7 +889,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 }
             )
             DropdownMenuItem(
-                text = { Text("Delete", color = Color(0xFFFF4081)) },
+                text = { Text("Delete", color = T.accent) },
                 onClick = {
                     engine.deleteCustomPreset(preset.name)
                     customPresets = engine.listCustomPresets()
@@ -878,7 +909,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             containerColor = Color(0xFF12121F),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showRenameDialog = false },
-            title = { Text("Rename preset", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            title = { Text("Rename preset", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = renameInput,
@@ -914,9 +945,49 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             containerColor = Color(0xFF12121F),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showSettings = false },
-            title = { Text("Settings", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            title = { Text("Settings", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // ── Build #71: App theme ──
+                    val ctx = LocalContext.current
+                    Column {
+                        Text("App Theme", fontSize = 14.sp, color = Color.White)
+                        Text("Accent palette for the entire UI", fontSize = 11.sp, color = Color.Gray)
+                        Spacer(Modifier.height(10.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Themes.ALL.forEach { t ->
+                                val selected = appThemeState.value.id == t.id
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (selected) t.primary.copy(alpha = 0.12f) else Color(0xFF1A1A2E))
+                                        .border(1.dp, if (selected) t.primary else Color(0xFF23233B), RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            appThemeState.value = t
+                                            try {
+                                                ctx.getSharedPreferences("ui_prefs", android.content.Context.MODE_PRIVATE)
+                                                    .edit().putString("theme", t.id).apply()
+                                            } catch (_: Throwable) { }
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        listOf(t.primary, t.secondary, t.accent).forEach { c ->
+                                            Box(Modifier.size(14.dp).clip(CircleShape).background(c))
+                                            Spacer(Modifier.width(6.dp))
+                                        }
+                                    }
+                                    Text(t.label, fontSize = 13.sp,
+                                        color = if (selected) t.primary else Color(0xFFE0E0FF),
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                                }
+                            }
+                        }
+                    }
+
                     // Start on boot
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -934,8 +1005,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 engine.setStartOnBoot(it)
                             },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF00E5FF),
-                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                                checkedThumbColor = T.primary,
+                                checkedTrackColor = T.primary.copy(alpha = 0.3f)
                             )
                         )
                     }
@@ -956,8 +1027,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 engine.setAutoApplyPreset(it)
                             },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF00E5FF),
-                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                                checkedThumbColor = T.primary,
+                                checkedTrackColor = T.primary.copy(alpha = 0.3f)
                             )
                         )
                     }
@@ -978,8 +1049,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 engine.setShowVisualizer(it)
                             },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF00E5FF),
-                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                                checkedThumbColor = T.primary,
+                                checkedTrackColor = T.primary.copy(alpha = 0.3f)
                             )
                         )
                     }
@@ -994,10 +1065,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 Text(
                                     label,
                                     fontSize = 11.sp,
-                                    color = if (sel) Color(0xFF0D0D14) else Color(0xFF00E5FF),
+                                    color = if (sel) Color(0xFF0D0D14) else T.primary,
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(50))
-                                        .background(if (sel) Color(0xFF00E5FF) else Color(0xFF00E5FF).copy(alpha = 0.12f))
+                                        .background(if (sel) T.primary else T.primary.copy(alpha = 0.12f))
                                         .clickable {
                                             visStyle = key
                                             engine.setVisualizerStyle(key)
@@ -1024,8 +1095,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 engine.setShowGlow(it)
                             },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF00E5FF),
-                                checkedTrackColor = Color(0xFF00E5FF).copy(alpha = 0.3f)
+                                checkedThumbColor = T.primary,
+                                checkedTrackColor = T.primary.copy(alpha = 0.3f)
                             )
                         )
                     }
@@ -1037,7 +1108,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         Text(
                             "⇩ Backup",
                             fontSize = 12.sp,
-                            color = Color(0xFF00E5FF),
+                            color = T.primary,
                             modifier = Modifier.clickable {
                                 try {
                                     val json = engine.exportFullBackup()
@@ -1058,7 +1129,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         Text(
                             "⇪ Restore",
                             fontSize = 12.sp,
-                            color = Color(0xFF00E5FF),
+                            color = T.primary,
                             modifier = Modifier.clickable {
                                 restoreJsonInput = ""
                                 restoreResultMsg = ""
@@ -1074,7 +1145,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         textAlign = TextAlign.Center
                     )
                     Spacer(Modifier.height(12.dp))
-                    // Build #70: live engine diagnostics — the on-device window
+                    // Build #71: live engine diagnostics — the on-device window
                     // into session attach (no adb on the Redmi 10C).
                     Text(
                         "ENGINE DIAGNOSTICS",
@@ -1096,14 +1167,14 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                         lineHeight = 14.sp,
-                        color = Color(0xFF00E5FF),
+                        color = T.primary,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #70",
+                        "Neon EQ v1.0 · Build #71",
                         fontSize = 10.sp,
-                        color = Color(0xFF7C4DFF),
+                        color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
                         textAlign = TextAlign.Center
                     )
@@ -1121,7 +1192,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             containerColor = Color(0xFF12121F),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showImportDialog = false },
-            title = { Text("Import presets", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            title = { Text("Import presets", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text("Paste the shared preset JSON below:", fontSize = 12.sp, color = Color.Gray)
@@ -1136,7 +1207,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     if (importResultMsg.isNotEmpty()) {
                         Spacer(Modifier.height(4.dp))
-                        Text(importResultMsg, fontSize = 11.sp, color = Color(0xFF00E5FF))
+                        Text(importResultMsg, fontSize = 11.sp, color = T.primary)
                     }
                 }
             },
@@ -1164,7 +1235,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             containerColor = Color(0xFF12121F),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showRestoreDialog = false },
-            title = { Text("Restore backup", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold) },
+            title = { Text("Restore backup", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text("Paste a Neon EQ backup JSON to restore all settings. This replaces current bands, effects, presets and toggles.", fontSize = 11.sp, color = Color.Gray)
@@ -1178,7 +1249,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     if (restoreResultMsg.isNotEmpty()) {
                         Spacer(Modifier.height(4.dp))
-                        Text(restoreResultMsg, fontSize = 11.sp, color = Color(0xFFFF4081))
+                        Text(restoreResultMsg, fontSize = 11.sp, color = T.accent)
                     }
                 }
             },
@@ -1230,7 +1301,7 @@ fun NeonCard(
             .background(
                 Brush.verticalGradient(listOf(Color(0xFF12121F), Color(0xFF0C0C15)))
             )
-            .border(1.dp, Color(0xFF00E5FF).copy(alpha = 0.10f), RoundedCornerShape(20.dp))
+            .border(1.dp, T.primary.copy(alpha = 0.10f), RoundedCornerShape(20.dp))
             .padding(12.dp),
         content = content
     )
@@ -1267,7 +1338,7 @@ fun BreathingGlow(active: Boolean) {
             .fillMaxWidth(0.7f)
             .background(
                 Brush.radialGradient(
-                    colors = listOf(Color(0xFF00E5FF).copy(alpha = alpha), Color.Transparent)
+                    colors = listOf(T.primary.copy(alpha = alpha), Color.Transparent)
                 )
             )
     )
@@ -1275,8 +1346,8 @@ fun BreathingGlow(active: Boolean) {
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
 // Degrades to a gentle idle pulse if no waveform data is available yet (permission
-// denied, unsupported device, or nothing playing) — and since Build #70 also when
-// the EQ toggle is OFF, or (Build #70) when capture data goes stale mid-playback
+// denied, unsupported device, or nothing playing) — and since Build #71 also when
+// the EQ toggle is OFF, or (Build #71) when capture data goes stale mid-playback
 // for >1.5s while the engine's self-heal watchdog re-attaches a MIUI-killed
 // capture. In both cases the stale buffer would render frozen; the idle pulse
 // renders instead. `active` + waveform freshness gate which mode we render.
@@ -1295,7 +1366,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     val peaks = remember { FloatArray(barCount) { 0f } }
     var tick by remember { mutableIntStateOf(0) }
 
-    // ---- Build #70: zero steady-state allocations in the visualizer ----
+    // ---- Build #71: zero steady-state allocations in the visualizer ----
     // This composable redraws EVERY frame (idle breathing + live waveform),
     // so every object below is created once and reused. The previous version
     // allocated per frame: wave = 2 Paths + 1 FloatArray + 3 brushes,
@@ -1303,13 +1374,13 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     val waveMainPath = remember { Path() }
     val waveMirrorPath = remember { Path() }
     val waveAmps = remember { FloatArray(64) }
-    val waveBrush = remember { Brush.horizontalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))) }
-    val waveGlowColor = remember { Color(0xFF00E5FF).copy(alpha = 0.25f) }
-    val waveMirrorColor = remember { Color(0xFF7C4DFF).copy(alpha = 0.15f) }
-    val spokeBrush = remember { Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))) }
-    val coreBrush = remember { Brush.radialGradient(listOf(Color(0xFF7C4DFF), Color(0x007C4DFF))) }
-    val barBrush = remember { Brush.verticalGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF))) }
-    val peakColor = remember { Color(0xFF00E5FF).copy(alpha = 0.7f) }
+    val waveBrush = remember(appThemeState.value) { Brush.horizontalGradient(listOf(T.secondary, T.primary)) }
+    val waveGlowColor = remember { T.primary.copy(alpha = 0.25f) }
+    val waveMirrorColor = remember { T.secondary.copy(alpha = 0.15f) }
+    val spokeBrush = remember(appThemeState.value) { Brush.linearGradient(listOf(T.secondary, T.primary)) }
+    val coreBrush = remember(appThemeState.value) { Brush.radialGradient(listOf(T.secondary, T.secondary.copy(alpha = 0f))) }
+    val barBrush = remember(appThemeState.value) { Brush.verticalGradient(listOf(T.secondary, T.primary)) }
+    val peakColor = remember { T.primary.copy(alpha = 0.7f) }
 
     // Drive peak decay at ~30fps — cheaper than recomposing the whole tree.
     LaunchedEffect(Unit) {
@@ -1323,7 +1394,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
         // Extract the amplitude for a single logical bar — shared by all three
         // styles so they react identically to the same waveform data.
-        // `live` = EQ on AND fresh capture data. The freshness check (Build #70)
+        // `live` = EQ on AND fresh capture data. The freshness check (Build #71)
         // closes the gap while the engine's self-heal watchdog re-attaches a
         // MIUI-killed capture: without it the stale buffer renders frozen for
         // up to ~4s mid-song. The idlePulse animation invalidates this Canvas
@@ -1350,7 +1421,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
-                // Build #70: paths, amp buffer and brushes are hoisted and
+                // Build #71: paths, amp buffer and brushes are hoisted and
                 // reset() per frame — the wave costs zero allocations now.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
@@ -1472,7 +1543,7 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #70: allocation-free hot path ----
+    // ---- Build #71: allocation-free hot path ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the
@@ -1488,13 +1559,13 @@ fun CanvasEQ(
     val centerDash = remember(density) { with(density) { PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 5.dp.toPx())) } }
     val bgColor = Color(0xFF1A1A2E)
     val bgDim = bgColor.copy(alpha = 0.45f)
-    val barColors = remember { listOf(Color(0xFF7C4DFF), Color(0xFF00E5FF)) }
-    val curveColors = remember { listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF)) }
-    val curveBrush = remember { Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF))) }
-    val curveGlow = Color(0xFF00E5FF).copy(alpha = 0.20f)
-    val centerColor = Color(0xFF00E5FF).copy(alpha = 0.16f)
-    val bubbleBg = Color(0xFF00E5FF).copy(alpha = 0.16f)
-    val bubbleBorder = Color(0xFF00E5FF).copy(alpha = 0.55f)
+    val barColors = remember { listOf(T.secondary, T.primary) }
+    val curveColors = remember { listOf(T.primary, T.secondary) }
+    val curveBrush = remember(appThemeState.value) { Brush.horizontalGradient(listOf(T.primary, T.secondary)) }
+    val curveGlow = T.primary.copy(alpha = 0.20f)
+    val centerColor = T.primary.copy(alpha = 0.16f)
+    val bubbleBg = T.primary.copy(alpha = 0.16f)
+    val bubbleBorder = T.primary.copy(alpha = 0.55f)
     val bubbleText = android.graphics.Color.rgb(220, 248, 255)
     val grayLabel = android.graphics.Color.rgb(140, 140, 158)
     val grayDim = android.graphics.Color.rgb(88, 88, 102)
@@ -1672,14 +1743,14 @@ fun CanvasEQ(
             val glowR = barWidthPx * 2.2f
             drawCircle(
                 brush = Brush.radialGradient(
-                    listOf(Color(0xFF00E5FF).copy(alpha = 0.35f), Color(0x0000E5FF)),
+                    listOf(T.primary.copy(alpha = 0.35f), T.primary.copy(alpha = 0f)),
                     center = Offset(cx, topY),
                     radius = glowR
                 ),
                 radius = glowR,
                 center = Offset(cx, topY)
             )
-            drawCircle(color = Color(0xFF00E5FF), radius = handlePx, center = Offset(cx, topY))
+            drawCircle(color = T.primary, radius = handlePx, center = Offset(cx, topY))
 
             val lvl = round(levels.getOrElse(activeBand) { 0f }).toInt()
             val text = (if (lvl > 0) "+$lvl" else "$lvl") + " dB"
@@ -1723,14 +1794,14 @@ fun AppProfileChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Text(
         label,
         fontSize = 10.sp,
-        color = if (selected) Color(0xFF00E5FF) else Color.Gray,
+        color = if (selected) T.primary else Color.Gray,
         maxLines = 1,
         modifier = Modifier
             .clip(RoundedCornerShape(50))
-            .background(if (selected) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF1A1A2E))
+            .background(if (selected) T.primary.copy(alpha = 0.15f) else Color(0xFF1A1A2E))
             .border(
                 1.dp,
-                if (selected) Color(0xFF00E5FF).copy(alpha = 0.5f) else Color(0xFF00E5FF).copy(alpha = 0.12f),
+                if (selected) T.primary.copy(alpha = 0.5f) else T.primary.copy(alpha = 0.12f),
                 RoundedCornerShape(50)
             )
             .clickable {
@@ -1753,11 +1824,11 @@ fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
             }
             .clip(RoundedCornerShape(16.dp))
             .background(
-                if (selected) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF1A1A2E)
+                if (selected) T.primary.copy(alpha = 0.15f) else Color(0xFF1A1A2E)
             )
             .border(
                 1.dp,
-                if (selected) Color(0xFF00E5FF).copy(alpha = 0.6f) else Color(0xFF00E5FF).copy(alpha = 0.12f),
+                if (selected) T.primary.copy(alpha = 0.6f) else T.primary.copy(alpha = 0.12f),
                 RoundedCornerShape(16.dp)
             )
             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -1765,7 +1836,7 @@ fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
         // Mini sparkline preview — 24px tall, draws the EQ curve shape
         // Hoisted out of the draw loop — the old version allocated two Color
         // objects per band per frame while the row scrolled (31 bands x N chips).
-        val thumbColor = if (selected) Color(0xFF00E5FF).copy(alpha = 0.8f) else Color(0xFF7C4DFF).copy(alpha = 0.5f)
+        val thumbColor = if (selected) T.primary.copy(alpha = 0.8f) else T.secondary.copy(alpha = 0.5f)
         Canvas(modifier = Modifier.width(60.dp).height(24.dp)) {
             val levels = preset.levels
             val n = 31
@@ -1786,7 +1857,7 @@ fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
             }
         }
         Spacer(Modifier.height(2.dp))
-        Text(preset.name, fontSize = 10.sp, color = if (selected) Color(0xFF00E5FF) else Color.Gray, maxLines = 1)
+        Text(preset.name, fontSize = 10.sp, color = if (selected) T.primary else Color.Gray, maxLines = 1)
     }
 }
 
@@ -1805,11 +1876,11 @@ fun CustomPresetChip(
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
             .background(
-                if (selected) Color(0xFF7C4DFF).copy(alpha = 0.2f) else Color(0xFF1A1A2E)
+                if (selected) T.secondary.copy(alpha = 0.2f) else Color(0xFF1A1A2E)
             )
             .border(
                 1.dp,
-                if (selected) Color(0xFF7C4DFF).copy(alpha = 0.6f) else Color(0xFF7C4DFF).copy(alpha = 0.15f),
+                if (selected) T.secondary.copy(alpha = 0.6f) else T.secondary.copy(alpha = 0.15f),
                 RoundedCornerShape(16.dp)
             )
             .padding(horizontal = 4.dp)
@@ -1827,7 +1898,7 @@ fun CustomPresetChip(
                 val barH = size.height * 0.45f * kotlin.math.abs(normY)
                 val y = if (normY >= 0) midY - barH else midY
                 drawRoundRect(
-                    color = if (selected) Color(0xFF7C4DFF).copy(alpha = 0.8f) else Color(0xFF7C4DFF).copy(alpha = 0.4f),
+                    color = if (selected) T.secondary.copy(alpha = 0.8f) else T.secondary.copy(alpha = 0.4f),
                     topLeft = Offset(i * slotW, y),
                     size = Size(slotW * 0.7f, barH.coerceAtLeast(1f)),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f, 1f)
@@ -1837,7 +1908,7 @@ fun CustomPresetChip(
         Text(
             preset.name,
             fontSize = 10.sp,
-            color = if (selected) Color(0xFF7C4DFF) else Color.Gray,
+            color = if (selected) T.secondary else Color.Gray,
             modifier = Modifier
                 .combinedClickable(
                     onClick = {
@@ -1856,7 +1927,7 @@ fun CustomPresetChip(
                 .clickable(onClick = onDelete),
             contentAlignment = Alignment.Center
         ) {
-            Text("×", fontSize = 14.sp, color = Color(0xFFFF4081))
+            Text("×", fontSize = 14.sp, color = T.accent)
         }
     }
 }
@@ -1884,20 +1955,20 @@ fun EffectSlider(label: String, value: Int, range: IntRange, onValueChange: (Int
                     )
                 },
             colors = SliderDefaults.colors(
-                thumbColor = Color(0xFFFF4081),
-                activeTrackColor = Color(0xFFFF4081).copy(alpha = 0.4f)
+                thumbColor = T.accent,
+                activeTrackColor = T.accent.copy(alpha = 0.4f)
             )
         )
         Text(
             "$value",
             fontSize = 11.sp,
-            color = Color(0xFFFF4081),
+            color = T.accent,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .width(40.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xFFFF4081).copy(alpha = 0.10f))
-                .border(1.dp, Color(0xFFFF4081).copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                .background(T.accent.copy(alpha = 0.10f))
+                .border(1.dp, T.accent.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
                 .padding(vertical = 2.dp)
         )
     }
@@ -1913,7 +1984,7 @@ fun CrashScreen(trace: String, onDismiss: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        Text("NEON EQ CRASHED", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF4081))
+        Text("NEON EQ CRASHED", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = T.accent)
         Spacer(Modifier.height(8.dp))
         Text(
             "Screenshot this and send it back — this is the real error, not a guess.",
@@ -1922,16 +1993,16 @@ fun CrashScreen(trace: String, onDismiss: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text(
             "Tap Copy to clipboard if you can't screenshot.",
-            fontSize = 11.sp, color = Color(0xFF7C4DFF)
+            fontSize = 11.sp, color = T.secondary
         )
         Spacer(Modifier.height(16.dp))
         Text(
             trace,
             fontSize = 10.sp,
-            color = Color(0xFF00E5FF),
+            color = T.primary,
             modifier = Modifier
                 .background(Color(0xFF0D0D14))
-                .border(1.dp, Color(0xFFFF4081).copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                .border(1.dp, T.accent.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
                 .padding(12.dp)
         )
         Spacer(Modifier.height(16.dp))
