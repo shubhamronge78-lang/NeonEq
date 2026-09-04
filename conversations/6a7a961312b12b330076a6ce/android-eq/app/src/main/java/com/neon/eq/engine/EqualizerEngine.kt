@@ -288,9 +288,9 @@ class EqualizerEngine private constructor(context: Context) {
             val lRead = try { fxProbe?.loudnessEnhancer?.targetGain?.toInt() } catch (_: Throwable) { null }
             sb.append("\nfx set: bass=").append(currentBassBoost)
             sb.append(" virt=").append(currentVirtualizer)
-            sb.append(" loud=").append(currentLoudness)
+            sb.append(" loud=").append(loudnessMillibels(currentLoudness))
             sb.append(" | read: ").append(bRead ?: -1).append("/").append(vRead ?: -1).append("/").append(lRead ?: -1)
-            sb.append(" | applied: ").append(appliedBass).append("/").append(appliedVirt).append("/").append(appliedLoud)
+            sb.append(" | applied: ").append(appliedBass).append("/").append(appliedVirt).append("/").append(loudnessMillibels(appliedLoud))
             // Build #66: last glide transition — kind, frames executed, measured
             // duration, and whether a newer transition superseded it.
             sb.append("\ntransition: kind=").append(if (traceKind.isEmpty()) "none" else traceKind)
@@ -803,7 +803,7 @@ class EqualizerEngine private constructor(context: Context) {
                     try {
                         globalLoudness = LoudnessEnhancer(0).also { le ->
                             le.enabled = currentEnabled && currentLoudness > 0
-                            if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 300))
+                            if (currentLoudness > 0) le.setTargetGain(loudnessMillibels(currentLoudness))
                         }
                         Log.d(TAG, "Global LoudnessEnhancer created")
                     } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: ${t.message}") }
@@ -1120,7 +1120,7 @@ class EqualizerEngine private constructor(context: Context) {
                             if (wantLoud) {
                                 try {
                                     val l = sfx.loudnessEnhancer
-                                    if (l != null && (!l.enabled || l.targetGain.toInt() != currentLoudness)) drifted = true
+                                    if (l != null && (!l.enabled || l.targetGain.toInt() != loudnessMillibels(currentLoudness))) drifted = true
                                 } catch (_: Throwable) {}
                             }
                         }
@@ -1219,7 +1219,7 @@ class EqualizerEngine private constructor(context: Context) {
                     // starts disabled and setTargetGain alone does nothing. The
                     // loudness slider has been a silent no-op until now.
                     le.enabled = currentEnabled && currentLoudness > 0
-                    if (currentLoudness > 0) le.setTargetGain(currentLoudness.coerceIn(0, 300))
+                    if (currentLoudness > 0) le.setTargetGain(loudnessMillibels(currentLoudness))
                 }
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
@@ -1386,6 +1386,14 @@ class EqualizerEngine private constructor(context: Context) {
     @Volatile private var traceFrames = 0        // frames actually executed
     @Volatile private var traceSuperseded = false // killed by a newer transition
 
+    // Build #73: loudness response curve. The slider is 0-300 UI units, but the
+    // hardware wants millibels. A 0.75-exponent power curve makes the whole
+    // range bite harder (150 -> ~594 mB vs the old flat 150 mB) with the same
+    // one-finger feel at the top, capped at 1000 mB (+10 dB) to stay clear of
+    // distortion. EVERY hardware write and drift check goes through this.
+    private fun loudnessMillibels(v: Int): Int =
+        (Math.pow((v.coerceIn(0, 300) / 300.0), 0.75) * 1000.0).toInt()
+
     // Build #64: ONE shared applier for the whole effects chain — global path
     // plus every session, all three effects, in a single pass. Sets strength/
     // gain BEFORE enabling (enabling first lets the effect go live at its
@@ -1403,11 +1411,12 @@ class EqualizerEngine private constructor(context: Context) {
             val gl = globalLoudness
             try { gb?.apply { setStrength(b.toShort()); enabled = wantBass } } catch (_: Throwable) {}
             try { gv?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
-            try { gl?.apply { if (l > 0) setTargetGain(l); enabled = wantLoud } } catch (_: Throwable) {}
+            val lmb = loudnessMillibels(l)
+            try { gl?.apply { if (lmb > 0) setTargetGain(lmb); enabled = wantLoud } } catch (_: Throwable) {}
             for ((_, sfx) in activeFX) {
                 try { sfx.bassBoost?.apply { setStrength(b.toShort()); enabled = wantBass } } catch (_: Throwable) {}
                 try { sfx.virtualizer?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
-                try { sfx.loudnessEnhancer?.apply { if (l > 0) setTargetGain(l); enabled = wantLoud } } catch (_: Throwable) {}
+                try { sfx.loudnessEnhancer?.apply { if (lmb > 0) setTargetGain(lmb); enabled = wantLoud } } catch (_: Throwable) {}
             }
             appliedBass = b; appliedVirt = v; appliedLoud = l
         } catch (t: Throwable) { Log.w(TAG, "applyEffects failed: ${'$'}{t.message}") }
