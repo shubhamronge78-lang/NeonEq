@@ -284,7 +284,7 @@ class EqualizerEngine private constructor(context: Context) {
         for (j in bands.indices) {
             val bi = bands[j]
             val mb = applyPreamp(sampleCurveAt(levels, bandPos[j]))
-                .toInt().coerceIn(bi.min.toInt(), bi.max.toInt())
+                .toInt().coerceIn(bi.minLevel.toInt(), bi.maxLevel.toInt())
             try { g?.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
             for ((_, sfx) in activeFX) {
                 try { sfx.equalizer.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
@@ -295,6 +295,9 @@ class EqualizerEngine private constructor(context: Context) {
 
 
     fun currentLevelsSnapshot(): ShortArray = currentBandLevels.copyOf()
+
+    // Build #67: ShortArray.toIntArray() doesn't exist in the stdlib.
+    private fun levelsInts(): IntArray = IntArray(currentBandLevels.size) { i -> currentBandLevels[i].toInt() }
     fun currentBassBoostValue(): Int = currentBassBoost
     fun currentVirtualizerValue(): Int = currentVirtualizer
     fun currentLoudnessValue(): Int = currentLoudness
@@ -1108,7 +1111,7 @@ class EqualizerEngine private constructor(context: Context) {
                 val range = try { sfx.equalizer.bandLevelRange } catch (_: Throwable) { shortArrayOf(-1500, 1500) }
                 for (j in 0 until usable) {
                     val pos = j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
-                    val mb = applyPreamp(sampleCurveAt(currentBandLevels.toIntArray(), pos))
+                    val mb = applyPreamp(sampleCurveAt(levelsInts(), pos))
                         .toInt().coerceIn(range[0].toInt(), range[1].toInt())
                     try { sfx.equalizer.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
                 }
@@ -1145,7 +1148,7 @@ class EqualizerEngine private constructor(context: Context) {
             val range = try { eq.bandLevelRange } catch (_: Throwable) { shortArrayOf(-1500, 1500) }
             for (j in 0 until usable) {
                 val pos = j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
-                val mb = applyPreamp(sampleCurveAt(currentBandLevels.toIntArray(), pos))
+                val mb = applyPreamp(sampleCurveAt(levelsInts(), pos))
                     .toInt().coerceIn(range[0].toInt(), range[1].toInt())
                 try { eq.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
             }
@@ -1230,7 +1233,7 @@ class EqualizerEngine private constructor(context: Context) {
     // Build #67: routed through the single curve sampler — same interpolated
     // mapping and range clamping as every other band write.
     private fun reapplyBandLevelsToHardware() {
-        applyBands(currentBandLevels.toIntArray())
+        applyBands(levelsInts())
     }
 
     fun setBandLevel(band: Int, level: Short) {
@@ -1242,7 +1245,7 @@ class EqualizerEngine private constructor(context: Context) {
             // Build #67: full curve reapply per drag frame. One UI slot can
             // legitimately drive more than one hardware band under the
             // interpolated mapping — this keeps the mapping in ONE place.
-            applyBands(currentBandLevels.toIntArray())
+            applyBands(levelsInts())
         }
     }
 
