@@ -72,7 +72,13 @@ class EqualizerEngine private constructor(context: Context) {
         val equalizer: Equalizer,
         val bassBoost: BassBoost?,
         val virtualizer: Virtualizer?,
-        val loudnessEnhancer: LoudnessEnhancer?
+        val loudnessEnhancer: LoudnessEnhancer?,
+        // Build #68: this session's OWN band map (hardware band j samples the UI
+        // curve at bandPos[j]) and level range — captured at attach. Sessions
+        // can expose a different band layout than the global EQ on MIUI.
+        val bandPos: FloatArray = FloatArray(0),
+        val minLevel: Short = -1500,
+        val maxLevel: Short = 1500
     )
     private val activeFX = ConcurrentHashMap<Int, SessionFX>()
 
@@ -141,14 +147,38 @@ class EqualizerEngine private constructor(context: Context) {
         return arr
     }
 
-    private fun persistLevels() {
+    // Build #68: persistence debounce. Slider drags fire setBandLevel / fx
+    // setters per animation frame (up to 60Hz) — each event used to build a
+    // 31-value string and schedule its own prefs write. Now coalesced: at most
+    // one levels write and one batched scalar write per 200ms, always carrying
+    // the latest values.
+    private val persistHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val persistLevelsRunnable = Runnable {
         try {
             prefs.edit().putString(KEY_LEVELS, currentBandLevels.joinToString(",")).apply()
         } catch (_: Throwable) { }
     }
+    private fun persistLevels() {
+        persistHandler.removeCallbacks(persistLevelsRunnable)
+        persistHandler.postDelayed(persistLevelsRunnable, 200L)
+    }
 
+    private val dirtyScalars = ConcurrentHashMap<String, Int>()
+    private val persistScalarsRunnable = Runnable {
+        val batch = ArrayList<Map.Entry<String, Int>>()
+        val it = dirtyScalars.entries.iterator()
+        while (it.hasNext()) { val e = it.next(); batch.add(e); it.remove() }
+        if (batch.isEmpty()) return@Runnable
+        try {
+            val ed = prefs.edit()
+            for (e in batch) ed.putInt(e.key, e.value)
+            ed.apply()
+        } catch (_: Throwable) { }
+    }
     private fun persistScalar(key: String, value: Int) {
-        try { prefs.edit().putInt(key, value).apply() } catch (_: Throwable) { }
+        dirtyScalars[key] = value
+        persistHandler.removeCallbacks(persistScalarsRunnable)
+        persistHandler.postDelayed(persistScalarsRunnable, 200L)
     }
 
     // Pre-amp compensation: bass boost and very hot band boosts can push the output
@@ -279,16 +309,21 @@ class EqualizerEngine private constructor(context: Context) {
     // device's band level range — an out-of-range setBandLevel throws (caught
     // silently) and would leave the band drifting at its old value.
     private fun applyBands(levels: IntArray) {
-        if (bands.isEmpty() || bandPos.isEmpty()) return
-        val g = globalEQ
-        for (j in bands.indices) {
-            val bi = bands[j]
-            val mb = applyPreamp(sampleCurveAt(levels, bandPos[j]))
-                .toInt().coerceIn(bi.minLevel.toInt(), bi.maxLevel.toInt())
-            try { g?.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
-            for ((_, sfx) in activeFX) {
-                try { sfx.equalizer.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
+        if (bands.isNotEmpty() && bandPos.isNotEmpty()) {
+            val g = globalEQ
+            for (j in bands.indices) {
+                val bi = bands[j]
+                val mb = applyPreamp(sampleCurveAt(levels, bandPos[j]))
+                    .toInt().coerceIn(bi.minLevel.toInt(), bi.maxLevel.toInt())
+                try { g?.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
             }
+        }
+        // Build #68: sessions sample through their OWN band map — a session with
+        // a different band layout than the global EQ no longer receives writes
+        // at out-of-range indices (which throw silently and would leave that
+        // session running without EQ).
+        for ((_, sfx) in activeFX) {
+            applyCurveToEq(sfx.equalizer, sfx.bandPos, sfx.minLevel.toInt(), sfx.maxLevel.toInt(), levels)
         }
     }
 
@@ -1106,15 +1141,9 @@ class EqualizerEngine private constructor(context: Context) {
         for ((_, sfx) in activeFX) {
             try {
                 sfx.equalizer.enabled = currentEnabled
-                val numBands = sfx.equalizer.numberOfBands.toInt()
-                val usable = minOf(numBands, MAX_BANDS)
-                val range = try { sfx.equalizer.bandLevelRange } catch (_: Throwable) { shortArrayOf(-1500, 1500) }
-                for (j in 0 until usable) {
-                    val pos = j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
-                    val mb = applyPreamp(sampleCurveAt(levelsInts(), pos))
-                        .toInt().coerceIn(range[0].toInt(), range[1].toInt())
-                    try { sfx.equalizer.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
-                }
+                // Build #68: the session's captured band map — same formula as
+                // attach, no per-band recompute of the curve array.
+                applyCurveToEq(sfx.equalizer, sfx.bandPos, sfx.minLevel.toInt(), sfx.maxLevel.toInt(), levelsInts())
             } catch (e: Throwable) { Log.e(TAG, "reapply EQ for session", e) }
 
         }
@@ -1146,12 +1175,10 @@ class EqualizerEngine private constructor(context: Context) {
             // could land on a different hardware band depending on which code
             // path wrote the value.
             val range = try { eq.bandLevelRange } catch (_: Throwable) { shortArrayOf(-1500, 1500) }
-            for (j in 0 until usable) {
-                val pos = j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
-                val mb = applyPreamp(sampleCurveAt(levelsInts(), pos))
-                    .toInt().coerceIn(range[0].toInt(), range[1].toInt())
-                try { eq.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
+            val positions = FloatArray(usable) { j ->
+                j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
             }
+            applyCurveToEq(eq, positions, range[0].toInt(), range[1].toInt(), levelsInts())
 
             var bb: BassBoost? = null
             var virt: Virtualizer? = null
@@ -1178,7 +1205,7 @@ class EqualizerEngine private constructor(context: Context) {
                 }
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
-            activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud)
+            activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud, positions, range[0], range[1])
             Log.d(TAG, "Session $sessionId: $numBands bands attached")
 
             if (bands.isEmpty()) {
@@ -1212,6 +1239,16 @@ class EqualizerEngine private constructor(context: Context) {
         }
         return indices.map { i ->
             BandInfo(i, eq.getCenterFreq(i.toShort()) / 1000, eq.bandLevelRange[0], eq.bandLevelRange[1])
+        }
+    }
+
+    // Build #68: write the sampled curve to ONE equalizer (global or session)
+    // using that EQ's own band positions and level range.
+    private fun applyCurveToEq(eq: Equalizer, positions: FloatArray, minL: Int, maxL: Int, levels: IntArray) {
+        for (j in positions.indices) {
+            val mb = applyPreamp(sampleCurveAt(levels, positions[j]))
+                .toInt().coerceIn(minL, maxL)
+            try { eq.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
         }
     }
 
