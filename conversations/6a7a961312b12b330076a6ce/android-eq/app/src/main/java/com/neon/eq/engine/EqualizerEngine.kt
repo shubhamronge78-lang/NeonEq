@@ -447,9 +447,28 @@ class EqualizerEngine private constructor(context: Context) {
         } catch (_: Throwable) { null }
     }
 
+    // Build #78: MIUI churns active playback configs constantly — system/touch
+    // sounds get real session ids and transient nulls appear while sessions are
+    // re-created. Acting on a single scan's resolution made presets flip
+    // mid-playback and, worse, cleared the user's manual-override suppression
+    // on one tick of churn so the profile re-engaged and yanked the user's
+    // preset back. Require the SAME package on 2 consecutive scans before any
+    // profile action; a single tick of churn now changes nothing.
+    @Volatile private var profileStablePkg: String? = null
+    @Volatile private var profileStableCount = 0
+
     // Core auto-switch logic, invoked once per session scan tick.
     private fun maybeApplyAppProfile(playingPkg: String?) {
         lastPlayingPackage = playingPkg
+        // Build #78 stability gate: act only once the resolved package has held
+        // for two consecutive scans.
+        if (playingPkg == profileStablePkg) {
+            profileStableCount++
+        } else {
+            profileStablePkg = playingPkg
+            profileStableCount = 1
+        }
+        if (profileStableCount < 2) return
         // A suppressed profile stays suppressed only while its app is playing.
         if (playingPkg != suppressedProfilePackage) suppressedProfilePackage = null
 
@@ -979,7 +998,13 @@ class EqualizerEngine private constructor(context: Context) {
             // Per-app profiles: pick the config we'd attach an EQ to (one with a
             // real session id; falls back to first config when reflection is
             // blocked) and swap presets if that app has a profile.
-            val profileConfig = configs.firstOrNull { reflectSessionId(it) != 0 } ?: configs.firstOrNull()
+            // Build #78: prefer configs whose player reports ACTIVE playback —
+            // MIUI's system/touch sounds surface with real session ids and
+            // polluted the pick, flipping the resolved "playing package" between
+            // the music app and system packages every scan.
+            val profileConfig = configs.firstOrNull { reflectSessionId(it) != 0 && reflectIsActive(it) }
+                ?: configs.firstOrNull { reflectSessionId(it) != 0 }
+                ?: configs.firstOrNull()
             maybeApplyAppProfile(resolvePlayingPackage(profileConfig))
 
             val activeSessionIds = mutableSetOf<Int>()
