@@ -274,15 +274,20 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     // Apply one full band frame (with preamp compensation) to the global EQ and
-    // every active per-session EQ.
+    // every active per-session EQ. Build #67: the frame is sampled onto the
+    // hardware bands by interpolated position, and each write is clamped to the
+    // device's band level range — an out-of-range setBandLevel throws (caught
+    // silently) and would leave the band drifting at its old value.
     private fun applyBands(levels: IntArray) {
-        for (band in levels.indices) {
-            val millibel = applyPreamp(levels[band])
-            bands.getOrNull(band)?.let { bi ->
-                try { globalEQ?.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
-                for ((_, sfx) in activeFX) {
-                    try { sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
-                }
+        if (bands.isEmpty() || bandPos.isEmpty()) return
+        val g = globalEQ
+        for (j in bands.indices) {
+            val bi = bands[j]
+            val mb = applyPreamp(sampleCurveAt(levels, bandPos[j]))
+                .toInt().coerceIn(bi.min.toInt(), bi.max.toInt())
+            try { g?.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
+            for ((_, sfx) in activeFX) {
+                try { sfx.equalizer.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
             }
         }
     }
@@ -700,7 +705,7 @@ class EqualizerEngine private constructor(context: Context) {
             statusMessage = "Limited EQ support on this device — try again or reduce bands"
             isReady = true
             enabled = currentEnabled
-            if (bands.isEmpty()) bands = fallbackBands(bandCount)
+            if (bands.isEmpty()) bands = fallbackBands(bandCount); bandPos = FloatArray(bandCount) { it.toFloat() }
             onReady?.invoke(isReady, statusMessage, bands)
         }
     }
@@ -780,7 +785,7 @@ class EqualizerEngine private constructor(context: Context) {
                     statusMessage = "Scanning for audio sessions..."
                     isReady = true
                     enabled = currentEnabled
-                    if (bands.isEmpty()) bands = fallbackBands(bandCount)
+                    if (bands.isEmpty()) bands = fallbackBands(bandCount); bandPos = FloatArray(bandCount) { it.toFloat() }
                 }
 
                 try { startSessionPolling() } catch (t: Throwable) { Log.w(TAG, "startSessionPolling failed: ${t.message}") }
@@ -793,7 +798,7 @@ class EqualizerEngine private constructor(context: Context) {
                 statusMessage = "EQ running in limited mode on this device"
                 isReady = true
                 enabled = currentEnabled
-                if (bands.isEmpty()) bands = fallbackBands(bandCount)
+                if (bands.isEmpty()) bands = fallbackBands(bandCount); bandPos = FloatArray(bandCount) { it.toFloat() }
             } finally {
                 mainHandler.removeCallbacks(watchdogRunnable)
                 if (!uiNotified) {
@@ -1100,10 +1105,12 @@ class EqualizerEngine private constructor(context: Context) {
                 sfx.equalizer.enabled = currentEnabled
                 val numBands = sfx.equalizer.numberOfBands.toInt()
                 val usable = minOf(numBands, MAX_BANDS)
-                for (i in 0 until minOf(bandCount, usable)) {
-                    val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
-                    val millibel = applyPreamp(currentBandLevels[i].toInt())
-                    try { sfx.equalizer.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) {}
+                val range = try { sfx.equalizer.bandLevelRange } catch (_: Throwable) { shortArrayOf(-1500, 1500) }
+                for (j in 0 until usable) {
+                    val pos = j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
+                    val mb = applyPreamp(sampleCurveAt(currentBandLevels.toIntArray(), pos))
+                        .toInt().coerceIn(range[0].toInt(), range[1].toInt())
+                    try { sfx.equalizer.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
                 }
             } catch (e: Throwable) { Log.e(TAG, "reapply EQ for session", e) }
 
@@ -1130,10 +1137,17 @@ class EqualizerEngine private constructor(context: Context) {
             }
             val usable = minOf(numBands, MAX_BANDS)
 
-            for (i in 0 until minOf(bandCount, usable)) {
-                val bandIndex = if (usable <= bandCount) i else i * usable / bandCount
-                val millibel = applyPreamp(currentBandLevels[i].toInt())
-                try { eq.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) {}
+            // Build #67: sample the whole UI curve onto this session's own bands
+            // (interpolated, per-session layout). Was: nearest-index step math
+            // that diverged from the ramp-path mapping — the same UI slider
+            // could land on a different hardware band depending on which code
+            // path wrote the value.
+            val range = try { eq.bandLevelRange } catch (_: Throwable) { shortArrayOf(-1500, 1500) }
+            for (j in 0 until usable) {
+                val pos = j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
+                val mb = applyPreamp(sampleCurveAt(currentBandLevels.toIntArray(), pos))
+                    .toInt().coerceIn(range[0].toInt(), range[1].toInt())
+                try { eq.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
             }
 
             var bb: BassBoost? = null
@@ -1181,12 +1195,31 @@ class EqualizerEngine private constructor(context: Context) {
         }
     }
 
+    // Build #67: position of each hardware band in UI-slot space. The UI curve
+    // is SAMPLED at these (fractional) positions with linear interpolation, so
+    // on a 5-band device ALL 31 sliders contribute (previously only the first
+    // `usable` sliders were live and the rest were silently dead).
+    @Volatile private var bandPos = FloatArray(0)
+
     private fun pickBands(eq: Equalizer, count: Int, usable: Int): List<BandInfo> {
         val indices = if (usable <= count) (0 until usable).toList()
         else (0 until count).map { it * usable / count }
+        bandPos = FloatArray(indices.size) { j ->
+            indices[j] * (count - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
+        }
         return indices.map { i ->
             BandInfo(i, eq.getCenterFreq(i.toShort()) / 1000, eq.bandLevelRange[0], eq.bandLevelRange[1])
         }
+    }
+
+    // Linear interpolation of the UI curve at a fractional slot position.
+    private fun sampleCurveAt(levels: IntArray, pos: Float): Int {
+        if (levels.isEmpty()) return 0
+        val p = pos.coerceIn(0f, (levels.size - 1).toFloat())
+        val lo = kotlin.math.floor(p).toInt().coerceIn(0, levels.size - 1)
+        val hi = kotlin.math.ceil(p).toInt().coerceIn(0, levels.size - 1)
+        val frac = p - lo
+        return (levels[lo] * (1f - frac) + levels[hi] * frac).toInt()
     }
 
     // ── Public API ──
@@ -1194,16 +1227,10 @@ class EqualizerEngine private constructor(context: Context) {
 
     // Reapply all current band levels to global + per-session EQs with preamp compensation.
     // Called when effect sliders change (bass/virt/loud) so the preamp updates live.
+    // Build #67: routed through the single curve sampler — same interpolated
+    // mapping and range clamping as every other band write.
     private fun reapplyBandLevelsToHardware() {
-        for (i in 0 until bandCount) {
-            val millibel = applyPreamp(currentBandLevels[i].toInt())
-            bands.getOrNull(i)?.let { bi ->
-                try { globalEQ?.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
-                for ((_, sfx) in activeFX) {
-                    try { sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } catch (_: Throwable) {}
-                }
-            }
-        }
+        applyBands(currentBandLevels.toIntArray())
     }
 
     fun setBandLevel(band: Int, level: Short) {
@@ -1211,14 +1238,11 @@ class EqualizerEngine private constructor(context: Context) {
         rampGeneration++   // a direct drag supersedes any in-flight preset ramp
         currentBandLevels[band] = level
         persistLevels()
-        val millibel = applyPreamp(level.toInt())
         audioExecutor.execute {
-            try { bands.getOrNull(band)?.let { bi -> globalEQ?.setBandLevel(bi.index.toShort(), millibel) } }
-            catch (e: Throwable) { Log.e(TAG, "globalEQ setBandLevel", e) }
-            for ((_, sfx) in activeFX) {
-                try { bands.getOrNull(band)?.let { bi -> sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } }
-                catch (e: Throwable) { Log.e(TAG, "session EQ setBandLevel", e) }
-            }
+            // Build #67: full curve reapply per drag frame. One UI slot can
+            // legitimately drive more than one hardware band under the
+            // interpolated mapping — this keeps the mapping in ONE place.
+            applyBands(currentBandLevels.toIntArray())
         }
     }
 
