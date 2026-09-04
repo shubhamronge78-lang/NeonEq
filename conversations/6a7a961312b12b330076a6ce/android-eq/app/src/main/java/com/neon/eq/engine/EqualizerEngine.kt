@@ -188,19 +188,24 @@ class EqualizerEngine private constructor(context: Context) {
     // Loudness is the user explicitly asking for more volume — subtracting gain for
     // it made "EQ on" quieter than "EQ off" with the default 150/150/150 settings
     // (reported on Redmi 10C). The virtualizer is a stereo-width effect with
-    // negligible level gain. Bass boost (the actual distortion source) is still
-    // compensated but at half the old rate, and band boosts only count above +6dB —
-    // so typical settings are now transparent, and only extreme shapes get trimmed.
+    // negligible level gain.
+    // Build #76: the remaining trim still penalized every preset — band boosts
+    // above +6dB cost half the excess and the bass slider cost more, so a
+    // normal +8-10dB preset applied 1-2dB below flat, and presets with mid
+    // cuts lost further energy. Reported twice on the Redmi 10C as "flat is
+    // louder than any preset". Now: BassBoost is fully uncompensated (same
+    // rationale as loudness in #58), and band compensation only engages for
+    // extreme shapes above +9dB, at quarter rate, capped at 2dB — every
+    // normal preset applies with ZERO trim and sounds exactly as loud as
+    // flat, while a full-scale +15dB curve still gets a small clipping guard.
     private fun computePreampDb(): Int {
-        var preamp = 0
-        if (currentBassBoost > 0) preamp += currentBassBoost / 200   // ~0.5dB per 100 strength
         var maxBand = 0
         for (i in currentBandLevels.indices) {
             val v = currentBandLevels[i].toInt()
             if (v > maxBand) maxBand = v
         }
-        if (maxBand > 6) preamp += (maxBand - 6) / 2                  // half the excess above +6dB
-        return preamp.coerceAtMost(4)  // never reduce by more than -4dB total
+        if (maxBand > 9) return ((maxBand - 9) / 4).coerceAtMost(2)
+        return 0
     }
 
     private fun applyPreamp(level: Int): Short {
