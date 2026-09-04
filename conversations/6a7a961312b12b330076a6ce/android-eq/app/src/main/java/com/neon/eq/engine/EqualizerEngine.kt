@@ -1076,7 +1076,7 @@ class EqualizerEngine private constructor(context: Context) {
                             if (sfx.equalizer.enabled != currentEnabled) sfx.equalizer.enabled = currentEnabled
                             if (enabled && rampOk) {
                                 val probes = interiorProbes(id, sfx.bandPos.size)
-                                if (verifyBandsDrifted(sfx.equalizer, sfx.bandPos, levelsI, probes)) drifted = true
+                                if (verifyBandsDrifted(sfx.equalizer, sfx.bandPos, levelsI, probes, shouldFullSweep(id))) drifted = true
                             }
                         } catch (_: Throwable) {}
                     }
@@ -1088,7 +1088,7 @@ class EqualizerEngine private constructor(context: Context) {
                             // verification (it only had its enabled flag checked).
                             if (enabled && rampOk && bands.isNotEmpty() && bandPos.isNotEmpty()) {
                                 val probes = interiorProbes(-1, bandPos.size)
-                                if (verifyBandsDrifted(g, bandPos, levelsI, probes)) drifted = true
+                                if (verifyBandsDrifted(g, bandPos, levelsI, probes, shouldFullSweep(-1))) drifted = true
                             }
                         } catch (_: Throwable) {}
                     }
@@ -1236,6 +1236,7 @@ class EqualizerEngine private constructor(context: Context) {
 
     private fun releaseSession(sessionId: Int) {
         healCursor.remove(sessionId)   // Build #70: reap the rotating probe cursor
+        sweepTick.remove(sessionId)     // Build #75: reap the full-sweep tick
         activeFX.remove(sessionId)?.let { sfx ->
             sfx.equalizer.runCatching { release() }
             sfx.bassBoost?.runCatching { release() }
@@ -1287,23 +1288,39 @@ class EqualizerEngine private constructor(context: Context) {
     // band count is small (Redmi 10C: ~5 bands — a handful of binder reads);
     // first + last + rotating interior probes on wide EQs. Expected values
     // honor the interpolated mapping via sampleCurveAt. Returns true on drift.
-    private fun verifyBandsDrifted(eq: Equalizer, positions: FloatArray, levels: IntArray, probes: IntArray): Boolean {
+    // Build #75 hardening: every band read is isolated — a throwing read can
+    // no longer abort the whole sweep and mask real drift on the remaining
+    // bands; a flaky read counts as drift for its band (reasserting is
+    // harmless, and a truly dead EQ is reaped by the scanner). Wide EQs also
+    // get a full-sweep pass every 8th scan so the rotating probes are a
+    // speed optimization, never the only coverage.
+    private fun verifyBandsDrifted(eq: Equalizer, positions: FloatArray, levels: IntArray, probes: IntArray, fullSweep: Boolean): Boolean {
         val n = positions.size
         if (n <= 0) return false
-        try {
-            if (n <= 12) {
-                for (j in 0 until n) {
-                    if (eq.getBandLevel(j.toShort()) != applyPreamp(sampleCurveAt(levels, positions[j]))) return true
-                }
-                return false
-            }
-            if (eq.getBandLevel(0.toShort()) != applyPreamp(sampleCurveAt(levels, positions[0]))) return true
-            if (eq.getBandLevel((n - 1).toShort()) != applyPreamp(sampleCurveAt(levels, positions[n - 1]))) return true
-            for (j in probes) {
-                if (eq.getBandLevel(j.toShort()) != applyPreamp(sampleCurveAt(levels, positions[j]))) return true
-            }
-        } catch (_: Throwable) { return false }   // dying EQ — the scanner will reap it
-        return false
+        var drifted = false
+        fun check(j: Int) {
+            try {
+                if (eq.getBandLevel(j.toShort()) != applyPreamp(sampleCurveAt(levels, positions[j]))) drifted = true
+            } catch (_: Throwable) { drifted = true }
+        }
+        if (n <= 12 || fullSweep) {
+            for (j in 0 until n) check(j)
+            return drifted
+        }
+        check(0)
+        check(n - 1)
+        for (j in probes) check(j)
+        return drifted
+    }
+
+    // Build #75: per-EQ scan tick — every 8th scan of an EQ runs a full band
+    // sweep even on wide equalizers, guaranteeing complete verification
+    // coverage across scans.
+    private val sweepTick = ConcurrentHashMap<Int, Int>()
+    private fun shouldFullSweep(key: Int): Boolean {
+        val t = (sweepTick[key] ?: 0) + 1
+        sweepTick[key] = t
+        return t % 8 == 0
     }
 
     // Linear interpolation of the UI curve at a fractional slot position.
