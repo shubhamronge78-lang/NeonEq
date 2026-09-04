@@ -262,7 +262,15 @@ class EqualizerEngine private constructor(context: Context) {
             sb.append(" | playing: ").append(if (pkgs.isEmpty()) "—" else pkgs.joinToString(","))
 
             val sessionList = activeFX.keys.sorted()
-            sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
+            // Build #79: profile engine state — shows exactly why a per-app profile
+        // engages or doesn't on a given OEM (blocked UID reflection leaves
+        // playing-app stale/null while the playing: line above stays empty).
+        sb.append("\nprofiles: ").append(appProfiles.size)
+            .append(" | playing-app: ").append(lastPlayingPackage ?: "-")
+            .append(" | active: ").append(activeProfilePackage ?: "-")
+            .append(" | suppressed: ").append(suppressedProfilePackage ?: "-")
+            .append(" | stable: ").append(profileStableCount)
+        sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
             sb.append("\nglobalEQ: ").append(if (globalEQ != null) "attached" else "null")
             sb.append(" | enabled: ").append(enabled)
 
@@ -436,7 +444,20 @@ class EqualizerEngine private constructor(context: Context) {
     // exposes the client UID via public API; PackageManager maps UID → package.
     // Fully public-API path, no reflection needed — but Throwable-caught anyway.
     private fun reflectClientUid(config: AudioPlaybackConfiguration): Int {
-        return try { (clientUidMethod?.invoke(config) as? Int) ?: -1 } catch (t: Throwable) { -1 }
+        // Hidden getClientUid() first — works on MIUI. Build #79: Vivo's
+        // Funtouch blocks hidden-API reflection harder, and when that fails the
+        // per-app profiles can never resolve the playing app. Fallback:
+        // AudioPlaybackConfiguration.toString() is a PUBLIC method whose output
+        // includes the client uid/pid — parse it.
+        try { (clientUidMethod?.invoke(config) as? Int)?.let { if (it >= 0) return it } } catch (_: Throwable) { }
+        return try {
+            val s = config.toString()
+            val bySlash = Regex("u/pid:\\s*(\\d+)\\s*/").find(s)?.groupValues?.get(1)?.toIntOrNull()
+            if (bySlash != null && bySlash >= 0) return bySlash
+            val plain = Regex("uid[:= ]+([0-9]+)").find(s)?.groupValues?.get(1)?.toIntOrNull()
+            if (plain != null && plain >= 0) return plain
+            -1
+        } catch (_: Throwable) { -1 }
     }
 
     private fun resolvePlayingPackage(config: AudioPlaybackConfiguration?): String? {
