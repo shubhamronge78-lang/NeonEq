@@ -357,8 +357,9 @@ class EqualizerEngine private constructor(context: Context) {
         if (custom != null) {
             try {
                 val levels = ShortArray(31) { i -> custom.levels.getOrElse(i) { 0 } }
-                setBandLevels(levels)
-                setEffects(custom.bassBoost, custom.virtualizer, custom.loudness, smooth = true)
+                // Build #65: bands + fx in ONE coordinated ~120ms transition
+                // (was: band ramp + fx glide as two serialized jobs).
+                applyFullState(levels, custom.bassBoost, custom.virtualizer, custom.loudness, smooth = true)
             } catch (_: Throwable) { }
             return true
         }
@@ -1101,21 +1102,11 @@ class EqualizerEngine private constructor(context: Context) {
                 }
             } catch (e: Throwable) { Log.e(TAG, "reapply EQ for session", e) }
 
-            try { sfx.bassBoost?.apply {
-                setStrength(currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
-                enabled = currentEnabled && currentBassBoost > 0
-            } } catch (e: Throwable) { Log.e(TAG, "reapply bass for session", e) }
-
-            try { sfx.virtualizer?.apply {
-                setStrength(currentVirtualizer.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort())
-                enabled = currentEnabled && currentVirtualizer > 0
-            } } catch (e: Throwable) { Log.e(TAG, "reapply virt for session", e) }
-
-            try { sfx.loudnessEnhancer?.apply {
-                enabled = currentEnabled && currentLoudness > 0
-                if (currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 300))
-            } } catch (e: Throwable) { Log.e(TAG, "reapply loud for session", e) }
         }
+
+        // Build #65: fx re-apply goes through the single shared applier — this
+        // was the fourth near-duplicate of the effects wiring.
+        applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness)
     }
 
     private fun attachToSession(sessionId: Int) {
@@ -1329,6 +1320,64 @@ class EqualizerEngine private constructor(context: Context) {
                 if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { return@execute }
             }
             reapplyBandLevelsToHardware()  // preamp compensation tracks final values
+        }
+    }
+
+    // Build #65: ONE coordinated transition — bands AND the effects chain ramp
+    // in lockstep inside a single executor job. A full-state switch previously
+    // ran the band ramp and the fx glide as two separate jobs, serialized
+    // back-to-back (~240ms) and free to drift out of sync mid-transition.
+    // Superseded by any newer ramp (band drag) or fx call (slider), either of
+    // which bumps its generation counter and kills this loop.
+    fun applyFullState(levels: ShortArray, bass: Int, virt: Int, loud: Int, smooth: Boolean = false) {
+        markUserOverrideIfApplicable()
+        val to = IntArray(levels.size) { i -> levels[i].toInt() }
+        val from = IntArray(levels.size) { i -> currentBandLevels.getOrNull(i)?.toInt() ?: 0 }
+        for (i in levels.indices) {
+            if (i < currentBandLevels.size) currentBandLevels[i] = levels[i]
+        }
+        persistLevels()
+        currentBassBoost = bass.coerceIn(0, BASS_BOOST_STRENGTH_MAX)
+        currentVirtualizer = virt.coerceIn(0, VIRTUALIZER_STRENGTH_MAX)
+        currentLoudness = loud.coerceIn(0, 300)
+        persistScalar(KEY_BASS, currentBassBoost)
+        persistScalar(KEY_VIRT, currentVirtualizer)
+        persistScalar(KEY_LOUD, currentLoudness)
+        audioExecutor.execute {
+            val gen = ++rampGeneration
+            fxRampGeneration = gen  // one job drives both counters
+            rampActiveUntil = SystemClock.elapsedRealtime() + 250L  // heal must not fight the glide
+            val tb = currentBassBoost; val tv = currentVirtualizer; val tl = currentLoudness
+            val fb = appliedBass; val fv = appliedVirt; val fl = appliedLoud
+            var maxBand = 0
+            for (i in to.indices) {
+                val d = kotlin.math.abs(to[i] - from.getOrElse(i) { 0 })
+                if (d > maxBand) maxBand = d
+            }
+            val maxDelta = maxOf(maxBand,
+                kotlin.math.abs(tb - fb), kotlin.math.abs(tv - fv), kotlin.math.abs(tl - fl))
+            if (!smooth || maxDelta <= 2) {
+                applyBands(to)
+                applyEffectsToHardware(tb, tv, tl)
+                reapplyBandLevelsToHardware()
+                return@execute
+            }
+            val steps = 8
+            for (s in 1..steps) {
+                if (rampGeneration != gen || fxRampGeneration != gen) return@execute  // superseded
+                val t = s.toFloat() / steps
+                val eased = t * t * (3f - 2f * t)   // smoothstep: soft start & end
+                val frame = IntArray(to.size) { i ->
+                    val start = from.getOrElse(i) { 0 }
+                    start + ((to[i] - start) * eased).toInt()
+                }
+                applyBands(frame)
+                applyEffectsToHardware(
+                    fb + ((tb - fb) * eased).toInt(),
+                    fv + ((tv - fv) * eased).toInt(),
+                    fl + ((tl - fl) * eased).toInt())
+                if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { return@execute }
+            }
         }
     }
 
