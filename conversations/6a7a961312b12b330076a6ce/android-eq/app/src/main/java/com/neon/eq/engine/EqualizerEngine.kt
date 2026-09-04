@@ -961,6 +961,10 @@ class EqualizerEngine private constructor(context: Context) {
     @Volatile private var lastBruteForceAt = 0L
     @Volatile private var rampActiveUntil = 0L   // drift heal must not fight the preset ramp
     @Volatile var healCount = 0L                 // surfaced in the diagnostics panel
+    // Build #70: rotating interior-band cursor per EQ (session id, or -1 for the
+    // global EQ). Wide EQs verify first + last + a rotating window of interior
+    // bands so EVERY band is covered across scan cycles.
+    private val healCursor = ConcurrentHashMap<Int, Int>()
 
     private fun scanForActiveSessions() {
         try {
@@ -1060,28 +1064,33 @@ class EqualizerEngine private constructor(context: Context) {
             if (activeFX.isNotEmpty()) {
                 try {
                     var drifted = false
-                    // Build #69: per-session band verification through each session's
-                    // OWN map — band 0 (low end) AND the last hardware band (high
-                    // end). A band-0-only check was blind to MIUI silently
-                    // resetting the high bands — exactly the region that was dead
-                    // before the #67 interpolated mapping.
+                    // Build #70: every band, every scan (small EQs) or every band
+                    // across scans (wide EQs, rotating interior window) — verified
+                    // through each session's OWN interpolated map. Edge-only
+                    // checking (first/last) was blind to MIUI resetting interior
+                    // bands; band-0-only was blind to the high region entirely.
                     val levelsI = levelsInts()
-                    for ((_, sfx) in activeFX) {
+                    val rampOk = SystemClock.elapsedRealtime() >= rampActiveUntil
+                    for ((id, sfx) in activeFX) {
                         try {
                             if (sfx.equalizer.enabled != currentEnabled) sfx.equalizer.enabled = currentEnabled
-                            val n = sfx.bandPos.size
-                            if (n > 0 && enabled &&
-                                SystemClock.elapsedRealtime() >= rampActiveUntil) {
-                                val gotFirst = sfx.equalizer.getBandLevel(0.toShort())
-                                val gotLast = sfx.equalizer.getBandLevel((n - 1).toShort())
-                                if (gotFirst != applyPreamp(sampleCurveAt(levelsI, sfx.bandPos[0])) ||
-                                    gotLast != applyPreamp(sampleCurveAt(levelsI, sfx.bandPos[n - 1]))) drifted = true
+                            if (enabled && rampOk) {
+                                val probes = interiorProbes(id, sfx.bandPos.size)
+                                if (verifyBandsDrifted(sfx.equalizer, sfx.bandPos, levelsI, probes)) drifted = true
                             }
                         } catch (_: Throwable) {}
                     }
                     val g = globalEQ  // local copy so Kotlin can smart-cast
                     if (g != null) {
-                        try { if (g.enabled != currentEnabled) g.enabled = currentEnabled } catch (_: Throwable) {}
+                        try {
+                            if (g.enabled != currentEnabled) g.enabled = currentEnabled
+                            // Build #70: the global EQ gets the same all-band
+                            // verification (it only had its enabled flag checked).
+                            if (enabled && rampOk && bands.isNotEmpty() && bandPos.isNotEmpty()) {
+                                val probes = interiorProbes(-1, bandPos.size)
+                                if (verifyBandsDrifted(g, bandPos, levelsI, probes)) drifted = true
+                            }
+                        } catch (_: Throwable) {}
                     }
                     // Build #63: effects drift — MIUI can disable or reset
                     // BassBoost/Virtualizer/Loudness the same way it resets EQ
@@ -1226,6 +1235,7 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     private fun releaseSession(sessionId: Int) {
+        healCursor.remove(sessionId)   // Build #70: reap the rotating probe cursor
         activeFX.remove(sessionId)?.let { sfx ->
             sfx.equalizer.runCatching { release() }
             sfx.bassBoost?.runCatching { release() }
@@ -1259,6 +1269,41 @@ class EqualizerEngine private constructor(context: Context) {
                 .toInt().coerceIn(minL, maxL)
             try { eq.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
         }
+    }
+
+    // Build #70: rotating interior-band probes for one EQ. Wide EQs (n > 12) get
+    // 3 interior bands per scan, advancing a per-EQ cursor, so the full curve is
+    // verified every ceil((n-2)/3) scans instead of never (first/last only).
+    private fun interiorProbes(cursorKey: Int, n: Int): IntArray {
+        if (n <= 12) return IntArray(0)   // small EQs get a full sweep every scan
+        val span = n - 2
+        val cur = (healCursor[cursorKey] ?: 0) % span
+        val probes = IntArray(minOf(3, span)) { k -> ((cur + k) % span) + 1 }
+        healCursor[cursorKey] = (cur + probes.size) % span
+        return probes
+    }
+
+    // Build #70: verify an equalizer's full sampled curve. Full sweep when the
+    // band count is small (Redmi 10C: ~5 bands — a handful of binder reads);
+    // first + last + rotating interior probes on wide EQs. Expected values
+    // honor the interpolated mapping via sampleCurveAt. Returns true on drift.
+    private fun verifyBandsDrifted(eq: Equalizer, positions: FloatArray, levels: IntArray, probes: IntArray): Boolean {
+        val n = positions.size
+        if (n <= 0) return false
+        try {
+            if (n <= 12) {
+                for (j in 0 until n) {
+                    if (eq.getBandLevel(j.toShort()) != applyPreamp(sampleCurveAt(levels, positions[j]))) return true
+                }
+                return false
+            }
+            if (eq.getBandLevel(0.toShort()) != applyPreamp(sampleCurveAt(levels, positions[0]))) return true
+            if (eq.getBandLevel((n - 1).toShort()) != applyPreamp(sampleCurveAt(levels, positions[n - 1]))) return true
+            for (j in probes) {
+                if (eq.getBandLevel(j.toShort()) != applyPreamp(sampleCurveAt(levels, positions[j]))) return true
+            }
+        } catch (_: Throwable) { return false }   // dying EQ — the scanner will reap it
+        return false
     }
 
     // Linear interpolation of the UI curve at a fractional slot position.
