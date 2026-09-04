@@ -77,6 +77,9 @@ class EqualizerEngine private constructor(context: Context) {
         // curve at bandPos[j]) and level range — captured at attach. Sessions
         // can expose a different band layout than the global EQ on MIUI.
         val bandPos: FloatArray = FloatArray(0),
+        // Build #81: this session's band center freqs (Hz) — the true-dB bass
+        // offset is weighted by band frequency (see bassWeight).
+        val bandFreqs: IntArray = IntArray(0),
         val minLevel: Short = -1500,
         val maxLevel: Short = 1500
     )
@@ -199,7 +202,9 @@ class EqualizerEngine private constructor(context: Context) {
     // normal preset applies with ZERO trim and sounds exactly as loud as
     // flat, while a full-scale +15dB curve still gets a small clipping guard.
     private fun computePreampDb(): Int {
-        var maxBand = 0
+        // Build #81: the true-dB bass offset contributes to the real curve
+        // peak, so extreme bass + extreme curves still get the capped trim.
+        var maxBand = bassBoostDb()
         for (i in currentBandLevels.indices) {
             val v = currentBandLevels[i].toInt()
             if (v > maxBand) maxBand = v
@@ -326,7 +331,7 @@ class EqualizerEngine private constructor(context: Context) {
             val g = globalEQ
             for (j in bands.indices) {
                 val bi = bands[j]
-                val mb = applyPreamp(sampleCurveAt(levels, bandPos[j]))
+                val mb = applyPreamp(bandTargetDb(levels, bandPos[j], bi.freq))
                     .toInt().coerceIn(bi.minLevel.toInt(), bi.maxLevel.toInt())
                 try { g?.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
             }
@@ -336,7 +341,7 @@ class EqualizerEngine private constructor(context: Context) {
         // at out-of-range indices (which throw silently and would leave that
         // session running without EQ).
         for ((_, sfx) in activeFX) {
-            applyCurveToEq(sfx.equalizer, sfx.bandPos, sfx.minLevel.toInt(), sfx.maxLevel.toInt(), levels)
+            applyCurveToEq(sfx.equalizer, sfx.bandPos, sfx.bandFreqs, sfx.minLevel.toInt(), sfx.maxLevel.toInt(), levels)
         }
     }
 
@@ -831,8 +836,11 @@ class EqualizerEngine private constructor(context: Context) {
 
                     try {
                         globalBassBoost = BassBoost(0, 0).also { bb ->
-                            bb.enabled = currentEnabled && currentBassBoost > 0
-                            if (currentBassBoost > 0) bb.setStrength(currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
+                            // Build #81: bass boost is now a true-dB EQ band
+                            // offset — the legacy strength effect stays off
+                            // (it would double-boost on top of the EQ).
+                            bb.enabled = false
+                            try { bb.setStrength(0) } catch (_: Throwable) {}
                         }
                         Log.d(TAG, "Global BassBoost created")
                     } catch (t: Throwable) { Log.w(TAG, "Global BassBoost failed: ${t.message}") }
@@ -1127,7 +1135,7 @@ class EqualizerEngine private constructor(context: Context) {
                             if (sfx.equalizer.enabled != currentEnabled) sfx.equalizer.enabled = currentEnabled
                             if (enabled && rampOk) {
                                 val probes = interiorProbes(id, sfx.bandPos.size)
-                                if (verifyBandsDrifted(sfx.equalizer, sfx.bandPos, levelsI, probes, shouldFullSweep(id))) drifted = true
+                                if (verifyBandsDrifted(sfx.equalizer, sfx.bandPos, sfx.bandFreqs, levelsI, probes, shouldFullSweep(id))) drifted = true
                             }
                         } catch (_: Throwable) {}
                     }
@@ -1139,7 +1147,8 @@ class EqualizerEngine private constructor(context: Context) {
                             // verification (it only had its enabled flag checked).
                             if (enabled && rampOk && bands.isNotEmpty() && bandPos.isNotEmpty()) {
                                 val probes = interiorProbes(-1, bandPos.size)
-                                if (verifyBandsDrifted(g, bandPos, levelsI, probes, shouldFullSweep(-1))) drifted = true
+                                val globalFreqs = IntArray(bandPos.size) { j -> bands.getOrNull(j)?.freq ?: 0 }
+                                if (verifyBandsDrifted(g, bandPos, globalFreqs, levelsI, probes, shouldFullSweep(-1))) drifted = true
                             }
                         } catch (_: Throwable) {}
                     }
@@ -1148,19 +1157,15 @@ class EqualizerEngine private constructor(context: Context) {
                     // bands. Verify enabled flags and applied strengths; a
                     // missing (unsupported) effect is NOT drift — only
                     // present-but-wrong triggers a heal.
-                    val wantBass = currentEnabled && currentBassBoost > 0
                     val wantVirt = currentEnabled && currentVirtualizer > 0
                     val wantLoud = currentEnabled && currentLoudness > 0
-                    if ((wantBass || wantVirt || wantLoud) &&
+                    if ((wantVirt || wantLoud) &&
                         SystemClock.elapsedRealtime() >= rampActiveUntil) {  // never heal mid-glide
                         for ((_, sfx) in activeFX) {
-                            if (wantBass) {
-                                try {
-                                    val b = sfx.bassBoost
-                                    if (b != null && (!b.enabled ||
-                                        b.properties.strength.toInt() != currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX))) drifted = true
-                                } catch (_: Throwable) {}
-                            }
+                            // Build #81: the legacy BassBoost effect is
+                            // intentionally off (bass is a true-dB EQ offset
+                            // now) — verifying it would "heal" it back on and
+                            // double-boost, so only virt/loud are verified.
                             if (wantVirt) {
                                 try {
                                     val v = sfx.virtualizer
@@ -1247,15 +1252,21 @@ class EqualizerEngine private constructor(context: Context) {
             val positions = FloatArray(usable) { j ->
                 j * (bandCount - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
             }
-            applyCurveToEq(eq, positions, range[0].toInt(), range[1].toInt(), levelsInts())
+            // Build #81: per-session band center freqs (Hz) for the bass offset.
+            val freqs = IntArray(usable) { j ->
+                try { eq.getCenterFreq(j.toShort()) / 1000 } catch (_: Throwable) { 0 }
+            }
+            applyCurveToEq(eq, positions, freqs, range[0].toInt(), range[1].toInt(), levelsInts())
 
             var bb: BassBoost? = null
             var virt: Virtualizer? = null
             var loud: LoudnessEnhancer? = null
             try {
                 bb = BassBoost(0, sessionId).also {
-                    it.enabled = currentEnabled && currentBassBoost > 0
-                    if (currentBassBoost > 0) it.setStrength(currentBassBoost.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
+                    // Build #81: true-dB EQ band offset replaces the strength
+                    // effect — keep it attached but disabled.
+                    it.enabled = false
+                    try { it.setStrength(0) } catch (_: Throwable) {}
                 }
             } catch (e: Throwable) { Log.w(TAG, "BassBoost N/A for session $sessionId", e) }
             try {
@@ -1274,7 +1285,7 @@ class EqualizerEngine private constructor(context: Context) {
                 }
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
-            activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud, positions, range[0], range[1])
+            activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud, positions, freqs, range[0], range[1])
             Log.d(TAG, "Session $sessionId: $numBands bands attached")
 
             if (bands.isEmpty()) {
@@ -1315,9 +1326,9 @@ class EqualizerEngine private constructor(context: Context) {
 
     // Build #68: write the sampled curve to ONE equalizer (global or session)
     // using that EQ's own band positions and level range.
-    private fun applyCurveToEq(eq: Equalizer, positions: FloatArray, minL: Int, maxL: Int, levels: IntArray) {
+    private fun applyCurveToEq(eq: Equalizer, positions: FloatArray, freqs: IntArray, minL: Int, maxL: Int, levels: IntArray) {
         for (j in positions.indices) {
-            val mb = applyPreamp(sampleCurveAt(levels, positions[j]))
+            val mb = applyPreamp(bandTargetDb(levels, positions[j], freqs.getOrElse(j) { 0 }))
                 .toInt().coerceIn(minL, maxL)
             try { eq.setBandLevel(j.toShort(), mb.toShort()) } catch (_: Throwable) {}
         }
@@ -1345,13 +1356,13 @@ class EqualizerEngine private constructor(context: Context) {
     // harmless, and a truly dead EQ is reaped by the scanner). Wide EQs also
     // get a full-sweep pass every 8th scan so the rotating probes are a
     // speed optimization, never the only coverage.
-    private fun verifyBandsDrifted(eq: Equalizer, positions: FloatArray, levels: IntArray, probes: IntArray, fullSweep: Boolean): Boolean {
+    private fun verifyBandsDrifted(eq: Equalizer, positions: FloatArray, freqs: IntArray, levels: IntArray, probes: IntArray, fullSweep: Boolean): Boolean {
         val n = positions.size
         if (n <= 0) return false
         var drifted = false
         fun check(j: Int) {
             try {
-                if (eq.getBandLevel(j.toShort()) != applyPreamp(sampleCurveAt(levels, positions[j]))) drifted = true
+                if (eq.getBandLevel(j.toShort()) != applyPreamp(bandTargetDb(levels, positions[j], freqs.getOrElse(j) { 0 }))) drifted = true
             } catch (_: Throwable) { drifted = true }
         }
         if (n <= 12 || fullSweep) {
@@ -1459,6 +1470,16 @@ class EqualizerEngine private constructor(context: Context) {
     // range bite harder (150 -> ~594 mB vs the old flat 150 mB) with the same
     // one-finger feel at the top, capped at 1000 mB (+10 dB) to stay clear of
     // distortion. EVERY hardware write and drift check goes through this.
+    // Build #81: TRUE hardware-dB bass boost. The BassBoost AudioEffect's
+    // strength is a platform unit with no dB definition — but the hardware
+    // EQ's band gains ARE real millibels. The slider (0..300) maps to 0..+10dB,
+    // applied as an EQ band offset: bands at/below 100Hz get the full offset,
+    // tapering to zero by 300Hz so the boost stays bass and out of the mids.
+    fun bassBoostDb(): Int = currentBassBoost * 10 / 3
+    private fun bassWeight(freqHz: Int): Float = ((300 - freqHz) / 200f).coerceIn(0f, 1f)
+    private fun bandTargetDb(levels: IntArray, pos: Float, freqHz: Int): Int =
+        sampleCurveAt(levels, pos) + (bassBoostDb() * bassWeight(freqHz)).toInt()
+
     fun loudnessMillibels(v: Int): Int =
         (Math.pow((v.coerceIn(0, 300) / 300.0), 0.75) * 1000.0).toInt()
 
@@ -1471,18 +1492,19 @@ class EqualizerEngine private constructor(context: Context) {
             val b = bass.coerceIn(0, BASS_BOOST_STRENGTH_MAX)
             val v = virt.coerceIn(0, VIRTUALIZER_STRENGTH_MAX)
             val l = loud.coerceIn(0, 300)
-            val wantBass = currentEnabled && b > 0
             val wantVirt = currentEnabled && v > 0
             val wantLoud = currentEnabled && l > 0
             val gb = globalBassBoost
             val gv = globalVirtualizer
             val gl = globalLoudness
-            try { gb?.apply { setStrength(b.toShort()); enabled = wantBass } } catch (_: Throwable) {}
+            // Build #81: bass boost now lives in the EQ band offset (true dB) —
+            // the legacy strength effect stays off so it can't double-boost.
+            try { gb?.apply { setStrength(0); enabled = false } } catch (_: Throwable) {}
             try { gv?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
             val lmb = loudnessMillibels(l)
             try { gl?.apply { if (lmb > 0) setTargetGain(lmb); enabled = wantLoud } } catch (_: Throwable) {}
             for ((_, sfx) in activeFX) {
-                try { sfx.bassBoost?.apply { setStrength(b.toShort()); enabled = wantBass } } catch (_: Throwable) {}
+                try { sfx.bassBoost?.apply { setStrength(0); enabled = false } } catch (_: Throwable) {}
                 try { sfx.virtualizer?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
                 try { sfx.loudnessEnhancer?.apply { if (lmb > 0) setTargetGain(lmb); enabled = wantLoud } } catch (_: Throwable) {}
             }
