@@ -1413,7 +1413,7 @@ class EqualizerEngine private constructor(context: Context) {
     // range bite harder (150 -> ~594 mB vs the old flat 150 mB) with the same
     // one-finger feel at the top, capped at 1000 mB (+10 dB) to stay clear of
     // distortion. EVERY hardware write and drift check goes through this.
-    private fun loudnessMillibels(v: Int): Int =
+    fun loudnessMillibels(v: Int): Int =
         (Math.pow((v.coerceIn(0, 300) / 300.0), 0.75) * 1000.0).toInt()
 
     // Build #64: ONE shared applier for the whole effects chain — global path
