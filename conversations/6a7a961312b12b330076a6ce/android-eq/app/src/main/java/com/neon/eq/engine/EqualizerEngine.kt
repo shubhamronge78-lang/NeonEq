@@ -261,6 +261,11 @@ class EqualizerEngine private constructor(context: Context) {
             sb.append(" loud=").append(currentLoudness)
             sb.append(" | read: ").append(bRead ?: -1).append("/").append(vRead ?: -1).append("/").append(lRead ?: -1)
             sb.append(" | applied: ").append(appliedBass).append("/").append(appliedVirt).append("/").append(appliedLoud)
+            // Build #66: last glide transition — kind, frames executed, measured
+            // duration, and whether a newer transition superseded it.
+            sb.append("\ntransition: kind=").append(if (traceKind.isEmpty()) "none" else traceKind)
+            sb.append(" frames=").append(traceFrames)
+            sb.append(" ").append(traceMs).append("ms superseded=").append(traceSuperseded)
             if (activeProfilePackage != null) sb.append("\nprofile active: ").append(activeProfilePackage)
         } catch (t: Throwable) {
             sb.append("\ndiag error: ").append(t.message)
@@ -1247,6 +1252,14 @@ class EqualizerEngine private constructor(context: Context) {
     @Volatile private var appliedLoud = 0
     @Volatile private var fxRampGeneration = 0
 
+    // Build #66: glide trace — measures the REAL transition timing on-device
+    // (no adb on the Redmi 10C). Written by the setEffects / applyFullState
+    // glide loops, surfaced in the diagnostics panel.
+    @Volatile private var traceKind = ""          // "fx" | "full" | ""
+    @Volatile private var traceMs = 0L           // measured wall-clock duration
+    @Volatile private var traceFrames = 0        // frames actually executed
+    @Volatile private var traceSuperseded = false // killed by a newer transition
+
     // Build #64: ONE shared applier for the whole effects chain — global path
     // plus every session, all three effects, in a single pass. Sets strength/
     // gain BEFORE enabling (enabling first lets the effect go live at its
@@ -1308,17 +1321,21 @@ class EqualizerEngine private constructor(context: Context) {
                 return@execute
             }
             val fb = appliedBass; val fv = appliedVirt; val fl = appliedLoud
+            val t0 = SystemClock.elapsedRealtime()
+            traceKind = "fx"; traceMs = 0L; traceFrames = 0; traceSuperseded = false
             val steps = 8
             for (s in 1..steps) {
-                if (fxRampGeneration != gen) return@execute  // superseded
+                if (fxRampGeneration != gen) { traceSuperseded = true; return@execute }  // superseded
                 val t = s.toFloat() / steps
                 val eased = t * t * (3f - 2f * t)   // smoothstep: soft start & end
                 applyEffectsToHardware(
                     fb + ((tb - fb) * eased).toInt(),
                     fv + ((tv - fv) * eased).toInt(),
                     fl + ((tl - fl) * eased).toInt())
-                if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { return@execute }
+                traceFrames = s
+                if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { traceSuperseded = true; return@execute }
             }
+            traceMs = SystemClock.elapsedRealtime() - t0
             reapplyBandLevelsToHardware()  // preamp compensation tracks final values
         }
     }
@@ -1362,9 +1379,11 @@ class EqualizerEngine private constructor(context: Context) {
                 reapplyBandLevelsToHardware()
                 return@execute
             }
+            val t0 = SystemClock.elapsedRealtime()
+            traceKind = "full"; traceMs = 0L; traceFrames = 0; traceSuperseded = false
             val steps = 8
             for (s in 1..steps) {
-                if (rampGeneration != gen || fxRampGeneration != gen) return@execute  // superseded
+                if (rampGeneration != gen || fxRampGeneration != gen) { traceSuperseded = true; return@execute }  // superseded
                 val t = s.toFloat() / steps
                 val eased = t * t * (3f - 2f * t)   // smoothstep: soft start & end
                 val frame = IntArray(to.size) { i ->
@@ -1376,8 +1395,10 @@ class EqualizerEngine private constructor(context: Context) {
                     fb + ((tb - fb) * eased).toInt(),
                     fv + ((tv - fv) * eased).toInt(),
                     fl + ((tl - fl) * eased).toInt())
-                if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { return@execute }
+                traceFrames = s
+                if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { traceSuperseded = true; return@execute }
             }
+            traceMs = SystemClock.elapsedRealtime() - t0
         }
     }
 
