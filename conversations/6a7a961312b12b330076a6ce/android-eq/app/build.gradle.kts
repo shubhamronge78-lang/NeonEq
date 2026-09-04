@@ -32,7 +32,7 @@ android {
         // (Settings > Apps > Neon EQ > version) that you're actually running the
         // build you think you're running.
         versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
-        versionName = "2.0.1"
+        versionName = "2.0.3"
     }
 
     buildTypes {
