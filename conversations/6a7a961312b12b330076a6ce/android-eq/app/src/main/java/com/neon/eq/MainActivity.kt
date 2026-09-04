@@ -250,7 +250,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     }
 
     var waveform by remember { mutableStateOf(ByteArray(0)) }
-    // Build #63: timestamp of the last capture delivery — lets the visualizer
+    // Build #64: timestamp of the last capture delivery — lets the visualizer
     // detect a MIUI capture stall while the EQ is ON (the self-heal watchdog
     // needs up to ~4s to re-attach) and drop to the idle pulse instead of
     // drawing the frozen stale buffer.
@@ -451,9 +451,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         animateLevelsTo(FloatArray(31) { 0f })
                         selectedPreset = "Flat"
                         engine.setSelectedPresetName("Flat")
-                        bassBoost = 0; engine.setBassBoost(0)
-                        virtualizer = 0; engine.setVirtualizer(0)
-                        loudness = 0; engine.setLoudness(0)
+                        bassBoost = 0; virtualizer = 0; loudness = 0
+                        engine.setEffects(0, 0, 0, smooth = true)
                     }
                 )
                 Spacer(Modifier.width(12.dp))
@@ -544,9 +543,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         val newLevels = FloatArray(31) { 0f }
                         levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
                         animateLevelsTo(newLevels)
-                        bassBoost = preset.bassBoost; engine.setBassBoost(preset.bassBoost)
-                        virtualizer = preset.virtualizer; engine.setVirtualizer(preset.virtualizer)
-                        loudness = preset.loudness; engine.setLoudness(preset.loudness)
+                        bassBoost = preset.bassBoost
+                        virtualizer = preset.virtualizer
+                        loudness = preset.loudness
+                        engine.setEffects(preset.bassBoost, preset.virtualizer, preset.loudness, smooth = true)
                     },
                     onLongPress = { menuPreset = preset },
                     onDelete = {
@@ -795,9 +795,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     val newLevels = FloatArray(31) { 0f }
                     levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
                     animateLevelsTo(newLevels)
-                    bassBoost = preset.bassBoost; engine.setBassBoost(preset.bassBoost)
-                    virtualizer = preset.virtualizer; engine.setVirtualizer(preset.virtualizer)
-                    loudness = preset.loudness; engine.setLoudness(preset.loudness)
+                    bassBoost = preset.bassBoost
+                    virtualizer = preset.virtualizer
+                    loudness = preset.loudness
+                    engine.setEffects(preset.bassBoost, preset.virtualizer, preset.loudness, smooth = true)
                     menuPreset = null
                 }
             )
@@ -1064,7 +1065,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         textAlign = TextAlign.Center
                     )
                     Spacer(Modifier.height(12.dp))
-                    // Build #63: live engine diagnostics — the on-device window
+                    // Build #64: live engine diagnostics — the on-device window
                     // into session attach (no adb on the Redmi 10C).
                     Text(
                         "ENGINE DIAGNOSTICS",
@@ -1091,7 +1092,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #63",
+                        "Neon EQ v1.0 · Build #64",
                         fontSize = 10.sp,
                         color = Color(0xFF7C4DFF),
                         modifier = Modifier.fillMaxWidth(),
@@ -1265,8 +1266,8 @@ fun BreathingGlow(active: Boolean) {
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
 // Degrades to a gentle idle pulse if no waveform data is available yet (permission
-// denied, unsupported device, or nothing playing) — and since Build #63 also when
-// the EQ toggle is OFF, or (Build #63) when capture data goes stale mid-playback
+// denied, unsupported device, or nothing playing) — and since Build #64 also when
+// the EQ toggle is OFF, or (Build #64) when capture data goes stale mid-playback
 // for >1.5s while the engine's self-heal watchdog re-attaches a MIUI-killed
 // capture. In both cases the stale buffer would render frozen; the idle pulse
 // renders instead. `active` + waveform freshness gate which mode we render.
@@ -1285,7 +1286,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     val peaks = remember { FloatArray(barCount) { 0f } }
     var tick by remember { mutableIntStateOf(0) }
 
-    // ---- Build #63: zero steady-state allocations in the visualizer ----
+    // ---- Build #64: zero steady-state allocations in the visualizer ----
     // This composable redraws EVERY frame (idle breathing + live waveform),
     // so every object below is created once and reused. The previous version
     // allocated per frame: wave = 2 Paths + 1 FloatArray + 3 brushes,
@@ -1313,7 +1314,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
         // Extract the amplitude for a single logical bar — shared by all three
         // styles so they react identically to the same waveform data.
-        // `live` = EQ on AND fresh capture data. The freshness check (Build #63)
+        // `live` = EQ on AND fresh capture data. The freshness check (Build #64)
         // closes the gap while the engine's self-heal watchdog re-attaches a
         // MIUI-killed capture: without it the stale buffer renders frozen for
         // up to ~4s mid-song. The idlePulse animation invalidates this Canvas
@@ -1340,7 +1341,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
-                // Build #63: paths, amp buffer and brushes are hoisted and
+                // Build #64: paths, amp buffer and brushes are hoisted and
                 // reset() per frame — the wave costs zero allocations now.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
@@ -1462,7 +1463,7 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #63: allocation-free hot path ----
+    // ---- Build #64: allocation-free hot path ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the
