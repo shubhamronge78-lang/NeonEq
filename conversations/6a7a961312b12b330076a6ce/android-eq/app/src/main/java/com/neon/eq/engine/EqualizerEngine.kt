@@ -1217,7 +1217,7 @@ class EqualizerEngine private constructor(context: Context) {
                 sfx.equalizer.enabled = currentEnabled
                 // Build #68: the session's captured band map — same formula as
                 // attach, no per-band recompute of the curve array.
-                applyCurveToEq(sfx.equalizer, sfx.bandPos, sfx.minLevel.toInt(), sfx.maxLevel.toInt(), levelsInts())
+                applyCurveToEq(sfx.equalizer, sfx.bandPos, sfx.bandFreqs, sfx.minLevel.toInt(), sfx.maxLevel.toInt(), levelsInts())
             } catch (e: Throwable) { Log.e(TAG, "reapply EQ for session", e) }
 
         }
