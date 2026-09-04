@@ -260,6 +260,7 @@ class EqualizerEngine private constructor(context: Context) {
             sb.append(" virt=").append(currentVirtualizer)
             sb.append(" loud=").append(currentLoudness)
             sb.append(" | read: ").append(bRead ?: -1).append("/").append(vRead ?: -1).append("/").append(lRead ?: -1)
+            sb.append(" | applied: ").append(appliedBass).append("/").append(appliedVirt).append("/").append(appliedLoud)
             if (activeProfilePackage != null) sb.append("\nprofile active: ").append(activeProfilePackage)
         } catch (t: Throwable) {
             sb.append("\ndiag error: ").append(t.message)
@@ -357,9 +358,7 @@ class EqualizerEngine private constructor(context: Context) {
             try {
                 val levels = ShortArray(31) { i -> custom.levels.getOrElse(i) { 0 } }
                 setBandLevels(levels)
-                setBassBoost(custom.bassBoost)
-                setVirtualizer(custom.virtualizer)
-                setLoudness(custom.loudness)
+                setEffects(custom.bassBoost, custom.virtualizer, custom.loudness, smooth = true)
             } catch (_: Throwable) { }
             return true
         }
@@ -439,9 +438,7 @@ class EqualizerEngine private constructor(context: Context) {
                     val fx = restoreEffects
                     restoreEffects = null
                     if (fx != null) {
-                        setBassBoost(fx[0].coerceIn(0, 300))
-                        setVirtualizer(fx[1].coerceIn(0, 300))
-                        setLoudness(fx[2].coerceIn(0, 300))
+                        setEffects(fx[0], fx[1], fx[2], smooth = true)
                     }
                 } finally { applyingProfile = false }
             }
@@ -606,9 +603,7 @@ class EqualizerEngine private constructor(context: Context) {
                 }
                 setBandLevels(lv)
             }
-            setBassBoost(root.optInt("bass", 0))
-            setVirtualizer(root.optInt("virt", 0))
-            setLoudness(root.optInt("loud", 0))
+            setEffects(root.optInt("bass", 0), root.optInt("virt", 0), root.optInt("loud", 0), smooth = true)
             setSelectedPresetName(root.optString("preset", "Flat"))
             setStartOnBoot(root.optBoolean("startOnBoot", true))
             setAutoApplyPreset(root.optBoolean("autoApplyPreset", false))
@@ -1038,7 +1033,8 @@ class EqualizerEngine private constructor(context: Context) {
                     val wantBass = currentEnabled && currentBassBoost > 0
                     val wantVirt = currentEnabled && currentVirtualizer > 0
                     val wantLoud = currentEnabled && currentLoudness > 0
-                    if (wantBass || wantVirt || wantLoud) {
+                    if ((wantBass || wantVirt || wantLoud) &&
+                        SystemClock.elapsedRealtime() >= rampActiveUntil) {  // never heal mid-glide
                         for ((_, sfx) in activeFX) {
                             if (wantBass) {
                                 try {
@@ -1253,72 +1249,118 @@ class EqualizerEngine private constructor(context: Context) {
         }
     }
 
+    // Build #64: applied (hardware) effect values — the fx glide starts from
+    // these, not from UI targets, so consecutive transitions chain smoothly.
+    @Volatile private var appliedBass = 0
+    @Volatile private var appliedVirt = 0
+    @Volatile private var appliedLoud = 0
+    @Volatile private var fxRampGeneration = 0
+
+    // Build #64: ONE shared applier for the whole effects chain — global path
+    // plus every session, all three effects, in a single pass. Sets strength/
+    // gain BEFORE enabling (enabling first lets the effect go live at its
+    // default/zero state for a moment — audible blip on re-enable).
+    private fun applyEffectsToHardware(bass: Int, virt: Int, loud: Int) {
+        try {
+            val b = bass.coerceIn(0, BASS_BOOST_STRENGTH_MAX)
+            val v = virt.coerceIn(0, VIRTUALIZER_STRENGTH_MAX)
+            val l = loud.coerceIn(0, 300)
+            val wantBass = currentEnabled && b > 0
+            val wantVirt = currentEnabled && v > 0
+            val wantLoud = currentEnabled && l > 0
+            val gb = globalBassBoost
+            val gv = globalVirtualizer
+            val gl = globalLoudness
+            try { gb?.apply { setStrength(b.toShort()); enabled = wantBass } } catch (_: Throwable) {}
+            try { gv?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
+            try { gl?.apply { if (l > 0) setTargetGain(l); enabled = wantLoud } } catch (_: Throwable) {}
+            for ((_, sfx) in activeFX) {
+                try { sfx.bassBoost?.apply { setStrength(b.toShort()); enabled = wantBass } } catch (_: Throwable) {}
+                try { sfx.virtualizer?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
+                try { sfx.loudnessEnhancer?.apply { if (l > 0) setTargetGain(l); enabled = wantLoud } } catch (_: Throwable) {}
+            }
+            appliedBass = b; appliedVirt = v; appliedLoud = l
+        } catch (t: Throwable) { Log.w(TAG, "applyEffects failed: ${'$'}{t.message}") }
+    }
+
+    // Build #64: batch-set the effects chain. Preset switches, per-app profile
+    // auto-switches and backup restores used to hard-jump bass/virt/loudness
+    // (audible pop, especially a big loudness step). smooth=true glides all
+    // three from their APPLIED values to the targets over ~120ms (8 smoothstep
+    // frames, mirroring the band ramp) — superseded by any newer glide or
+    // direct slider call. Slider drags stay instant (setX paths).
+    fun setEffects(bass: Int, virt: Int, loud: Int, smooth: Boolean = false) {
+        markUserOverrideIfApplicable()
+        currentBassBoost = bass.coerceIn(0, BASS_BOOST_STRENGTH_MAX)
+        currentVirtualizer = virt.coerceIn(0, VIRTUALIZER_STRENGTH_MAX)
+        currentLoudness = loud.coerceIn(0, 300)
+        persistScalar(KEY_BASS, currentBassBoost)
+        persistScalar(KEY_VIRT, currentVirtualizer)
+        persistScalar(KEY_LOUD, currentLoudness)
+        audioExecutor.execute {
+            if (!smooth) {
+                fxRampGeneration++  // direct call supersedes any in-flight glide
+                applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness)
+                reapplyBandLevelsToHardware()
+                return@execute
+            }
+            val gen = ++fxRampGeneration
+            rampActiveUntil = SystemClock.elapsedRealtime() + 250L  // heal must not fight the glide
+            val tb = currentBassBoost; val tv = currentVirtualizer; val tl = currentLoudness
+            val maxDelta = maxOf(
+                kotlin.math.abs(tb - appliedBass),
+                kotlin.math.abs(tv - appliedVirt),
+                kotlin.math.abs(tl - appliedLoud))
+            if (maxDelta <= 5) {  // tiny change — instant, no glide lag
+                applyEffectsToHardware(tb, tv, tl)
+                reapplyBandLevelsToHardware()
+                return@execute
+            }
+            val fb = appliedBass; val fv = appliedVirt; val fl = appliedLoud
+            val steps = 8
+            for (s in 1..steps) {
+                if (fxRampGeneration != gen) return@execute  // superseded
+                val t = s.toFloat() / steps
+                val eased = t * t * (3f - 2f * t)   // smoothstep: soft start & end
+                applyEffectsToHardware(
+                    fb + ((tb - fb) * eased).toInt(),
+                    fv + ((tv - fv) * eased).toInt(),
+                    fl + ((tl - fl) * eased).toInt())
+                if (s < steps) try { Thread.sleep(15) } catch (_: InterruptedException) { return@execute }
+            }
+            reapplyBandLevelsToHardware()  // preamp compensation tracks final values
+        }
+    }
+
     fun setBassBoost(strength: Int) {
         markUserOverrideIfApplicable()
-        currentBassBoost = strength
-        persistScalar(KEY_BASS, strength)
+        currentBassBoost = strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX)
+        persistScalar(KEY_BASS, currentBassBoost)
         audioExecutor.execute {
-            try {
-                globalBassBoost?.apply {
-                    setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort())
-                    enabled = currentEnabled && strength > 0
-                }
-            } catch (e: Throwable) { Log.e(TAG, "Global BassBoost", e) }
-
-            for ((_, sfx) in activeFX) {
-                try { sfx.bassBoost?.apply { setStrength(strength.coerceIn(0, BASS_BOOST_STRENGTH_MAX).toShort()); enabled = currentEnabled && strength > 0 } }
-                catch (e: Throwable) { Log.e(TAG, "Session BassBoost", e) }
-            }
-
-            // Preamp changed — reapply band levels with new compensation
+            fxRampGeneration++  // direct slider set supersedes any in-flight glide
+            applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness)
             reapplyBandLevelsToHardware()
         }
     }
 
     fun setVirtualizer(strength: Int) {
         markUserOverrideIfApplicable()
-        currentVirtualizer = strength
-        persistScalar(KEY_VIRT, strength)
+        currentVirtualizer = strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX)
+        persistScalar(KEY_VIRT, currentVirtualizer)
         audioExecutor.execute {
-            try {
-                globalVirtualizer?.apply {
-                    setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort())
-                    enabled = currentEnabled && strength > 0
-                }
-            } catch (e: Throwable) { Log.e(TAG, "Global Virtualizer", e) }
-
-            for ((_, sfx) in activeFX) {
-                try { sfx.virtualizer?.apply { setStrength(strength.coerceIn(0, VIRTUALIZER_STRENGTH_MAX).toShort()); enabled = currentEnabled && strength > 0 } }
-                catch (e: Throwable) { Log.e(TAG, "Session Virtualizer", e) }
-            }
-
-            // Preamp changed — reapply band levels with new compensation
+            fxRampGeneration++
+            applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness)
             reapplyBandLevelsToHardware()
         }
     }
 
     fun setLoudness(gain: Int) {
         markUserOverrideIfApplicable()
-        val safeGain = gain.coerceIn(0, 300)
-        currentLoudness = safeGain
-        persistScalar(KEY_LOUD, safeGain)
+        currentLoudness = gain.coerceIn(0, 300)
+        persistScalar(KEY_LOUD, currentLoudness)
         audioExecutor.execute {
-            try {
-                globalLoudness?.apply {
-                    enabled = currentEnabled && safeGain > 0
-                    if (safeGain > 0) setTargetGain(safeGain)
-                }
-            } catch (e: Throwable) { Log.e(TAG, "Global Loudness", e) }
-
-            for ((_, sfx) in activeFX) {
-                try { sfx.loudnessEnhancer?.apply {
-                    enabled = currentEnabled && safeGain > 0
-                    if (safeGain > 0) setTargetGain(safeGain)
-                } }
-                catch (e: Throwable) { Log.e(TAG, "Session Loudness", e) }
-            }
-
-            // Preamp changed — reapply band levels with new compensation
+            fxRampGeneration++
+            applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness)
             reapplyBandLevelsToHardware()
         }
     }
@@ -1348,16 +1390,14 @@ class EqualizerEngine private constructor(context: Context) {
         try { prefs.edit().putBoolean(KEY_ENABLED, on).apply() } catch (_: Throwable) { }
         audioExecutor.execute {
             try { globalEQ?.enabled = on } catch (_: Throwable) {}
-            try { globalBassBoost?.enabled = on && currentBassBoost > 0 } catch (_: Throwable) {}
-            try { globalVirtualizer?.enabled = on && currentVirtualizer > 0 } catch (_: Throwable) {}
-            try { globalLoudness?.apply { enabled = on && currentLoudness > 0; if (on && currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 300)) } } catch (_: Throwable) {}
             try { visualizer?.enabled = on } catch (_: Throwable) {}
+
+            // Build #64: the whole effects chain (global + every session, enabled
+            // flags AND strengths/gains) through the single shared applier.
+            applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness)
 
             for ((_, sfx) in activeFX) {
                 try { sfx.equalizer.enabled = on } catch (_: Throwable) {}
-                try { sfx.bassBoost?.enabled = on && (sfx.bassBoost?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
-                try { sfx.virtualizer?.enabled = on && (sfx.virtualizer?.roundedStrength ?: 0) > 0 } catch (_: Throwable) {}
-                try { sfx.loudnessEnhancer?.apply { enabled = on && currentLoudness > 0; if (on && currentLoudness > 0) setTargetGain(currentLoudness.coerceIn(0, 300)) } } catch (_: Throwable) {}
             }
         }
     }
