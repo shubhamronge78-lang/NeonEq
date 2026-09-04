@@ -1060,14 +1060,23 @@ class EqualizerEngine private constructor(context: Context) {
             if (activeFX.isNotEmpty()) {
                 try {
                     var drifted = false
-                    val idx = bands.getOrNull(0)?.index
-                    val expect = applyPreamp(currentBandLevels.getOrNull(0)?.toInt() ?: 0)
+                    // Build #69: per-session band verification through each session's
+                    // OWN map — band 0 (low end) AND the last hardware band (high
+                    // end). A band-0-only check was blind to MIUI silently
+                    // resetting the high bands — exactly the region that was dead
+                    // before the #67 interpolated mapping.
+                    val levelsI = levelsInts()
                     for ((_, sfx) in activeFX) {
                         try {
                             if (sfx.equalizer.enabled != currentEnabled) sfx.equalizer.enabled = currentEnabled
-                            if (idx != null && enabled &&
-                                SystemClock.elapsedRealtime() >= rampActiveUntil &&
-                                sfx.equalizer.getBandLevel(idx.toShort()) != expect) drifted = true
+                            val n = sfx.bandPos.size
+                            if (n > 0 && enabled &&
+                                SystemClock.elapsedRealtime() >= rampActiveUntil) {
+                                val gotFirst = sfx.equalizer.getBandLevel(0.toShort())
+                                val gotLast = sfx.equalizer.getBandLevel((n - 1).toShort())
+                                if (gotFirst != applyPreamp(sampleCurveAt(levelsI, sfx.bandPos[0])) ||
+                                    gotLast != applyPreamp(sampleCurveAt(levelsI, sfx.bandPos[n - 1]))) drifted = true
+                            }
                         } catch (_: Throwable) {}
                     }
                     val g = globalEQ  // local copy so Kotlin can smart-cast
@@ -1297,13 +1306,21 @@ class EqualizerEngine private constructor(context: Context) {
                     val usable = minOf(anyEQ.numberOfBands.toInt(), MAX_BANDS)
                     bands = pickBands(anyEQ, bandCount, usable)
                 }
-                for (i in 0 until bandCount) {
-                    val millibel = applyPreamp(currentBandLevels[i].toInt())
-                    try { bands.getOrNull(i)?.let { bi -> globalEQ?.setBandLevel(bi.index.toShort(), millibel) } } catch (_: Throwable) {}
-                    for ((_, sfx) in activeFX) {
-                        try { bands.getOrNull(i)?.let { bi -> sfx.equalizer.setBandLevel(bi.index.toShort(), millibel) } } catch (_: Throwable) {}
+                // Build #69: sessions re-capture their band positions with the NEW
+                // bandCount — each from its own captured width, since sessions can
+                // expose different band layouts. The curve is then sampled
+                // everywhere through the shared sampler (no more legacy
+                // per-index write loop here).
+                for ((id, sfx) in activeFX) {
+                    val n = sfx.bandPos.size
+                    if (n > 0) {
+                        val fresh = FloatArray(n) { j ->
+                            j * (bandCount - 1).toFloat() / maxOf(n - 1, 1).toFloat()
+                        }
+                        activeFX[id] = sfx.copy(bandPos = fresh)
                     }
                 }
+                applyBands(levelsInts())
             } catch (e: Throwable) { Log.e(TAG, "setBandCount", e) }
             mainHandler.post { onReady?.invoke(isReady, statusMessage, bands) }
         }
