@@ -890,10 +890,10 @@ class EqualizerEngine private constructor(context: Context) {
                     } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: " + t.message) }
 
                     try {
-                        globalNoiseSuppressor = NoiseSuppressor(0).also { ng ->
+                        globalNoiseSuppressor = NoiseSuppressor.create(0)?.also { ng ->
                             ng.enabled = currentEnabled && currentNoiseGate
                         }
-                        Log.d(TAG, "Global NoiseSuppressor created")
+                        Log.d(TAG, "Global NoiseSuppressor " + (if (globalNoiseSuppressor != null) "created" else "unavailable (null)"))
                     } catch (t: Throwable) { Log.w(TAG, "Global NoiseSuppressor failed: " + t.message) }
 
                     try { attachVisualizer() } catch (t: Throwable) { Log.w(TAG, "Visualizer failed: ${t.message}") }
@@ -1328,7 +1328,7 @@ class EqualizerEngine private constructor(context: Context) {
 
             var ng: NoiseSuppressor? = null
             try {
-                ng = NoiseSuppressor(sessionId).also { it.enabled = currentEnabled && currentNoiseGate }
+                ng = NoiseSuppressor.create(sessionId)?.also { it.enabled = currentEnabled && currentNoiseGate }
             } catch (e: Throwable) { Log.w(TAG, "NoiseSuppressor N/A for session $sessionId") }
 
             activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud, positions, freqs, range[0], range[1], ng)
