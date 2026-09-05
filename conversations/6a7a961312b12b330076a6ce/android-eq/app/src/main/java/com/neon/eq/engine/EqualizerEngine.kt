@@ -121,6 +121,7 @@ class EqualizerEngine private constructor(context: Context) {
     @Volatile var statusMessage = "Initializing..."
     @Volatile var activeSessionCount = 0
     @Volatile var selectedPresetName: String = prefs.getString(KEY_PRESET_NAME, "Flat") ?: "Flat"
+    private set
 
     // Build #89: preset persistence tracer — every preset-name write is recorded
     // with a timestamp and a reason tag (user / profile / restore / restore-miss /
@@ -141,7 +142,6 @@ class EqualizerEngine private constructor(context: Context) {
         }
     }
     fun presetTraceText(): String = synchronized(presetTrace) { presetTrace.joinToString("  ") }
-        private set
 
     private var currentBandLevels = loadLevels()
     private var currentBassBoost = prefs.getInt(KEY_BASS, 150).coerceIn(0, 300)
