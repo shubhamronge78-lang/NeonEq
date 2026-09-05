@@ -35,6 +35,9 @@ class EqualizerEngine private constructor(context: Context) {
         private const val KEY_BASS = "bass"
         private const val KEY_VIRT = "virt"
         private const val KEY_LOUD = "loud"
+        private const val KEY_NOISE_GATE = "noise_gate"
+        private const val KEY_LIMITER = "limiter"
+        private const val KEY_LIMITER_THRESHOLD = "limiter_threshold"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_PRESET_NAME = "preset_name"
         private const val KEY_CUSTOM_PRESETS = "custom_presets"
@@ -81,7 +84,9 @@ class EqualizerEngine private constructor(context: Context) {
         // offset is weighted by band frequency (see bassWeight).
         val bandFreqs: IntArray = IntArray(0),
         val minLevel: Short = -1500,
-        val maxLevel: Short = 1500
+        val maxLevel: Short = 1500,
+        // Build #86: noise gate for this session (null where unsupported)
+        val noiseSuppressor: NoiseSuppressor? = null
     )
     private val activeFX = ConcurrentHashMap<Int, SessionFX>()
 
@@ -90,6 +95,7 @@ class EqualizerEngine private constructor(context: Context) {
     private var globalBassBoost: BassBoost? = null
     private var globalVirtualizer: Virtualizer? = null
     private var globalLoudness: LoudnessEnhancer? = null
+    private var globalNoiseSuppressor: NoiseSuppressor? = null
 
     // Real-time spectrum visualizer, attached to global session 0 alongside the EQ.
     // Best-effort only — some devices/ROMs won't allow it, we degrade silently.
@@ -121,6 +127,10 @@ class EqualizerEngine private constructor(context: Context) {
     private var currentBassBoost = prefs.getInt(KEY_BASS, 150).coerceIn(0, 300)
     private var currentVirtualizer = prefs.getInt(KEY_VIRT, 150).coerceIn(0, 300)
     private var currentLoudness = prefs.getInt(KEY_LOUD, 150).coerceIn(0, 300)
+    // Build #86 parity pack: noise gate + anti-clip limiter
+    @Volatile private var currentNoiseGate = prefs.getBoolean(KEY_NOISE_GATE, false)
+    @Volatile private var currentLimiter = prefs.getBoolean(KEY_LIMITER, true)
+    @Volatile private var currentLimiterThreshold = prefs.getInt(KEY_LIMITER_THRESHOLD, 70).coerceIn(0, 100)
     private var currentEnabled = prefs.getBoolean(KEY_ENABLED, true)
 
     // Custom setter: if the engine already finished init (isReady/watchdog fired)
@@ -209,7 +219,14 @@ class EqualizerEngine private constructor(context: Context) {
             val v = currentBandLevels[i].toInt()
             if (v > maxBand) maxBand = v
         }
-        if (maxBand > 9) return ((maxBand - 9) / 4).coerceAtMost(2)
+        // Build #86: anti-clip limiter. OFF = raw (full requested gain, clip
+        // risk is yours). ON = trim engages, scaled by the LIMIT strength
+        // slider (100% = the full historical trim).
+        if (!currentLimiter) return 0
+        if (maxBand > 9) {
+            val trim = ((maxBand - 9) / 4).coerceAtMost(2)
+            return (trim * currentLimiterThreshold) / 100
+        }
         return 0
     }
 
@@ -311,6 +328,8 @@ class EqualizerEngine private constructor(context: Context) {
             sb.append(" loud=").append(loudnessMillibels(currentLoudness))
             sb.append(" | read: ").append(bRead ?: -1).append("/").append(vRead ?: -1).append("/").append(lRead ?: -1)
             sb.append(" | applied: ").append(appliedBass).append("/").append(appliedVirt).append("/").append(loudnessAppliedMb(appliedLoud))
+            sb.append(" | gate=").append(if (currentNoiseGate) "on" else "off")
+            sb.append(" limiter=").append(if (currentLimiter) "on" else "off").append("/").append(currentLimiterThreshold).append("%")
             if (loudnessCapKnown()) sb.append(" (hw cap ").append(loudnessDeviceCapMb).append("mB)")
             // Build #66: last glide transition — kind, frames executed, measured
             // duration, and whether a newer transition superseded it.
@@ -683,6 +702,9 @@ class EqualizerEngine private constructor(context: Context) {
         root.put("autoApplyPreset", isAutoApplyPreset())
         root.put("showVisualizer", isShowVisualizer())
         root.put("showGlow", isShowGlow())
+        root.put("noiseGate", currentNoiseGate)
+        root.put("limiter", currentLimiter)
+        root.put("limiterThreshold", currentLimiterThreshold)
         // Embed custom presets using the same format Presets.exportToJson emits.
         root.put("presets", org.json.JSONObject(exportCustomPresets()).optJSONArray("presets"))
         root.put("appProfiles", org.json.JSONObject(appProfiles as Map<*, *>))
@@ -711,6 +733,9 @@ class EqualizerEngine private constructor(context: Context) {
             setAutoApplyPreset(root.optBoolean("autoApplyPreset", false))
             setShowVisualizer(root.optBoolean("showVisualizer", true))
             setShowGlow(root.optBoolean("showGlow", true))
+            setNoiseGate(root.optBoolean("noiseGate", false))
+            setLimiter(root.optBoolean("limiter", true))
+            setLimiterThreshold(root.optInt("limiterThreshold", 70))
 
             val profObj = root.optJSONObject("appProfiles")
             if (profObj != null) {
@@ -862,7 +887,14 @@ class EqualizerEngine private constructor(context: Context) {
                             if (currentLoudness > 0) le.setTargetGain(loudnessMillibels(currentLoudness))
                         }
                         Log.d(TAG, "Global LoudnessEnhancer created")
-                    } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: ${t.message}") }
+                    } catch (t: Throwable) { Log.w(TAG, "Global Loudness failed: " + t.message) }
+
+                    try {
+                        globalNoiseSuppressor = NoiseSuppressor(0).also { ng ->
+                            ng.enabled = currentEnabled && currentNoiseGate
+                        }
+                        Log.d(TAG, "Global NoiseSuppressor created")
+                    } catch (t: Throwable) { Log.w(TAG, "Global NoiseSuppressor failed: " + t.message) }
 
                     try { attachVisualizer() } catch (t: Throwable) { Log.w(TAG, "Visualizer failed: ${t.message}") }
 
@@ -1294,7 +1326,12 @@ class EqualizerEngine private constructor(context: Context) {
                 }
             } catch (e: Throwable) { Log.w(TAG, "Loudness N/A for session $sessionId", e) }
 
-            activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud, positions, freqs, range[0], range[1])
+            var ng: NoiseSuppressor? = null
+            try {
+                ng = NoiseSuppressor(sessionId).also { it.enabled = currentEnabled && currentNoiseGate }
+            } catch (e: Throwable) { Log.w(TAG, "NoiseSuppressor N/A for session $sessionId") }
+
+            activeFX[sessionId] = SessionFX(sessionId, eq, bb, virt, loud, positions, freqs, range[0], range[1], ng)
             Log.d(TAG, "Session $sessionId: $numBands bands attached")
 
             if (bands.isEmpty()) {
@@ -1313,6 +1350,7 @@ class EqualizerEngine private constructor(context: Context) {
             sfx.bassBoost?.runCatching { release() }
             sfx.virtualizer?.runCatching { release() }
             sfx.loudnessEnhancer?.runCatching { release() }
+            sfx.noiseSuppressor?.runCatching { release() }
         }
     }
 
@@ -1523,7 +1561,9 @@ class EqualizerEngine private constructor(context: Context) {
             // the legacy strength effect stays off so it can't double-boost.
             try { gb?.apply { setStrength(0); enabled = false } } catch (_: Throwable) {}
             try { gv?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
+            val wantNG = currentEnabled && currentNoiseGate
             val lmb = loudnessMillibels(l)
+            try { globalNoiseSuppressor?.apply { enabled = wantNG } } catch (_: Throwable) {}
             try { gl?.apply {
                 if (lmb > 0) setTargetGain(lmb); enabled = wantLoud
                 if (wantLoud && lmb > 0) {
@@ -1536,9 +1576,10 @@ class EqualizerEngine private constructor(context: Context) {
                 try { sfx.bassBoost?.apply { setStrength(0); enabled = false } } catch (_: Throwable) {}
                 try { sfx.virtualizer?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
                 try { sfx.loudnessEnhancer?.apply { if (lmb > 0) setTargetGain(lmb); enabled = wantLoud } } catch (_: Throwable) {}
+                try { sfx.noiseSuppressor?.apply { enabled = wantNG } } catch (_: Throwable) {}
             }
             appliedBass = b; appliedVirt = v; appliedLoud = l
-        } catch (t: Throwable) { Log.w(TAG, "applyEffects failed: ${'$'}{t.message}") }
+        } catch (t: Throwable) { Log.w(TAG, "applyEffects failed: " + t.message) }
     }
 
     // Build #64: batch-set the effects chain. Preset switches, per-app profile
@@ -1693,6 +1734,27 @@ class EqualizerEngine private constructor(context: Context) {
     // animation frames so we enqueue ONE job per frame instead of 31 separate
     // setBandLevel calls (372 total during a 12-frame animation). Same result,
     // far less thread contention and native API churn.
+    // ── Build #86: noise gate + limiter API ──
+    fun isNoiseGate(): Boolean = currentNoiseGate
+    fun setNoiseGate(on: Boolean) {
+        currentNoiseGate = on
+        prefs.edit().putBoolean(KEY_NOISE_GATE, on).apply()
+        audioExecutor.execute { applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness) }
+    }
+    fun isLimiter(): Boolean = currentLimiter
+    fun setLimiter(on: Boolean) {
+        currentLimiter = on
+        prefs.edit().putBoolean(KEY_LIMITER, on).apply()
+        // trim change moves every band — re-write the curve
+        audioExecutor.execute { reapplyBandLevelsToHardware() }
+    }
+    fun limiterThresholdValue(): Int = currentLimiterThreshold
+    fun setLimiterThreshold(v: Int) {
+        currentLimiterThreshold = v.coerceIn(0, 100)
+        prefs.edit().putInt(KEY_LIMITER_THRESHOLD, currentLimiterThreshold).apply()
+        audioExecutor.execute { reapplyBandLevelsToHardware() }
+    }
+
     fun setBandLevels(levels: ShortArray) {
         markUserOverrideIfApplicable()
         // Capture the pre-change curve BEFORE overwriting so the hardware can
