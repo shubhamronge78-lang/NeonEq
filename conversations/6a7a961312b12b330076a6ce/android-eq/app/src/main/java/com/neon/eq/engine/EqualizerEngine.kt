@@ -140,8 +140,15 @@ class EqualizerEngine private constructor(context: Context) {
             presetTrace.addLast(fmt.format(System.currentTimeMillis()) + " " + tag + "→" + name)
             while (presetTrace.size > 8) presetTrace.removeFirst()
         }
+        onPresetChanged?.let { cb -> try { cb() } catch (_: Throwable) { } }
     }
     fun presetTraceText(): String = synchronized(presetTrace) { presetTrace.joinToString("  ") }
+
+    // Build #90: fired after every preset-name write (same coverage as the
+    // trace) — lets the foreground service refresh its notification so the
+    // shade always shows the live preset. Called from arbitrary threads;
+    // listeners must be thread-safe.
+    @Volatile var onPresetChanged: (() -> Unit)? = null
 
     private var currentBandLevels = loadLevels()
     private var currentBassBoost = prefs.getInt(KEY_BASS, 150).coerceIn(0, 300)
@@ -299,6 +306,16 @@ class EqualizerEngine private constructor(context: Context) {
     fun diagnostics(): String {
         val sb = StringBuilder()
         try {
+            // Build #90: self-identifying readout — every diagnostics paste now
+            // says which build it came from, so device reports never have to be
+            // matched against release history by hand.
+            try {
+                val pi = context.packageManager.getPackageInfo(context.packageName, 0)
+                sb.append("NeonEQ v").append(pi.versionName ?: "?").append(" (build ")
+                    .append(if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode
+                            else @Suppress("DEPRECATION") pi.versionCode.toLong())
+                    .append(")\n")
+            } catch (_: Throwable) { }
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val configs = try { am.getActivePlaybackConfigurations() } catch (_: Throwable) { emptyList<AudioPlaybackConfiguration>() }
             val pkgs = configs.mapNotNull { resolvePlayingPackage(it) }.distinct()
@@ -415,6 +432,10 @@ class EqualizerEngine private constructor(context: Context) {
 
     @Volatile private var appProfiles: MutableMap<String, String> = loadAppProfiles()
     @Volatile private var activeProfilePackage: String? = null
+
+    // Build #90: read-only exposure for the foreground-service notification —
+    // shows which per-app profile (if any) is currently engaged.
+    fun activeProfile(): String? = activeProfilePackage
     @Volatile private var suppressedProfilePackage: String? = null
     @Volatile private var restorePresetName: String? = null
     // Bass/Virtualizer/Loudness the user had before a profile engaged — restored
