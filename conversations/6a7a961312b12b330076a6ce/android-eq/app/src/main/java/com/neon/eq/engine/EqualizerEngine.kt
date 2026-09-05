@@ -214,7 +214,9 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     private fun applyPreamp(level: Int): Short {
-        val adjusted = (level - computePreampDb()).coerceIn(-15, 15)
+        // Build #82: widened to ±20 so a doubled request isn't clipped in
+        // software before the hardware's own band range coerce.
+        val adjusted = (level - computePreampDb()).coerceIn(-20, 20)
         return (adjusted * DB_TO_MILLIBEL).toShort()
     }
 
@@ -1475,13 +1477,16 @@ class EqualizerEngine private constructor(context: Context) {
     // EQ's band gains ARE real millibels. The slider (0..300) maps to 0..+10dB,
     // applied as an EQ band offset: bands at/below 100Hz get the full offset,
     // tapering to zero by 300Hz so the boost stays bass and out of the mids.
-    fun bassBoostDb(): Int = currentBassBoost * 10 / 3
+    fun bassBoostDb(): Int = currentBassBoost * 20 / 3
     private fun bassWeight(freqHz: Int): Float = ((300 - freqHz) / 200f).coerceIn(0f, 1f)
     private fun bandTargetDb(levels: IntArray, pos: Float, freqHz: Int): Int =
         sampleCurveAt(levels, pos) + (bassBoostDb() * bassWeight(freqHz)).toInt()
 
+    // Build #82: upper limits ×2 by user request — loudness now reaches
+    // 0..+20dB true hardware dB (150 → ~+11.9dB). Headphone gain territory:
+    // expect distortion at the top on small speakers.
     fun loudnessMillibels(v: Int): Int =
-        (Math.pow((v.coerceIn(0, 300) / 300.0), 0.75) * 1000.0).toInt()
+        (Math.pow((v.coerceIn(0, 300) / 300.0), 0.75) * 2000.0).toInt()
 
     // Build #64: ONE shared applier for the whole effects chain — global path
     // plus every session, all three effects, in a single pass. Sets strength/
