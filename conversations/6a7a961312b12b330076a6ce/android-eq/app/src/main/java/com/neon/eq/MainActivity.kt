@@ -103,12 +103,12 @@ class MainActivity : ComponentActivity() {
         }
 
         super.onCreate(savedInstanceState)
-        // Build #87: restore the persisted theme before the first frame.
+        // Build #88: restore the persisted theme before the first frame.
         try {
             appThemeState.value = Themes.byId(
                 getSharedPreferences(UI_PREFS, android.content.Context.MODE_PRIVATE).getString("theme", null))
         } catch (_: Throwable) { }
-        // Build #87: restore the persisted light/dark mode before the first frame.
+        // Build #88: restore the persisted light/dark mode before the first frame.
         try {
             appModeState.value = SurfaceModes.byId(
                 getSharedPreferences(UI_PREFS, android.content.Context.MODE_PRIVATE).getString("mode", null))
@@ -202,7 +202,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ── Build #87: app themes ──
+// ── Build #88: app themes ──
 // Three-slot palette: primary (sliders, borders, glow), secondary (gradient
 // partner / dial cores), accent (badges, highlights). appThemeState is read
 // throughout composition — swapping it recomposes the whole UI with the new
@@ -228,7 +228,7 @@ object Themes {
 val appThemeState = mutableStateOf(Themes.CLASSIC)
 private val T: NeonTheme get() = appThemeState.value
 
-// ── Build #87: light / dark mode ──
+// ── Build #88: light / dark mode ──
 // Accent themes (NeonTheme) control the neon; this palette controls surfaces
 // and text so the app can run dark (AMOLED, the classic look) or light.
 // Persisted in ui_prefs as "mode"; toggled from the main screen header.
@@ -325,7 +325,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     }
 
     var waveform by remember { mutableStateOf(ByteArray(0)) }
-    // Build #87: timestamp of the last capture delivery — lets the visualizer
+    // Build #88: timestamp of the last capture delivery — lets the visualizer
     // detect a MIUI capture stall while the EQ is ON (the self-heal watchdog
     // needs up to ~4s to re-attach) and drop to the idle pulse instead of
     // drawing the frozen stale buffer.
@@ -396,7 +396,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // ── Per-app profiles state ──
     var playingApp by remember { mutableStateOf(engine.playingPackage()) }
     var appProfiles by remember { mutableStateOf(engine.listAppProfiles()) }
-    // Build #87: PackageManager label lookups are binder calls — cache them
+    // Build #88: PackageManager label lookups are binder calls — cache them
     // instead of hitting PackageManager on every profile-row recomposition.
     val appLabelCache = remember { HashMap<String, String>() }
     fun appLabel(pkg: String): String = appLabelCache.getOrPut(pkg) {
@@ -482,7 +482,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         Text("⚙", fontSize = 16.sp, color = T.secondary)
                     }
                     Spacer(Modifier.width(10.dp))
-                    // Build #87: light/dark mode toggle on the main screen
+                    // Build #88: light/dark mode toggle on the main screen
                     val uiCtx = LocalContext.current
                     Box(
                         modifier = Modifier
@@ -630,7 +630,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         val newLevels = FloatArray(31) { 0f }
                         levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
                         animateLevelsTo(newLevels)
-                        // Build #87: ONE coordinated hardware transition; built-ins
+                        // Build #88: ONE coordinated hardware transition; built-ins
                         // leave the effect sliders at their current values.
                         engine.applyFullState(
                             ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
@@ -649,7 +649,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         val newLevels = FloatArray(31) { 0f }
                         levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
                         animateLevelsTo(newLevels)
-                        // Build #87: presets saved before #63 (when the effects
+                        // Build #88: presets saved before #63 (when the effects
                         // sliders were silent no-ops) carry 0s that were never
                         // intentional — applying them yanked loudness/bass down
                         // and made every preset quieter than flat. A stored 0 now
@@ -682,27 +682,37 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         NeonCard {
             GradientText("BANDS", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
             Spacer(Modifier.height(6.dp))
-            // Build #87: full band-count range, wrapped so 10 chips fit any width
+            // Build #88: full band-count range, wrapped so 10 chips fit any width
             listOf(5, 7, 10, 12, 15, 18, 21, 24, 27, 31).chunked(5).forEach { rowCounts ->
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             rowCounts.forEach { count ->
                 FilterChip(
                     selected = bandCount == count,
                     onClick = {
-                        // Build #87: changing the band count RE-MAPS the current
-                        // curve to the new count instead of flattening it — the
-                        // selected preset (and manual tweaks) now survive count
-                        // changes. Was: hard reset to Flat, which threw away the
-                        // preset the user had picked every time they varied bands.
+                        // Build #88: changing the band count keeps the selection —
+                        // and when a preset is selected it is RE-APPLIED EXACTLY
+                        // for the new count (levelsForCount), so the values are
+                        // the preset's real shape. Build #88's curve re-sampling
+                        // stretched the already-sampled curve into blocky
+                        // values that no longer matched the preset.
                         val oldCount = bandCount
                         val oldCurve = bandLevels.copyOf()
                         bandCount = count
                         engine.setBandCount(count)
                         val newLevels = FloatArray(31) { 0f }
-                        for (i in 0 until count) {
-                            val src = if (oldCount <= 1 || count <= 1) 0
-                                else Math.round(i * (oldCount - 1).toFloat() / (count - 1)).toInt().coerceIn(0, oldCount - 1)
-                            newLevels[i] = oldCurve[src]
+                        val builtIn = Presets.presets.firstOrNull { it.name == selectedPreset }
+                        val customSel = if (builtIn == null) customPresets.firstOrNull { it.name == selectedPreset } else null
+                        if (builtIn != null || customSel != null) {
+                            val lv = if (builtIn != null) Presets.levelsForCount(builtIn!!, count)
+                                     else Presets.levelsForCount(customSel!!, count)
+                            lv.forEachIndexed { i, v -> newLevels[i] = v.toFloat() }
+                        } else {
+                            // Manual curve (or "Custom") — re-sample it onto the new count
+                            for (i in 0 until count) {
+                                val src = if (oldCount <= 1 || count <= 1) 0
+                                    else Math.round(i * (oldCount - 1).toFloat() / (count - 1)).toInt().coerceIn(0, oldCount - 1)
+                                newLevels[i] = oldCurve[src]
+                            }
                         }
                         animateLevelsTo(newLevels)
                         engine.applyFullState(
@@ -755,7 +765,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         NeonCard {
             GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
             Spacer(Modifier.height(4.dp))
-        // Build #87: TRUE hardware dB — bass boost is now an EQ band offset in
+        // Build #88: TRUE hardware dB — bass boost is now an EQ band offset in
         // real millibels (engine bassBoostDb()), verifiable in the diagnostics
         // band readback. Max slider ≡ +10.0 dB.
         val bassDb = if (bassBoost > 0) String.format(java.util.Locale.US, "+%.1f dB", bassBoost / 15f) else "0 dB"
@@ -769,7 +779,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             virtualizer = v
             engine.setVirtualizer(v)
         }
-            // Build #87: display the real dB the hardware gets, derived from
+            // Build #88: display the real dB the hardware gets, derived from
             // the same loudnessMillibels() curve the engine applies — raw
             // slider units (0-300) aren't relatable, dB is.
             val loudDb = if (loudness > 0)
@@ -783,7 +793,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        // ── Build #87: PRO FX — noise gate + anti-clip limiter ──
+        // ── Build #88: PRO FX — noise gate + anti-clip limiter ──
         NeonCard {
             GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
             Spacer(Modifier.height(6.dp))
@@ -1094,7 +1104,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             title = { Text("Settings", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    // ── Build #87: App theme ──
+                    // ── Build #88: App theme ──
                     val ctx = LocalContext.current
                     Column {
                         Text("App Theme", fontSize = 14.sp, color = S.text)
@@ -1291,7 +1301,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         textAlign = TextAlign.Center
                     )
                     Spacer(Modifier.height(12.dp))
-                    // Build #87: live engine diagnostics — the on-device window
+                    // Build #88: live engine diagnostics — the on-device window
                     // into session attach (no adb on the Redmi 10C).
                     Text(
                         "ENGINE DIAGNOSTICS",
@@ -1318,7 +1328,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #87",
+                        "Neon EQ v1.0 · Build #88",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
@@ -1492,8 +1502,8 @@ fun BreathingGlow(active: Boolean) {
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
 // Degrades to a gentle idle pulse if no waveform data is available yet (permission
-// denied, unsupported device, or nothing playing) — and since Build #87 also when
-// the EQ toggle is OFF, or (Build #87) when capture data goes stale mid-playback
+// denied, unsupported device, or nothing playing) — and since Build #88 also when
+// the EQ toggle is OFF, or (Build #88) when capture data goes stale mid-playback
 // for >1.5s while the engine's self-heal watchdog re-attaches a MIUI-killed
 // capture. In both cases the stale buffer would render frozen; the idle pulse
 // renders instead. `active` + waveform freshness gate which mode we render.
@@ -1510,13 +1520,13 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
 
     // Per-bar peak hold — each bar remembers its own decaying peak height.
     val peaks = remember { FloatArray(barCount) { 0f } }
-    // Build #87: shared amplitude smoother — attack fast, release slow, so
+    // Build #88: shared amplitude smoother — attack fast, release slow, so
     // the 30Hz capture steps render as fluid motion instead of jumpy snaps.
     val smooth = remember { FloatArray(64) { 0f } }
     val waveYs = remember { FloatArray(64) }
     var tick by remember { mutableIntStateOf(0) }
 
-    // ---- Build #87: zero steady-state allocations in the visualizer ----
+    // ---- Build #88: zero steady-state allocations in the visualizer ----
     // This composable redraws EVERY frame (idle breathing + live waveform),
     // so every object below is created once and reused. The previous version
     // allocated per frame: wave = 2 Paths + 1 FloatArray + 3 brushes,
@@ -1545,7 +1555,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     Canvas(modifier = Modifier.fillMaxWidth().height(64.dp)) {
         // Extract the amplitude for a single logical bar — shared by all three
         // styles so they react identically to the same waveform data.
-        // `live` = EQ on AND fresh capture data. The freshness check (Build #87)
+        // `live` = EQ on AND fresh capture data. The freshness check (Build #88)
         // closes the gap while the engine's self-heal watchdog re-attaches a
         // MIUI-killed capture: without it the stale buffer renders frozen for
         // up to ~4s mid-song. The idlePulse animation invalidates this Canvas
@@ -1578,7 +1588,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
         when (style) {
             "wave" -> {
                 // Smooth glowing line traced through 64 sample points.
-                // Build #87: paths, amp buffer and brushes are hoisted and
+                // Build #88: paths, amp buffer and brushes are hoisted and
                 // reset() per frame — the wave costs zero allocations now.
                 val points = 64
                 val stepX = size.width / (points - 1).toFloat()
@@ -1588,7 +1598,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
                 }
                 waveMainPath.reset()
                 waveMirrorPath.reset()
-                // Build #87: quadratic Bézier through segment midpoints —
+                // Build #88: quadratic Bézier through segment midpoints —
                 // continuous curve instead of visibly kinked lineTo joins.
                 waveMainPath.moveTo(0f, waveYs[0])
                 waveMirrorPath.moveTo(0f, size.height - (size.height - waveYs[0]) * 0.5f)
@@ -1635,7 +1645,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
                 )
                 for (i in 0 until spokes) {
                     val amp = ampFor(i, spokes)
-                    // Build #87: gentle continuous rotation (~0.9 rad/s) —
+                    // Build #88: gentle continuous rotation (~0.9 rad/s) —
                     // the ring feels alive even while idle.
                     val angle = (i / spokes.toFloat()) * Math.PI * 2 + tick * 0.03f
                     val inner = coreR + 3f
@@ -1656,7 +1666,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
         val barWidthPx = slotWidth * 0.6f
         val midY = size.height / 2f
         for (i in 0 until barCount) {
-            // Build #87: shared ampFor — bars now use the exact same
+            // Build #88: shared ampFor — bars now use the exact same
             // extraction (and the Build #83 smoother) as wave and circle.
             val amp = ampFor(i, barCount)
             val barH = (size.height * 0.9f * amp).coerceAtLeast(3f)
@@ -1666,7 +1676,7 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
             if (barH > peaks[i]) peaks[i] = barH
             val peakH = peaks[i]
 
-            // Build #87: soft glow underlay — same bar, wider and faint.
+            // Build #88: soft glow underlay — same bar, wider and faint.
             drawRoundRect(
                 color = barGlowColor,
                 topLeft = Offset(x - 2f, midY - barH / 2f - 2f),
@@ -1708,7 +1718,7 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #87: allocation-free hot path ----
+    // ---- Build #88: allocation-free hot path ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the
