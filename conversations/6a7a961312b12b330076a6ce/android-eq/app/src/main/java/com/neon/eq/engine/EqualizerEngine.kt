@@ -310,7 +310,8 @@ class EqualizerEngine private constructor(context: Context) {
             sb.append(" virt=").append(currentVirtualizer)
             sb.append(" loud=").append(loudnessMillibels(currentLoudness))
             sb.append(" | read: ").append(bRead ?: -1).append("/").append(vRead ?: -1).append("/").append(lRead ?: -1)
-            sb.append(" | applied: ").append(appliedBass).append("/").append(appliedVirt).append("/").append(loudnessMillibels(appliedLoud))
+            sb.append(" | applied: ").append(appliedBass).append("/").append(appliedVirt).append("/").append(loudnessAppliedMb(appliedLoud))
+            if (loudnessCapKnown()) sb.append(" (hw cap ").append(loudnessDeviceCapMb).append("mB)")
             // Build #66: last glide transition — kind, frames executed, measured
             // duration, and whether a newer transition superseded it.
             sb.append("\ntransition: kind=").append(if (traceKind.isEmpty()) "none" else traceKind)
@@ -1178,7 +1179,7 @@ class EqualizerEngine private constructor(context: Context) {
                             if (wantLoud) {
                                 try {
                                     val l = sfx.loudnessEnhancer
-                                    if (l != null && (!l.enabled || l.targetGain.toInt() != loudnessMillibels(currentLoudness))) drifted = true
+                                    if (l != null && (!l.enabled || l.targetGain.toInt() != loudnessAppliedMb(currentLoudness))) drifted = true
                                 } catch (_: Throwable) {}
                             }
                         }
@@ -1488,6 +1489,16 @@ class EqualizerEngine private constructor(context: Context) {
     fun loudnessMillibels(v: Int): Int =
         (Math.pow((v.coerceIn(0, 300) / 300.0), 0.75) * 2000.0).toInt()
 
+    // Build #84: device loudness cap discovery. Some OEM LoudnessEnhancer
+    // implementations silently clamp targetGain below what we request — the
+    // slider number then lies about the actual gain. After every set we read
+    // back the hardware's answer and pin the cap; loudnessAppliedMb() is the
+    // TRUE applied gain, used by the UI display and the drift-heal so it
+    // stops fighting a device that says "no".
+    @Volatile private var loudnessDeviceCapMb = Int.MAX_VALUE
+    fun loudnessAppliedMb(v: Int): Int = loudnessMillibels(v).coerceAtMost(loudnessDeviceCapMb)
+    fun loudnessCapKnown() = loudnessDeviceCapMb != Int.MAX_VALUE
+
     // Build #64: ONE shared applier for the whole effects chain — global path
     // plus every session, all three effects, in a single pass. Sets strength/
     // gain BEFORE enabling (enabling first lets the effect go live at its
@@ -1507,7 +1518,14 @@ class EqualizerEngine private constructor(context: Context) {
             try { gb?.apply { setStrength(0); enabled = false } } catch (_: Throwable) {}
             try { gv?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
             val lmb = loudnessMillibels(l)
-            try { gl?.apply { if (lmb > 0) setTargetGain(lmb); enabled = wantLoud } } catch (_: Throwable) {}
+            try { gl?.apply {
+                if (lmb > 0) setTargetGain(lmb); enabled = wantLoud
+                if (wantLoud && lmb > 0) {
+                    val a = targetGain.toInt()
+                    // Device answered with LESS than requested -> that's its ceiling.
+                    if (a in 1 until lmb && a < loudnessDeviceCapMb) loudnessDeviceCapMb = a
+                }
+            } } catch (_: Throwable) {}
             for ((_, sfx) in activeFX) {
                 try { sfx.bassBoost?.apply { setStrength(0); enabled = false } } catch (_: Throwable) {}
                 try { sfx.virtualizer?.apply { setStrength(v.toShort()); enabled = wantVirt } } catch (_: Throwable) {}
