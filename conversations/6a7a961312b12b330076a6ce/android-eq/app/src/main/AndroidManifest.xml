@@ -11,7 +11,8 @@
     <application
         android:allowBackup="true"
         android:label="Neon EQ"
-        android:icon="@android:drawable/ic_media_play"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.NeonEQ"
         android:supportsRtl="true">
 
@@ -42,7 +43,7 @@
         <service
             android:name=".engine.EQTileService"
             android:label="Neon EQ"
-            android:icon="@android:drawable/ic_media_play"
+            android:icon="@mipmap/ic_launcher"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">
             <intent-filter>

@@ -40,3 +40,4 @@
 *.docx filter=lfs diff=lfs merge=lfs -text
 *.xlsx filter=lfs diff=lfs merge=lfs -text
 *.pptx filter=lfs diff=lfs merge=lfs -text
+conversations/6a7a961312b12b330076a6ce/android-eq/app/src/main/res/** -filter

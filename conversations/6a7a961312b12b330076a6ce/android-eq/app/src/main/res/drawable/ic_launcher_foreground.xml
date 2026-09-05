@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Build #83: Neon EQ launcher glyph — five round-capped spectrum bars
+     rising into a boost curve (cyan -> purple), centered in the adaptive
+     icon safe zone, with a faint baseline "floor". Strokes with round
+     caps give the rounded-bar look without pathData arc gymnastics. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Faint baseline floor -->
+    <path
+        android:pathData="M24,54 L84,54"
+        android:strokeColor="#3300E5FF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"/>
+    <!-- Low bars (cyan) -->
+    <path
+        android:pathData="M30,45 L30,63 M42,40 L42,68 M54,34 L54,74"
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"/>
+    <!-- Boost curve top (purple) -->
+    <path
+        android:pathData="M66,28 L66,80 M78,33 L78,75"
+        android:strokeColor="#7C4DFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"/>
+</vector>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand palette (matches the in-app NeonCard / accent system) -->
+    <color name="neon_cyan">#00E5FF</color>
+    <color name="neon_purple">#7C4DFF</color>
+    <color name="amoled_black">#050508</color>
+    <color name="ic_launcher_background">#050508</color>
+</resources>
