@@ -1097,15 +1097,20 @@ class EqualizerEngine private constructor(context: Context) {
                 releaseSession(id)
             }
 
+            val newlyAttached = ArrayList<Int>(activeSessionIds.size)
             for (sessionId in activeSessionIds) {
                 if (!activeFX.containsKey(sessionId)) {
                     attachToSession(sessionId)
+                    newlyAttached.add(sessionId)
                 }
             }
 
-            // Reapply current band levels + effects to any newly attached sessions
-            if (activeSessionIds.isNotEmpty()) {
-                reapplyStateToSessions()
+            // Build #85: reapply only to the sessions attached THIS scan —
+            // existing sessions are verified and repaired by the drift heal
+            // below, so re-applying to all of them every scan was redundant
+            // hardware writes on the audio executor.
+            if (newlyAttached.isNotEmpty()) {
+                reapplyStateToSessions(newlyAttached)
             }
 
             if (bands.isEmpty()) {
@@ -1214,8 +1219,9 @@ class EqualizerEngine private constructor(context: Context) {
     // Reapply all current EQ state (band levels, bass, virtualizer, loudness, enabled)
     // to all per-session FX. Called after new sessions are attached so they don't
     // start with default/flat settings.
-    private fun reapplyStateToSessions() {
-        for ((_, sfx) in activeFX) {
+    private fun reapplyStateToSessions(only: Collection<Int>? = null) {
+        for ((sid, sfx) in activeFX) {
+            if (only != null && sid !in only) continue
             try {
                 sfx.equalizer.enabled = currentEnabled
                 // Build #68: the session's captured band map — same formula as
