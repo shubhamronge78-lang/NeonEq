@@ -454,7 +454,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             if (showGlow) BreathingGlow(active = enabled)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -504,22 +504,40 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             fontSize = 15.sp, color = T.accent)
                     }
                 }
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = {
-                        enabled = it
-                        engine.setEnabled(it)
-                        if (context is MainActivity) context.onEnabledToggled(it)
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = T.primary,
-                        checkedTrackColor = T.primary.copy(alpha = 0.3f)
-                    )
-                )
             }
         }
         Text("System-Wide Audio Equalizer", fontSize = 12.sp, color = Color.Gray)
         Text(statusMsg, fontSize = 9.sp, color = T.secondary)
+
+        Spacer(Modifier.height(14.dp))
+
+        // Build #91: FxSound-style big central power button — replaces the
+        // small header Switch as the primary control. Same enable path
+        // (engine.setEnabled + onEnabledToggled), just impossible to miss.
+        Box(contentAlignment = Alignment.Center) {
+            if (showGlow) BreathingGlow(active = enabled)
+            Box(
+                modifier = Modifier
+                    .size(84.dp)
+                    .clip(CircleShape)
+                    .background(
+                        brush = if (enabled)
+                            Brush.radialGradient(listOf(T.primary.copy(alpha = 0.35f), T.primary.copy(alpha = 0.06f)))
+                        else
+                            Brush.radialGradient(listOf(Color.Gray.copy(alpha = 0.14f), Color.Transparent))
+                    )
+                    .border(2.dp, if (enabled) T.primary else Color.Gray.copy(alpha = 0.3f), CircleShape)
+                    .clickable {
+                        val next = !enabled
+                        enabled = next
+                        engine.setEnabled(next)
+                        if (context is MainActivity) context.onEnabledToggled(next)
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("⏻", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = if (enabled) T.primary else Color.Gray)
+            }
+        }
 
         Spacer(Modifier.height(16.dp))
 
@@ -1718,7 +1736,8 @@ fun CanvasEQ(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #89: allocation-free hot path ----
+    // ---- Build #91: dot-on-curve markers, big power button, FxSound-style side panel
+    // (originally Build #89: allocation-free hot path) ----
     // The previous version created a new android.graphics.Paint for EVERY band
     // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
     // gradient brush per band. Everything below is hoisted and reused, so the
@@ -1732,9 +1751,6 @@ fun CanvasEQ(
     val curvePath = remember { Path() }
     val centerLinePath = remember { Path() }
     val centerDash = remember(density) { with(density) { PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 5.dp.toPx())) } }
-    val bgColor = S.cardDeep
-    val bgDim = bgColor.copy(alpha = 0.45f)
-    val barColors = remember { listOf(T.secondary, T.primary) }
     val curveColors = remember { listOf(T.primary, T.secondary) }
     val curveBrush = remember(appThemeState.value) { Brush.horizontalGradient(listOf(T.primary, T.secondary)) }
     val curveGlow = T.primary.copy(alpha = 0.20f)
@@ -1744,8 +1760,6 @@ fun CanvasEQ(
     val bubbleText = android.graphics.Color.rgb(220, 248, 255)
     val grayLabel = android.graphics.Color.rgb(140, 140, 158)
     val grayDim = android.graphics.Color.rgb(88, 88, 102)
-    val cyanLabel = android.graphics.Color.rgb(0, 229, 255)
-    val cyanDim = android.graphics.Color.rgb(0, 145, 158)
     val topsX = remember { FloatArray(31) }
     val topsY = remember { FloatArray(31) }
     var activeBand by remember { mutableIntStateOf(-1) }
@@ -1766,7 +1780,6 @@ fun CanvasEQ(
     val barWidthPx = with(density) { 10.dp.toPx() }
     val minHeightPx = with(density) { 3.dp.toPx() }
     val labelAreaPx = with(density) { 46.dp.toPx() }
-    val cornerPx = with(density) { 3.dp.toPx() }
     val freqSizePx = with(density) { 11.sp.toPx() }
     val lvlSizePx = with(density) { 10.sp.toPx() }
     val curveGlowPx = with(density) { 6.dp.toPx() }
@@ -1843,10 +1856,6 @@ fun CanvasEQ(
         centerLinePath.lineTo(size.width, centerY)
         drawPath(centerLinePath, color = centerColor, style = Stroke(width = centerPx, pathEffect = centerDash))
 
-        // ONE gradient brush spans the full track for all bars — purple at the
-        // top, cyan at the bottom — instead of a fresh brush per band per frame.
-        val barBrush = Brush.verticalGradient(barColors, 0f, trackHeight)
-
         for (i in 0 until bandCount) {
             val level = levels.getOrElse(i) { 0f }
             val normLevel = (level + 15f) / 30f
@@ -1858,39 +1867,31 @@ fun CanvasEQ(
             topsY[i] = y
 
             val dimmed = activeBand >= 0 && i != activeBand
+            val dotCx = x + barWidthPx / 2f
+            val isActiveBand = i == activeBand
 
-            // Background bar — spans the FULL track, same rect touch mapping uses.
-            drawRoundRect(
-                color = if (dimmed) bgDim else bgColor,
-                topLeft = Offset(x, 0f),
-                size = Size(barWidthPx, trackHeight),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
-            )
+            // Build #91: FxSound-style marker — a small dot sitting ON the
+            // curve at this band's level, no vertical bar filling the track.
+            // The active band's larger glowing dot + value bubble is drawn
+            // separately below, after the curve, so it renders on top.
+            if (!isActiveBand) {
+                drawCircle(
+                    color = if (dimmed) T.primary.copy(alpha = 0.25f) else T.primary.copy(alpha = 0.65f),
+                    radius = handlePx * 0.85f,
+                    center = Offset(dotCx, y)
+                )
+            }
 
-            // Gradient fill bar
-            drawRoundRect(
-                brush = barBrush,
-                topLeft = Offset(x, y),
-                size = Size(barWidthPx, barH),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerPx, cornerPx)
-            )
-
-            // Frequency + level labels, drawn in the reserved label area below the track.
+            // Frequency label only — the numeric gain now lives in the
+            // floating bubble while dragging, so idle bands aren't cluttered
+            // with two overlapping numbers.
             drawIntoCanvas {
                 labelPaint.textSize = freqSizePx
                 labelPaint.color = if (dimmed) grayDim else grayLabel
                 it.nativeCanvas.drawText(
                     freqLabels.getOrElse(i) { "" },
-                    x + barWidthPx / 2f,
-                    trackHeight + labelAreaPx * 0.45f,
-                    labelPaint
-                )
-                labelPaint.textSize = lvlSizePx
-                labelPaint.color = if (dimmed) cyanDim else cyanLabel
-                it.nativeCanvas.drawText(
-                    "${round(level).toInt()}",
-                    x + barWidthPx / 2f,
-                    trackHeight + labelAreaPx * 0.85f,
+                    dotCx,
+                    trackHeight + labelAreaPx * 0.6f,
                     labelPaint
                 )
             }
@@ -2107,20 +2108,28 @@ fun CustomPresetChip(
     }
 }
 
+// Build #91: FxSound-style layout — label above a thin track with value at
+// the end of the same row, instead of label/slider/value crammed side by
+// side. Matches the reference's Clarity/Ambience/Bass Boost side-panel look.
 @Composable
 fun EffectSlider(label: String, value: Int, range: IntRange, valueText: String? = null, onValueChange: (Int) -> Unit) {
     val haptic = LocalHapticFeedback.current
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, fontSize = 11.sp, color = Color.Gray, modifier = Modifier.width(100.dp))
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(label, fontSize = 11.sp, color = Color.Gray, letterSpacing = 1.sp)
+            Text(valueText ?: "$value", fontSize = 12.sp, color = T.accent, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(2.dp))
         Slider(
             value = value.toFloat(),
             onValueChange = { onValueChange(it.toInt()) },
             valueRange = range.first.toFloat()..range.last.toFloat(),
             modifier = Modifier
-                .weight(1f)
+                .fillMaxWidth()
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
@@ -2133,18 +2142,6 @@ fun EffectSlider(label: String, value: Int, range: IntRange, valueText: String? 
                 thumbColor = T.accent,
                 activeTrackColor = T.accent.copy(alpha = 0.4f)
             )
-        )
-        Text(
-            valueText ?: "$value",
-            fontSize = 11.sp,
-            color = T.accent,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .width(40.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(T.accent.copy(alpha = 0.10f))
-                .border(1.dp, T.accent.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
-                .padding(vertical = 2.dp)
         )
     }
 }
