@@ -121,6 +121,26 @@ class EqualizerEngine private constructor(context: Context) {
     @Volatile var statusMessage = "Initializing..."
     @Volatile var activeSessionCount = 0
     @Volatile var selectedPresetName: String = prefs.getString(KEY_PRESET_NAME, "Flat") ?: "Flat"
+
+    // Build #89: preset persistence tracer — every preset-name write is recorded
+    // with a timestamp and a reason tag (user / profile / restore / restore-miss /
+    // startup-reapply), ring-buffered to 8 entries and surfaced in diagnostics.
+    // Ends the guesswork on "why did my preset change": the readout shows exactly
+    // who wrote what and when. Seeded with the boot-load on first write.
+    private val presetTrace = ArrayDeque<String>()
+    private var presetTraceSeeded = false
+    private fun tracePresetWrite(tag: String, name: String) {
+        synchronized(presetTrace) {
+            val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+            if (!presetTraceSeeded) {
+                presetTraceSeeded = true
+                presetTrace.addLast(fmt.format(System.currentTimeMillis()) + " boot-load→" + selectedPresetName)
+            }
+            presetTrace.addLast(fmt.format(System.currentTimeMillis()) + " " + tag + "→" + name)
+            while (presetTrace.size > 8) presetTrace.removeFirst()
+        }
+    }
+    fun presetTraceText(): String = synchronized(presetTrace) { presetTrace.joinToString("  ") }
         private set
 
     private var currentBandLevels = loadLevels()
@@ -294,6 +314,7 @@ class EqualizerEngine private constructor(context: Context) {
             .append(" | active: ").append(activeProfilePackage ?: "-")
             .append(" | suppressed: ").append(suppressedProfilePackage ?: "-")
             .append(" | stable: ").append(profileStableCount)
+        sb.append("\npreset writes: ").append(presetTraceText())
         sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
             sb.append("\nglobalEQ: ").append(if (globalEQ != null) "attached" else "null")
             sb.append(" | enabled: ").append(enabled)
@@ -381,6 +402,7 @@ class EqualizerEngine private constructor(context: Context) {
         markUserOverrideIfApplicable()
         selectedPresetName = name
         try { prefs.edit().putString(KEY_PRESET_NAME, name).apply() } catch (_: Throwable) { }
+        tracePresetWrite("user", name)
     }
 
     // ── Per-app audio profiles ──
@@ -533,6 +555,7 @@ class EqualizerEngine private constructor(context: Context) {
                     if (applyPresetByName(profilePreset)) {
                         selectedPresetName = profilePreset
                         try { prefs.edit().putString(KEY_PRESET_NAME, profilePreset).apply() } catch (_: Throwable) { }
+                        tracePresetWrite("profile:" + playingPkg, profilePreset)
                     }
                 } finally { applyingProfile = false }
             }
@@ -546,11 +569,13 @@ class EqualizerEngine private constructor(context: Context) {
                     if (restore != null && applyPresetByName(restore)) {
                         selectedPresetName = restore
                         try { prefs.edit().putString(KEY_PRESET_NAME, restore).apply() } catch (_: Throwable) { }
+                        tracePresetWrite("restore", restore)
                     } else {
-                        val flat = ShortArray(31) { 0 }
-                        setBandLevels(flat)
-                        selectedPresetName = "Flat"
-                        try { prefs.edit().putString(KEY_PRESET_NAME, "Flat").apply() } catch (_: Throwable) { }
+                        // Build #89: restore target missing (e.g. the custom preset
+                        // was deleted while the profile was active) — KEEP the live
+                        // curve. The old silent reset to Flat was a persistent
+                        // "my preset got wiped" source.
+                        tracePresetWrite("restore-miss", selectedPresetName)
                     }
                     // Put the user's pre-profile Bass/Virtualizer/Loudness back.
                     // (applyPresetByName only restores effects for custom presets,
@@ -574,7 +599,9 @@ class EqualizerEngine private constructor(context: Context) {
         if (!isAutoApplyPreset()) return false
         val name = selectedPresetName
         if (name == "Flat" || name == "Custom") return false
-        return applyPresetByName(name)
+        val ok = applyPresetByName(name)
+        if (ok) tracePresetWrite("startup-reapply", name)
+        return ok
     }
 
     // ── Custom presets (JSON serialization with backward-compat migration) ──
