@@ -455,6 +455,42 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Build #100: limited-mode banner — when the device's audio policy
+        // blocks the EQ engine entirely (Vivo V2553: Error -3), say it plainly
+        // instead of letting the EQ silently look broken. Loudness still
+        // works there; presets still save for other devices.
+        var limitedNow by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                limitedNow = engine.limitedMode()
+                delay(2000)
+            }
+        }
+        if (limitedNow) {
+            Spacer(Modifier.height(10.dp))
+            NeonCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("⚠", fontSize = 16.sp, color = T.accent)
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            "LIMITED MODE",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp,
+                            color = T.accent
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "This device's audio policy blocks the EQ engine. Loudness still works — presets still save for your other devices.",
+                            fontSize = 10.sp,
+                            color = T.secondary,
+                            lineHeight = 13.sp
+                        )
+                    }
+                }
+            }
+        }
         // ── Header with breathing glow ──
         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
             if (showGlow) BreathingGlow(active = enabled)
@@ -1308,7 +1344,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #99",
+                        "Neon EQ · Build #100",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

@@ -306,6 +306,13 @@ class EqualizerEngine private constructor(context: Context) {
     // the live session-attach internals so we can see exactly what MIUI is
     // doing when the EQ goes silent. Polled once a second from the Settings
     // diagnostics panel; reads are cheap and Throwable-caught throughout.
+    // Build #100: limited-mode state — some OEMs (e.g. Vivo V2553) refuse the
+    // EQ engine on the output mix AND every per-session effect, while still
+    // allowing LoudnessEnhancer on the output mix. The UI must say this
+    // plainly instead of silently looking broken.
+    fun limitedMode(): Boolean = globalEQ == null && activeFX.isEmpty()
+    fun loudnessEngineAvailable(): Boolean = globalLoudness != null
+
     fun diagnostics(): String {
         val sb = StringBuilder()
         try {
