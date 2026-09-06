@@ -319,6 +319,26 @@ class EqualizerEngine private constructor(context: Context) {
                             else @Suppress("DEPRECATION") pi.versionCode.toLong())
                     .append(") · ").append(Build.MODEL).append(" · Android ").append(Build.VERSION.RELEASE).append("\n")
             } catch (_: Throwable) { }
+            // Build #99: which effect engines this device actually ships —
+            // "Cannot initialize effect engine" can mean the OEM disabled the
+            // engine entirely; the census proves it either way.
+            try {
+                val ds = try { AudioEffect.queryEffects() } catch (_: Throwable) { emptyArray<AudioEffect.Descriptor>() }
+                fun nm(u: java.util.UUID?): String? = try {
+                    when (u) {
+                        AudioEffect.EFFECT_TYPE_EQUALIZER -> "EQ"
+                        AudioEffect.EFFECT_TYPE_BASS_BOOST -> "Bass"
+                        AudioEffect.EFFECT_TYPE_VIRTUALIZER -> "Virt"
+                        AudioEffect.EFFECT_TYPE_LOUDNESS_ENHANCER -> "Loud"
+                        AudioEffect.EFFECT_TYPE_NOISE_SUPPRESSOR -> "Gate"
+                        else -> null
+                    }
+                } catch (_: Throwable) { null }
+                val names = ds.mapNotNull { nm(it.type) }.distinct()
+                sb.append("effect engines: ").append(if (names.isEmpty()) "none visible" else names.joinToString("+"))
+                    .append(" (").append(ds.size).append(" total)\n")
+            } catch (_: Throwable) { }
+
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val configs = try { am.getActivePlaybackConfigurations() } catch (_: Throwable) { emptyList<AudioPlaybackConfiguration>() }
             val pkgs = configs.mapNotNull { resolvePlayingPackage(it) }.distinct()
@@ -340,6 +360,9 @@ class EqualizerEngine private constructor(context: Context) {
         if (globalEQ == null && globalEQFail != null) {
             sb.append("\nsession 0 failed: ").append(globalEQFail)
         }
+        if (bbProbeSession > 0) {
+            sb.append("\nbb-probe: session ").append(bbProbeSession).append(" accepts effects (EQ engine blocked)")
+        }
         sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
         // Build #96: session-scan health — stub-skips counts 0-band stub EQ
         // backoffs (OEM refusing effects on that route), route-kicks counts
@@ -349,6 +372,13 @@ class EqualizerEngine private constructor(context: Context) {
             .append(" | heals=").append(healCount)
             sb.append("\nglobalEQ: ").append(if (globalEQ != null) "attached" else "null")
             sb.append(" | enabled: ").append(enabled)
+            // Build #99: which global engines actually attached on session 0.
+            sb.append("\nglobals attached: ").append(listOfNotNull(
+                if (globalBassBoost != null) "bass" else null,
+                if (globalVirtualizer != null) "virt" else null,
+                if (globalLoudness != null) "loud" else null,
+                if (globalNoiseSuppressor != null) "gate" else null
+            ).joinToString(",").ifEmpty { "none" })
 
             val anyEQ = activeFX.values.firstOrNull()?.equalizer ?: globalEQ
             val hwBands = try { anyEQ?.numberOfBands?.toInt() ?: 0 } catch (_: Throwable) { 0 }
@@ -942,9 +972,18 @@ class EqualizerEngine private constructor(context: Context) {
                             try { eq.setBandLevel(bandIndex.toShort(), millibel) } catch (_: Throwable) { }
                         }
                     }
-
-                    try {
-                        globalBassBoost = BassBoost(0, 0).also { bb ->
+                } catch (t: Throwable) {
+                    globalEQFail = "${t.javaClass.simpleName}: ${t.message}"
+                    Log.w(TAG, "Session 0 EQ failed: $globalEQFail")
+                    globalEQ = null
+                }
+                // Build #99: independent global effects — an OEM can block the
+                // Equalizer engine while allowing Loudness/Virtualizer/BassBoost
+                // (separate engines). The old structure aborted ALL of them the
+                // moment EQ creation failed, so a partially-working device
+                // looked completely dead.
+                try {
+                    globalBassBoost = BassBoost(0, 0).also { bb ->
                             // Build #81: bass boost is now a true-dB EQ band
                             // offset — the legacy strength effect stays off
                             // (it would double-boost on top of the EQ).
@@ -978,12 +1017,6 @@ class EqualizerEngine private constructor(context: Context) {
                     } catch (t: Throwable) { Log.w(TAG, "Global NoiseSuppressor failed: " + t.message) }
 
                     try { attachVisualizer() } catch (t: Throwable) { Log.w(TAG, "Visualizer failed: ${t.message}") }
-
-                } catch (t: Throwable) {
-                    globalEQFail = "${t.javaClass.simpleName}: ${t.message}"
-                    Log.w(TAG, "Session 0 failed: $globalEQFail")
-                    globalEQ = null
-                }
 
                 if (globalEQ != null) {
                     statusMessage = "Global EQ ready — play music to test"
@@ -1164,6 +1197,10 @@ class EqualizerEngine private constructor(context: Context) {
     // Build #98: why the global session-0 EQ couldn't be created (OEM block vs
     // priority conflict vs no effect engine) — surfaced in diagnostics.
     @Volatile var globalEQFail: String? = null
+    // Build #99: first session ID found to accept a BassBoost attach when the
+    // EQ engine refused everything — proves per-session insertion works and
+    // names the live session even with reflection blocked.
+    @Volatile var bbProbeSession = -1
     @Volatile private var stubSkipCount = 0L
     @Volatile private var lastConfigCount = -1
     @Volatile private var bruteAttempts = 0L
@@ -1252,6 +1289,23 @@ class EqualizerEngine private constructor(context: Context) {
                             testEq.release()
                         }
                     } catch (e: Throwable) { /* session doesn't exist, skip */ }
+                }
+                // Build #99: EQ engine refused every session — probe with
+                // BassBoost instead. If BB attaches, per-session insertion
+                // works and the session is real (EQ engine just unavailable);
+                // if BB also fails everywhere, the OEM blocks all third-party
+                // effect insertion and no AudioEffect path exists on it.
+                if (activeSessionIds.isEmpty() && bbProbeSession < 0) {
+                    for (sid in 1..probeMax) {
+                        if (sid == 0) continue
+                        try {
+                            val bbp = BassBoost(0, sid)
+                            bbp.release()
+                            bbProbeSession = sid
+                            Log.d(TAG, "BB probe: session $sid accepts effects (EQ engine blocked)")
+                            break
+                        } catch (_: Throwable) {}
+                    }
                 }
                 }
             }
