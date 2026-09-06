@@ -369,6 +369,7 @@ class EqualizerEngine private constructor(context: Context) {
         if (bbProbeSession > 0) {
             sb.append("\nbb-probe: session ").append(bbProbeSession).append(" accepts effects (EQ engine blocked)")
         }
+        uuidProbeResult?.let { sb.append("\nuuid-probe: ").append(it) }
         sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
         // Build #96: session-scan health — stub-skips counts 0-band stub EQ
         // backoffs (OEM refusing effects on that route), route-kicks counts
@@ -983,6 +984,30 @@ class EqualizerEngine private constructor(context: Context) {
                     Log.w(TAG, "Session 0 EQ failed: $globalEQFail")
                     globalEQ = null
                 }
+                // Build #102: if type-based EQ creation was refused, knock on
+                // the same engine by implementation UUID instead.
+                if (globalEQ == null && uuidProbeResult == null) {
+                    uuidProbeResult = try {
+                        val eqDescs = AudioEffect.queryEffects().filter { d ->
+                            try { d.type == AudioEffect.EFFECT_TYPE_EQUALIZER } catch (_: Throwable) { false }
+                        }
+                        if (eqDescs.isEmpty()) "no eq descriptor on device"
+                        else {
+                            var hit = -1
+                            for ((i, d) in eqDescs.withIndex()) {
+                                try {
+                                    val probe = AudioEffect(AudioEffect.EFFECT_TYPE_EQUALIZER, d.uuid, 1, 0)
+                                    try { probe.enabled = false } catch (_: Throwable) {}
+                                    probe.release()
+                                    hit = i
+                                    break
+                                } catch (_: Throwable) {}
+                            }
+                            if (hit >= 0) "ATTACHED via impl-uuid idx=$hit" else "refused on all ${eqDescs.size} eq descriptors"
+                        }
+                    } catch (t: Throwable) { "err: ${t.javaClass.simpleName}" }
+                    Log.d(TAG, "uuid-probe: $uuidProbeResult")
+                }
                 // Build #99: independent global effects — an OEM can block the
                 // Equalizer engine while allowing Loudness/Virtualizer/BassBoost
                 // (separate engines). The old structure aborted ALL of them the
@@ -1207,6 +1232,11 @@ class EqualizerEngine private constructor(context: Context) {
     // EQ engine refused everything — proves per-session insertion works and
     // names the live session even with reflection blocked.
     @Volatile var bbProbeSession = -1
+    // Build #102: last untried door — address the EQ engine by its own
+    // IMPLEMENTATION UUID (from queryEffects descriptors) instead of the
+    // generic EFFECT_TYPE_EQUALIZER lookup. On some OEMs the type-based path
+    // hits a policy table while UUID-addressed creation routes differently.
+    @Volatile var uuidProbeResult: String? = null
     @Volatile private var stubSkipCount = 0L
     @Volatile private var lastConfigCount = -1
     @Volatile private var bruteAttempts = 0L
