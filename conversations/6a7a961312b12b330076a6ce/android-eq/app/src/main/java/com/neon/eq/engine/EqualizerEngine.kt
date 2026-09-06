@@ -2,6 +2,8 @@ package com.neon.eq.engine
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
 import android.media.audiofx.*
@@ -334,6 +336,12 @@ class EqualizerEngine private constructor(context: Context) {
             .append(" | stable: ").append(profileStableCount)
         sb.append("\npreset writes: ").append(presetTraceText())
         sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
+        // Build #96: session-scan health — stub-skips counts 0-band stub EQ
+        // backoffs (OEM refusing effects on that route), route-kicks counts
+        // device add/remove rescans, heals shows drift self-heal activity.
+        sb.append("\nscan: stub-skips=").append(stubSkipCount)
+            .append(" | route-kicks=").append(routeKickCount)
+            .append(" | heals=").append(healCount)
             sb.append("\nglobalEQ: ").append(if (globalEQ != null) "attached" else "null")
             sb.append(" | enabled: ").append(enabled)
 
@@ -1057,6 +1065,26 @@ class EqualizerEngine private constructor(context: Context) {
                 Log.w(TAG, "registerAudioPlaybackCallback failed: ${t.message}")
             }
         }
+
+        // Build #96: route-change kick — playback-config callbacks miss the
+        // window where headphones/BT connect but no config has churned yet
+        // (and on reflection-blind OEMs, configs alone can't find sessions).
+        // Any device add/remove — wired, BT, built-in — forces an immediate
+        // rescan so the EQ re-attaches the moment the route moves.
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.registerAudioDeviceCallback(object : AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+                    if (addedDevices.isNotEmpty()) kickScan("added ${addedDevices.size}")
+                }
+                override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+                    if (removedDevices.isNotEmpty()) kickScan("removed ${removedDevices.size}")
+                }
+            }, null)
+            Log.d(TAG, "AudioDeviceCallback registered — route changes trigger instant rescan")
+        } catch (t: Throwable) {
+            Log.w(TAG, "registerAudioDeviceCallback failed: ${t.message}")
+        }
     }
 
     private fun stopSessionPolling() {
@@ -1102,6 +1130,25 @@ class EqualizerEngine private constructor(context: Context) {
     // global EQ). Wide EQs verify first + last + a rotating window of interior
     // bands so EVERY band is covered across scan cycles.
     private val healCursor = ConcurrentHashMap<Int, Int>()
+    // Build #96: route-change hardening — sessions whose EQ attaches as a
+    // 0-band stub are re-probed at most every 30s (was: every scan, which
+    // hammered the audio framework with create/release churn forever and
+    // never settled). lastConfigCount lets the brute-force gate notice a
+    // route change (config count moved) even when reflection is blind.
+    private val stubRetryAt = ConcurrentHashMap<Int, Long>()
+    @Volatile private var stubSkipCount = 0L
+    @Volatile private var lastConfigCount = -1
+    @Volatile var routeKickCount = 0L
+
+    // Build #96: route-change kick — scheduled on the poll handler so
+    // session attach stays single-threaded with regular polling.
+    private fun kickScan(reason: String) {
+        routeKickCount++
+        Log.d(TAG, "Route change kick ($reason) — rescanning")
+        pollHandler.post {
+            try { scanForActiveSessions() } catch (t: Throwable) { Log.e(TAG, "route-kick scan failed", t) }
+        }
+    }
 
     private fun scanForActiveSessions() {
         try {
@@ -1139,11 +1186,28 @@ class EqualizerEngine private constructor(context: Context) {
             // real audio session. Build #62: retried with a 3s cooldown while
             // audio plays but nothing is attached (was once per playing state —
             // a scan that ran before the session was allocated never retried).
-            if (activeSessionIds.isEmpty() && configs.isNotEmpty() && activeFX.isEmpty() &&
-                SystemClock.elapsedRealtime() - lastBruteForceAt > 3000L) {
+            // Build #96: the gate no longer requires activeFX to be empty.
+            // On reflection-blind OEMs the old stale-release logic churned
+            // sessions (attach → release → 3s cooldown → reattach), and once
+            // anything WAS attached brute force could never discover a NEW
+            // session created by a headphone/BT route change. Now:
+            //  - nothing attached → fast 3s retries (as before)
+            //  - config count moved → route probably changed → fast check
+            //  - attached and blind → slow 15s refresh for new sessions
+            val blind = activeSessionIds.isEmpty() && configs.isNotEmpty()
+            if (blind) {
+                val sinceBrute = SystemClock.elapsedRealtime() - lastBruteForceAt
+                val want = when {
+                    activeFX.isEmpty() -> sinceBrute > 3000L
+                    configs.size != lastConfigCount -> sinceBrute > 3000L
+                    else -> sinceBrute > 15000L
+                }
+                if (want) {
                 Log.d(TAG, "Reflection found nothing with ${configs.size} configs — brute-force scan")
                 lastBruteForceAt = SystemClock.elapsedRealtime()
-                for (sid in 1..64) {
+                // Session IDs climb with every route change on aggressive OEMs —
+                // widened from 64 to 128 so churn doesn't push audio past the top.
+                for (sid in 1..128) {
                     if (activeFX.containsKey(sid) || sid == 0) continue
                     try {
                         val testEq = Equalizer(0, sid)
@@ -1158,7 +1222,9 @@ class EqualizerEngine private constructor(context: Context) {
                         }
                     } catch (e: Throwable) { /* session doesn't exist, skip */ }
                 }
+                }
             }
+            lastConfigCount = configs.size
 
             // Build #58: visualizer self-heal — if the EQ is enabled and audio is
             // playing but no waveform has arrived for a while, the MIUI capture is
@@ -1172,7 +1238,19 @@ class EqualizerEngine private constructor(context: Context) {
                 visRetryCount = (visRetryCount + 1).coerceAtMost(14)  // cap backoff at ~60s
             }
 
-            val stale = activeFX.keys - activeSessionIds
+            // Build #96: reflection-blind guard — when the scan can see NO
+            // sessions via reflection (hidden API blocked, e.g. Funtouch) but
+            // playback configs exist, brute-force-attached sessions were being
+            // classified as stale and released EVERY scan — the EQ audibly
+            // dropped for seconds and "kept missing" after route changes. Only
+            // release when reflection is actually reporting sessions (or all
+            // playback stopped, in which case activeSessionIds is empty AND
+            // configs is empty too).
+            val stale = if (activeSessionIds.isEmpty() && configs.isNotEmpty()) {
+                emptySet()
+            } else {
+                activeFX.keys - activeSessionIds
+            }
             for (id in stale) {
                 Log.d(TAG, "Removing stale session $id")
                 releaseSession(id)
@@ -1181,6 +1259,10 @@ class EqualizerEngine private constructor(context: Context) {
             val newlyAttached = ArrayList<Int>(activeSessionIds.size)
             for (sessionId in activeSessionIds) {
                 if (!activeFX.containsKey(sessionId)) {
+                    // Build #96: stub backoff — don't re-probe a session whose
+                    // EQ attached with 0 bands more often than every 30s.
+                    val lastStub = stubRetryAt[sessionId] ?: 0L
+                    if (SystemClock.elapsedRealtime() - lastStub < 30000L) continue
                     attachToSession(sessionId)
                     newlyAttached.add(sessionId)
                 }
@@ -1327,10 +1409,15 @@ class EqualizerEngine private constructor(context: Context) {
             if (numBands <= 0) {
                 // Build #62: a 0-band equalizer is a stub — attaching it gives a
                 // false "EQ active" status while doing nothing to the audio.
-                Log.w(TAG, "Session $sessionId: EQ has 0 bands (stub) — skipping")
+                // Build #96: remember the stub so the scan loop backs off
+                // instead of re-probing this session every 1.5s forever.
+                Log.w(TAG, "Session $sessionId: EQ has 0 bands (stub) — backing off 30s")
+                stubRetryAt[sessionId] = SystemClock.elapsedRealtime()
+                stubSkipCount++
                 try { eq.release() } catch (_: Throwable) {}
                 return
             }
+            stubRetryAt.remove(sessionId)
             val usable = minOf(numBands, MAX_BANDS)
 
             // Build #67: sample the whole UI curve onto this session's own bands
