@@ -764,10 +764,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
         if (limitedNow) {
             NeonCard {
-                GradientText("LOUDNESS — THE ONE CONTROL THIS DEVICE ALLOWS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+                GradientText("LOUDNESS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Your phone's audio policy blocks every EQ engine — no app can change that. The dial below is the one control that genuinely reaches your hardware. Presets still save for your other devices.",
+                    // Build #104: v103's on-device test on the Vivo Y21 proved even the
+                    // attached LoudnessEnhancer is audibly bypassed by the firmware. Never
+                    // over-claim — tell the truth conditionally instead.
+                    "Your phone's audio policy blocks every EQ engine — no app can change that. If the loudness dial makes no audible difference on this device, its firmware bypasses all third-party audio effects. Presets still save for your other devices.",
                     fontSize = 10.sp,
                     color = T.secondary,
                     lineHeight = 13.sp
@@ -1379,7 +1382,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #103",
+                        "Neon EQ · Build #104",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
