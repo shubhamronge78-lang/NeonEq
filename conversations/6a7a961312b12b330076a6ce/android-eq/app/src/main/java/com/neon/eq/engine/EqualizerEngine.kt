@@ -317,7 +317,7 @@ class EqualizerEngine private constructor(context: Context) {
                 sb.append("NeonEQ v").append(pi.versionName ?: "?").append(" (build ")
                     .append(if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode
                             else @Suppress("DEPRECATION") pi.versionCode.toLong())
-                    .append(")\n")
+                    .append(") · ").append(Build.MODEL).append(" · Android ").append(Build.VERSION.RELEASE).append("\n")
             } catch (_: Throwable) { }
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val configs = try { am.getActivePlaybackConfigurations() } catch (_: Throwable) { emptyList<AudioPlaybackConfiguration>() }
@@ -335,6 +335,11 @@ class EqualizerEngine private constructor(context: Context) {
             .append(" | suppressed: ").append(suppressedProfilePackage ?: "-")
             .append(" | stable: ").append(profileStableCount)
         sb.append("\npreset writes: ").append(presetTraceText())
+        // Build #98: when the output-mix EQ couldn't be created, say WHY —
+        // the paste then pinpoints OEM block vs priority conflict, no adb.
+        if (globalEQ == null && globalEQFail != null) {
+            sb.append("\nsession 0 failed: ").append(globalEQFail)
+        }
         sb.append("\nsessions attached: ").append(if (sessionList.isEmpty()) "—" else sessionList.joinToString(","))
         // Build #96: session-scan health — stub-skips counts 0-band stub EQ
         // backoffs (OEM refusing effects on that route), route-kicks counts
@@ -904,8 +909,27 @@ class EqualizerEngine private constructor(context: Context) {
                 try { releaseInternal() } catch (t: Throwable) { Log.w(TAG, "releaseInternal failed: ${t.message}") }
 
                 // ── Try global session 0 ──
+                // Build #98: some OEM sound enhancers (Mi Sound / Funtouch
+                // effects / Hi-Fi) hold the output-mix chain and reject a
+                // normal-priority twin. Try HIGH priority (1) first, fall back
+                // to normal (0), and surface the exact failure reason in the
+                // diagnostics readout — "blocked" vs "priority conflict" need
+                // opposite next steps.
+                globalEQFail = null
                 try {
-                    globalEQ = Equalizer(0, 0).also { eq ->
+                    val eq0 = try {
+                        val hi = Equalizer(1, 0)
+                        try { hi.numberOfBands } catch (t: Throwable) {
+                            try { hi.release() } catch (_: Throwable) {}
+                            throw t
+                        }
+                        Log.d(TAG, "Session 0 EQ: high priority accepted")
+                        hi
+                    } catch (t: Throwable) {
+                        Log.d(TAG, "Session 0 EQ high priority failed (${t.message}) — retrying normal")
+                        Equalizer(0, 0)
+                    }
+                    globalEQ = eq0.also { eq ->
                         eq.enabled = currentEnabled
                         val numBands = eq.numberOfBands.toInt()
                         val usable = minOf(numBands, MAX_BANDS)
@@ -956,7 +980,8 @@ class EqualizerEngine private constructor(context: Context) {
                     try { attachVisualizer() } catch (t: Throwable) { Log.w(TAG, "Visualizer failed: ${t.message}") }
 
                 } catch (t: Throwable) {
-                    Log.w(TAG, "Session 0 failed: ${t.message}")
+                    globalEQFail = "${t.javaClass.simpleName}: ${t.message}"
+                    Log.w(TAG, "Session 0 failed: $globalEQFail")
                     globalEQ = null
                 }
 
@@ -1136,8 +1161,12 @@ class EqualizerEngine private constructor(context: Context) {
     // never settled). lastConfigCount lets the brute-force gate notice a
     // route change (config count moved) even when reflection is blind.
     private val stubRetryAt = ConcurrentHashMap<Int, Long>()
+    // Build #98: why the global session-0 EQ couldn't be created (OEM block vs
+    // priority conflict vs no effect engine) — surfaced in diagnostics.
+    @Volatile var globalEQFail: String? = null
     @Volatile private var stubSkipCount = 0L
     @Volatile private var lastConfigCount = -1
+    @Volatile private var bruteAttempts = 0L
     @Volatile var routeKickCount = 0L
 
     // Build #96: route-change kick — scheduled on the poll handler so
@@ -1203,11 +1232,13 @@ class EqualizerEngine private constructor(context: Context) {
                     else -> sinceBrute > 15000L
                 }
                 if (want) {
-                Log.d(TAG, "Reflection found nothing with ${configs.size} configs — brute-force scan")
+                bruteAttempts++
+                // Build #98: session IDs keep climbing on aggressive OEMs —
+                // every 5th blind attempt deep-probes to 512 instead of 128.
+                val probeMax = if (bruteAttempts % 5 == 0L) 512 else 128
+                Log.d(TAG, "Reflection found nothing with ${configs.size} configs — brute-force scan 1..$probeMax")
                 lastBruteForceAt = SystemClock.elapsedRealtime()
-                // Session IDs climb with every route change on aggressive OEMs —
-                // widened from 64 to 128 so churn doesn't push audio past the top.
-                for (sid in 1..128) {
+                for (sid in 1..probeMax) {
                     if (activeFX.containsKey(sid) || sid == 0) continue
                     try {
                         val testEq = Equalizer(0, sid)
