@@ -779,7 +779,7 @@ class EqualizerEngine private constructor(context: Context) {
             setSelectedPresetName(root.optString("preset", "Flat"))
             setStartOnBoot(root.optBoolean("startOnBoot", true))
             setAutoApplyPreset(root.optBoolean("autoApplyPreset", false))
-            setShowVisualizer(root.optBoolean("showVisualizer", true))
+            setShowVisualizer(root.optBoolean("showVisualizer", false))
             setShowGlow(root.optBoolean("showGlow", true))
             setNoiseGate(root.optBoolean("noiseGate", false))
             setLimiter(root.optBoolean("limiter", true))
@@ -1850,7 +1850,7 @@ class EqualizerEngine private constructor(context: Context) {
         try { prefs.edit().putBoolean(KEY_AUTO_APPLY_PRESET, on).apply() } catch (_: Throwable) { }
     }
 
-    fun isShowVisualizer(): Boolean = prefs.getBoolean(KEY_SHOW_VISUALIZER, true)
+    fun isShowVisualizer(): Boolean = prefs.getBoolean(KEY_SHOW_VISUALIZER, false)
     fun setShowVisualizer(on: Boolean) {
         try { prefs.edit().putBoolean(KEY_SHOW_VISUALIZER, on).apply() } catch (_: Throwable) { }
     }

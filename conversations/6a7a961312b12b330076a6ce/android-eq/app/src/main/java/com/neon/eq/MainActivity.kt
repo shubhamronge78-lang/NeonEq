@@ -541,14 +541,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        // ── Live spectrum visualizer ──
-        if (showVisualizer) {
-            NeonCard {
-                VisualizerBars(waveform = waveform, waveformAt = waveformAt, active = enabled, style = visStyle)
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-
         // ── Presets ──
         NeonCard {
         Row(
@@ -775,80 +767,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 engine.setSelectedPresetName("Custom")
             }
         )
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // ── Effect sliders ──
-        NeonCard {
-            GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
-            Spacer(Modifier.height(4.dp))
-        // Build #89: TRUE hardware dB — bass boost is now an EQ band offset in
-        // real millibels (engine bassBoostDb()), verifiable in the diagnostics
-        // band readback. Max slider ≡ +10.0 dB.
-        val bassDb = if (bassBoost > 0) String.format(java.util.Locale.US, "+%.1f dB", bassBoost / 15f) else "0 dB"
-        EffectSlider("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
-            bassBoost = v
-            engine.setBassBoost(v)
-        }
-        // 3D Sound widens the stereo field — it is not a gain, so no dB can
-        // exist for it (true or otherwise); percent of max width instead.
-        EffectSlider("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
-            virtualizer = v
-            engine.setVirtualizer(v)
-        }
-            // Build #89: display the real dB the hardware gets, derived from
-            // the same loudnessMillibels() curve the engine applies — raw
-            // slider units (0-300) aren't relatable, dB is.
-            val loudDb = if (loudness > 0)
-                String.format(java.util.Locale.US, "+%.1f dB", engine.loudnessAppliedMb(loudness) / 100f)
-            else "0 dB"
-            EffectSlider("LOUDNESS", loudness, 0..300, valueText = loudDb) { v ->
-                loudness = v
-                engine.setLoudness(v)
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // ── Build #89: PRO FX — noise gate + anti-clip limiter ──
-        NeonCard {
-            GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = noiseGate,
-                    onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
-                    label = { Text("NOISE GATE", fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
-                        selectedLabelColor = T.primary
-                    )
-                )
-                FilterChip(
-                    selected = limiterOn,
-                    onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
-                    label = { Text("LIMITER", fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = T.accent.copy(alpha = 0.2f),
-                        selectedLabelColor = T.accent
-                    )
-                )
-            }
-            Text(
-                if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
-                fontSize = 9.sp, color = Color.Gray
-            )
-            if (limiterOn) {
-                EffectSlider("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
-                    limiterThr = v
-                    engine.setLimiterThreshold(v)
-                }
-                Text(
-                    "Anti-clip protection — keeps loud curves from distorting at high volume",
-                    fontSize = 9.sp, color = Color.Gray
-                )
-            }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -1121,7 +1039,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             onDismissRequest = { showSettings = false },
             title = { Text("Settings", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
                     // ── Build #89: App theme ──
                     val ctx = LocalContext.current
                     Column {
@@ -1205,6 +1126,73 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 checkedTrackColor = T.primary.copy(alpha = 0.3f)
                             )
                         )
+                    }
+                    // ── Build #92: EFFECTS — moved off the main screen (EQ-only,
+                    // FxSound style); everything still drives the same engine calls. ──
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+                        Spacer(Modifier.height(6.dp))
+                        // TRUE hardware dB — bass boost is an EQ band offset in real
+                        // millibels (engine bassBoostDb()), verifiable in diagnostics.
+                        val bassDb = if (bassBoost > 0) String.format(java.util.Locale.US, "+%.1f dB", bassBoost / 15f) else "0 dB"
+                        EffectSlider("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
+                            bassBoost = v
+                            engine.setBassBoost(v)
+                        }
+                        // 3D Sound widens the stereo field — not a gain, so no dB can
+                        // exist for it; percent of max width instead.
+                        EffectSlider("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
+                            virtualizer = v
+                            engine.setVirtualizer(v)
+                        }
+                        // Display the real dB the hardware gets, derived from the same
+                        // loudnessMillibels() curve the engine applies.
+                        val loudDb = if (loudness > 0)
+                            String.format(java.util.Locale.US, "+%.1f dB", engine.loudnessAppliedMb(loudness) / 100f)
+                        else "0 dB"
+                        EffectSlider("LOUDNESS", loudness, 0..300, valueText = loudDb) { v ->
+                            loudness = v
+                            engine.setLoudness(v)
+                        }
+                    }
+                    // ── Build #92: PRO FX — noise gate + anti-clip limiter ──
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = noiseGate,
+                                onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
+                                label = { Text("NOISE GATE", fontSize = 10.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = T.primary.copy(alpha = 0.2f),
+                                    selectedLabelColor = T.primary
+                                )
+                            )
+                            FilterChip(
+                                selected = limiterOn,
+                                onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
+                                label = { Text("LIMITER", fontSize = 10.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = T.accent.copy(alpha = 0.2f),
+                                    selectedLabelColor = T.accent
+                                )
+                            )
+                        }
+                        Text(
+                            if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
+                            fontSize = 9.sp, color = Color.Gray
+                        )
+                        if (limiterOn) {
+                            EffectSlider("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
+                                limiterThr = v
+                                engine.setLimiterThreshold(v)
+                            }
+                            Text(
+                                "Anti-clip protection — keeps loud curves from distorting at high volume",
+                                fontSize = 9.sp, color = Color.Gray
+                            )
+                        }
                     }
                     // Show visualizer
                     Row(
@@ -1796,7 +1784,7 @@ fun CanvasEQ(
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(240.dp)
+            .height(280.dp)
             .pointerInput(bandCount) {
                 val trackHeight = size.height.toFloat() - labelAreaPx
                 var lastTick = Int.MIN_VALUE
