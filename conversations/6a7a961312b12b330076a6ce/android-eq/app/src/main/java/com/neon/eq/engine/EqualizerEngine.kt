@@ -996,7 +996,14 @@ class EqualizerEngine private constructor(context: Context) {
                             var hit = -1
                             for ((i, d) in eqDescs.withIndex()) {
                                 try {
-                                    val probe = AudioEffect(AudioEffect.EFFECT_TYPE_EQUALIZER, d.uuid, 1, 0)
+                                    // Build #102 fix: the (type, uuid, priority, session)
+                                    // constructor is hidden from the SDK — reach it by
+                                    // reflection, the standing pattern for hidden APIs.
+                                    val ctor = AudioEffect::class.java.getDeclaredConstructor(
+                                        java.util.UUID::class.java, java.util.UUID::class.java,
+                                        Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+                                    ctor.isAccessible = true
+                                    val probe = ctor.newInstance(AudioEffect.EFFECT_TYPE_EQUALIZER, d.uuid, 1, 0) as AudioEffect
                                     try { probe.enabled = false } catch (_: Throwable) {}
                                     probe.release()
                                     hit = i
