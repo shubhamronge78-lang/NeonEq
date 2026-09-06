@@ -8,6 +8,17 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.ContentUris
+import android.net.Uri
+import android.provider.MediaStore
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.media3.common.MediaItem
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -68,6 +79,7 @@ import android.content.Context
 import android.os.Process
 import android.content.ActivityNotFoundException
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import java.io.File
 import androidx.compose.foundation.rememberScrollState
@@ -734,10 +746,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // ── Canvas-based EQ — ONE composable, no Slider widgets ──
         val bandList = bands.take(bandCount)
 
-        // Build #103: limited mode hides the dead EQ entirely — a loudness
-        // hero card below replaces it. One honest, fully-working control
-        // instead of dimmed ghosts.
-        if (!limitedNow) {
+        // Build #105: the EQ canvas is back on EVERY device — on limited
+        // devices it drives the in-app software EQ (PLAYER card), on normal
+        // devices the system engine as always.
         NeonCard {
         CanvasEQ(
             bandCount = bandCount,
@@ -760,7 +771,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 engine.setSelectedPresetName("Custom")
             }
         )
-        }
         }
         if (limitedNow) {
             NeonCard {
@@ -828,6 +838,103 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 }
             }
         }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #105: PLAYER — the one audio path no OEM can block ──
+        NeonCard {
+            GradientText("PLAYER — EQ INSIDE NEONEQ", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Plays your music with the full 10-band EQ applied in software inside the app — works on every device, including ones that block system-wide EQ.",
+                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            val ctx = LocalContext.current
+            val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
+            var hasPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED) }
+            val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPerm = it }
+            val dsp = remember { PlayerEqProcessor() }
+            val player = remember {
+                try {
+                    val sink = DefaultAudioSink.Builder(ctx).setAudioProcessors(arrayOf<AudioProcessor>(dsp)).build()
+                    val rf = DefaultRenderersFactory(ctx).setAudioSink(sink)
+                    ExoPlayer.Builder(ctx, rf).build()
+                } catch (_: Throwable) { null }
+            }
+            DisposableEffect(Unit) { onDispose { player?.release() } }
+            // Any change to the curve — drag, preset, startup reapply — reaches the software EQ instantly
+            LaunchedEffect(bandLevels) { dsp.setGains(bandLevels) }
+            LaunchedEffect(loudness) { dsp.setPreamp(engine.loudnessAppliedMb(loudness) / 100f) }
+            if (player == null) {
+                Text("Player init failed on this device.", fontSize = 10.sp, color = T.secondary)
+            } else if (!hasPerm) {
+                Text("Music library access is needed to play tracks.", fontSize = 10.sp, color = T.secondary)
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    onClick = { permLauncher.launch(perm) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.accent)
+                ) { Text("GRANT MUSIC ACCESS", fontSize = 11.sp) }
+            } else {
+                var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+                var nowUri by remember { mutableStateOf<String?>(null) }
+                var playing by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) {
+                    tracks = try {
+                        val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST)
+                        val list = mutableListOf<Track>()
+                        ctx.contentResolver.query(
+                            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, proj,
+                            "${MediaStore.Audio.Media.DURATION} > 30000", null,
+                            "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE"
+                        )?.use { cur ->
+                            val idI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                            val tI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+                            val aI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                            while (cur.moveToNext()) {
+                                val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cur.getLong(idI))
+                                list.add(Track(uri, cur.getString(tI) ?: "Unknown", cur.getString(aI) ?: "Unknown"))
+                            }
+                        }
+                        list
+                    } catch (_: Throwable) { emptyList() }
+                }
+                if (tracks.isEmpty()) {
+                    Text("No music found on the device.", fontSize = 10.sp, color = T.secondary)
+                } else {
+                    Text("${tracks.size} tracks · tap to play — the curve above is live in this player", fontSize = 10.sp, color = T.secondary)
+                    Spacer(Modifier.height(6.dp))
+                    LazyColumn(Modifier.height(220.dp)) {
+                        items(tracks) { t ->
+                            val isNow = nowUri == t.uri.toString()
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    if (isNow) {
+                                        if (player.isPlaying) player.pause() else player.play()
+                                        playing = player.isPlaying
+                                    } else {
+                                        player.setMediaItem(MediaItem.fromUri(t.uri))
+                                        player.prepare()
+                                        player.play()
+                                        nowUri = t.uri.toString()
+                                        playing = true
+                                    }
+                                }.padding(vertical = 6.dp, horizontal = 4.dp)
+                            ) {
+                                Text(
+                                    (if (isNow && playing) "▮▮ " else if (isNow) "▶ " else "") + t.title,
+                                    fontSize = 12.sp,
+                                    color = if (isNow) T.accent else T.secondary,
+                                    maxLines = 1
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(t.artist, fontSize = 10.sp, color = T.secondary, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -1382,7 +1489,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #104",
+                        "Neon EQ · Build #105",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
