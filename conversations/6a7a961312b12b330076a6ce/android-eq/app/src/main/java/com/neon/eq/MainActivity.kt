@@ -734,18 +734,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // ── Canvas-based EQ — ONE composable, no Slider widgets ──
         val bandList = bands.take(bandCount)
 
+        // Build #103: limited mode hides the dead EQ entirely — a loudness
+        // hero card below replaces it. One honest, fully-working control
+        // instead of dimmed ghosts.
+        if (!limitedNow) {
         NeonCard {
-        // Build #101: limited mode — the curve stays editable (presets save
-        // for other devices) but is visibly dimmed with a plain-language note.
-        if (limitedNow) {
-            Text(
-                "EQ NOT APPLIED ON THIS DEVICE — OEM audio policy blocks the engine",
-                fontSize = 10.sp,
-                color = T.accent,
-                modifier = Modifier.padding(bottom = 6.dp)
-            )
-        }
-        Box(Modifier.alpha(if (limitedNow) 0.35f else 1f)) {
         CanvasEQ(
             bandCount = bandCount,
             bands = bandList,
@@ -769,6 +762,31 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         )
         }
         }
+        if (limitedNow) {
+            NeonCard {
+                GradientText("LOUDNESS — THE ONE CONTROL THIS DEVICE ALLOWS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Your phone's audio policy blocks every EQ engine — no app can change that. The dial below is the one control that genuinely reaches your hardware. Presets still save for your other devices.",
+                    fontSize = 10.sp,
+                    color = T.secondary,
+                    lineHeight = 13.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                val loudDbHero = if (loudness > 0)
+                    String.format(java.util.Locale.US, "+%.1f dB", engine.loudnessAppliedMb(loudness) / 100f)
+                else "0 dB"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    CircularDial("LOUDNESS", loudness, 0..300, valueText = loudDbHero) { v ->
+                        loudness = v
+                        engine.setLoudness(v)
+                    }
+                }
+            }
+        }
 
         Spacer(Modifier.height(16.dp))
 
@@ -776,12 +794,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Effect dials — Build #95: back on the main screen in their old
         // spot below the EQ curve (Settings stint lasted v92-v94). ──
+        // Build #103: the whole EFFECTS card is replaced by the loudness
+        // hero card when the device only permits LoudnessEnhancer.
+        if (!limitedNow) {
         NeonCard {
             GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
-            if (limitedNow) {
-                Text("Only LOUDNESS reaches hardware on this device — Bass/3D are engine-blocked", fontSize = 10.sp, color = T.secondary)
-                Spacer(Modifier.height(4.dp))
-            }
             Spacer(Modifier.height(8.dp))
             // Same honest readouts as always: TRUE hardware dB for bass
             // (engine bassBoostDb()), percent width for 3D (no dB exists for
@@ -794,25 +811,20 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                // Build #101: on OEM-blocked devices only LoudnessEnhancer
-                // attaches — dim the engines that can't reach the hardware.
-                Box(Modifier.alpha(if (limitedNow) 0.35f else 1f)) {
-                    CircularDial("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
-                        bassBoost = v
-                        engine.setBassBoost(v)
-                    }
+                CircularDial("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
+                    bassBoost = v
+                    engine.setBassBoost(v)
                 }
-                Box(Modifier.alpha(if (limitedNow) 0.35f else 1f)) {
-                    CircularDial("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
-                        virtualizer = v
-                        engine.setVirtualizer(v)
-                    }
+                CircularDial("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
+                    virtualizer = v
+                    engine.setVirtualizer(v)
                 }
                 CircularDial("LOUDNESS", loudness, 0..300, valueText = loudDb) { v ->
                     loudness = v
                     engine.setLoudness(v)
                 }
             }
+        }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -1367,7 +1379,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #102",
+                        "Neon EQ · Build #103",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
