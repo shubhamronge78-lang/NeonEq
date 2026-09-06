@@ -2099,7 +2099,7 @@ fun CircularDial(
                             // Dial starts at 135° (lower-left) and sweeps 270°.
                             val a = ((deg - 135f) % 360f + 360f) % 360f
                             val frac = (a / 270f).coerceIn(0f, 1f)
-                            val v = range.first + roundToInt(frac * (range.last - range.first))
+                            val v = range.first + (frac * (range.last - range.first)).roundToInt()
                             onValueChange(v)
                         }
                     }
@@ -2131,10 +2131,8 @@ fun CircularDial(
                 // shifted so the gradient begins at the dial's 135° start.
                 drawArc(
                     brush = Brush.sweepGradient(
-                        colorStops = listOf(
-                            0.375f to T.secondary,
-                            1.0f to T.primary
-                        ),
+                        0.375f to T.secondary,
+                        1.0f to T.primary,
                         center = Offset(size.width / 2f, size.height / 2f)
                     ),
                     startAngle = 135f,
