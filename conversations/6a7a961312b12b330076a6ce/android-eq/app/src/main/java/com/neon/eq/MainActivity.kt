@@ -46,6 +46,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
@@ -1292,9 +1294,21 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         color = T.primary,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Spacer(Modifier.height(6.dp))
+                    // Build #97: one-tap copy — paste the readout straight into
+                    // chat instead of transcribing a live-updating screen.
+                    val diagClipboard = LocalClipboardManager.current
+                    Button(
+                        onClick = { diagClipboard.setText(AnnotatedString(diagText)) },
+                        colors = ButtonDefaults.buttonColors(containerColor = T.secondary.copy(alpha = 0.25f)),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("COPY DIAGNOSTICS", fontSize = 10.sp, letterSpacing = 1.sp, color = T.accent)
+                    }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ v1.0 · Build #89",
+                        "Neon EQ · Build #97",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
