@@ -30,7 +30,6 @@ class EqualizerEngine private constructor(context: Context) {
         private const val POLL_INTERVAL_MS = 1500L
 
         private const val PREFS_NAME = "neon_eq_state"
-        private const val KEY_BAND_COUNT = "band_count"
         private const val KEY_LEVELS = "levels"
         private const val KEY_BASS = "bass"
         private const val KEY_VIRT = "virt"
@@ -112,7 +111,9 @@ class EqualizerEngine private constructor(context: Context) {
     // callback) and by the session-poll thread (incremented on stall retries).
     @Volatile private var visRetryCount = 0
 
-    @Volatile var bandCount = prefs.getInt(KEY_BAND_COUNT, 5)
+    // Build #93: the EQ is fixed at 10 bands. Any legacy stored band_count
+    // (5/7/12/31 from the old selector) is intentionally ignored.
+    @Volatile var bandCount = 10
         private set
     @Volatile var bands: List<BandInfo> = emptyList()
     @Volatile var enabled = false
@@ -1511,37 +1512,6 @@ class EqualizerEngine private constructor(context: Context) {
             // legitimately drive more than one hardware band under the
             // interpolated mapping — this keeps the mapping in ONE place.
             applyBands(levelsInts())
-        }
-    }
-
-    fun setBandCount(count: Int) {
-        markUserOverrideIfApplicable()
-        bandCount = count.coerceIn(MIN_BANDS, MAX_BANDS)
-        persistScalar(KEY_BAND_COUNT, bandCount)
-        audioExecutor.execute {
-            try {
-                val anyEQ = globalEQ ?: activeFX.values.firstOrNull()?.equalizer
-                if (anyEQ != null) {
-                    val usable = minOf(anyEQ.numberOfBands.toInt(), MAX_BANDS)
-                    bands = pickBands(anyEQ, bandCount, usable)
-                }
-                // Build #69: sessions re-capture their band positions with the NEW
-                // bandCount — each from its own captured width, since sessions can
-                // expose different band layouts. The curve is then sampled
-                // everywhere through the shared sampler (no more legacy
-                // per-index write loop here).
-                for ((id, sfx) in activeFX) {
-                    val n = sfx.bandPos.size
-                    if (n > 0) {
-                        val fresh = FloatArray(n) { j ->
-                            j * (bandCount - 1).toFloat() / maxOf(n - 1, 1).toFloat()
-                        }
-                        activeFX[id] = sfx.copy(bandPos = fresh)
-                    }
-                }
-                applyBands(levelsInts())
-            } catch (e: Throwable) { Log.e(TAG, "setBandCount", e) }
-            mainHandler.post { onReady?.invoke(isReady, statusMessage, bands) }
         }
     }
 

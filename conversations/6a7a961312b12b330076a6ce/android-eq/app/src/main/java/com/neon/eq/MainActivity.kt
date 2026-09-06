@@ -688,60 +688,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        // ── Band count selector ──
-        NeonCard {
-            GradientText("BANDS", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
-            Spacer(Modifier.height(6.dp))
-            // Build #89: full band-count range, wrapped so 10 chips fit any width
-            listOf(5, 7, 10, 12, 15, 18, 21, 24, 27, 31).chunked(5).forEach { rowCounts ->
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            rowCounts.forEach { count ->
-                FilterChip(
-                    selected = bandCount == count,
-                    onClick = {
-                        // Build #89: changing the band count keeps the selection —
-                        // and when a preset is selected it is RE-APPLIED EXACTLY
-                        // for the new count (levelsForCount), so the values are
-                        // the preset's real shape. Build #89's curve re-sampling
-                        // stretched the already-sampled curve into blocky
-                        // values that no longer matched the preset.
-                        val oldCount = bandCount
-                        val oldCurve = bandLevels.copyOf()
-                        bandCount = count
-                        engine.setBandCount(count)
-                        val newLevels = FloatArray(31) { 0f }
-                        val builtIn = Presets.presets.firstOrNull { it.name == selectedPreset }
-                        val customSel = if (builtIn == null) customPresets.firstOrNull { it.name == selectedPreset } else null
-                        if (builtIn != null || customSel != null) {
-                            val lv = if (builtIn != null) Presets.levelsForCount(builtIn!!, count)
-                                     else Presets.levelsForCount(customSel!!, count)
-                            lv.forEachIndexed { i, v -> newLevels[i] = v.toFloat() }
-                        } else {
-                            // Manual curve (or "Custom") — re-sample it onto the new count
-                            for (i in 0 until count) {
-                                val src = if (oldCount <= 1 || count <= 1) 0
-                                    else Math.round(i * (oldCount - 1).toFloat() / (count - 1)).toInt().coerceIn(0, oldCount - 1)
-                                newLevels[i] = oldCurve[src]
-                            }
-                        }
-                        animateLevelsTo(newLevels)
-                        engine.applyFullState(
-                            ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
-                            bassBoost, virtualizer, loudness, smooth = true)
-                    },
-                    label = { Text("$count", fontSize = 11.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
-                        selectedLabelColor = T.primary
-                    )
-                )
-            }
-            }
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
-
         // ── Canvas-based EQ — ONE composable, no Slider widgets ──
         val bandList = bands.take(bandCount)
 
@@ -1775,10 +1721,14 @@ fun CanvasEQ(
     val centerPx = with(density) { 1.dp.toPx() }
     val handlePx = with(density) { 4.dp.toPx() }
 
+    // Build #93: raised upper limit — the track spans -15dB..+20dB (was
+    // symmetric ±15). Anything past the device's hardware band level range is
+    // clamped by the engine on apply, so +20 is safe everywhere and gives
+    // headroom on hardware that supports it.
     fun levelFromY(y: Float, trackHeight: Float): Float {
         val clampedY = y.coerceIn(0f, trackHeight)
         val normY = 1f - (clampedY / trackHeight)
-        return (normY * 30f - 15f).coerceIn(-15f, 15f)
+        return (normY * 35f - 15f).coerceIn(-15f, 20f)
     }
 
     Canvas(
@@ -1837,8 +1787,9 @@ fun CanvasEQ(
         val slotWidth = size.width / bandCount
         val trackHeight = size.height - labelAreaPx
 
-        // 0 dB dashed reference line across the track.
-        val centerY = trackHeight / 2f
+        // 0 dB dashed reference line across the track (positioned at 15/35
+        // of the track height now that the ceiling is +20dB, not centered).
+        val centerY = trackHeight * 15f / 35f
         centerLinePath.reset()
         centerLinePath.moveTo(0f, centerY)
         centerLinePath.lineTo(size.width, centerY)
@@ -1846,7 +1797,7 @@ fun CanvasEQ(
 
         for (i in 0 until bandCount) {
             val level = levels.getOrElse(i) { 0f }
-            val normLevel = (level + 15f) / 30f
+            val normLevel = (level + 15f) / 35f
             val x = i * slotWidth + (slotWidth - barWidthPx) / 2f
             val barH = (trackHeight * normLevel).coerceAtLeast(minHeightPx)
             val y = trackHeight - barH
@@ -2003,7 +1954,10 @@ fun PresetChip(preset: Presets.Preset, selected: Boolean, onClick: () -> Unit) {
         val thumbColor = if (selected) T.primary.copy(alpha = 0.8f) else T.secondary.copy(alpha = 0.5f)
         Canvas(modifier = Modifier.width(60.dp).height(24.dp)) {
             val levels = preset.levels
-            val n = 31
+            // Build #93: built-in presets are 10-slot curves now; user-saved
+            // custom presets may still be 31-slot. Draw whatever width the
+            // array has so the sparkline always fills the canvas.
+            val n = maxOf(levels.size, 1)
             val slotW = size.width / n
             val midY = size.height / 2f
             val maxLevel = 15f
@@ -2052,7 +2006,10 @@ fun CustomPresetChip(
         // Mini sparkline preview for custom preset
         Canvas(modifier = Modifier.width(40.dp).height(24.dp)) {
             val levels = preset.levels
-            val n = 31
+            // Build #93: built-in presets are 10-slot curves now; user-saved
+            // custom presets may still be 31-slot. Draw whatever width the
+            // array has so the sparkline always fills the canvas.
+            val n = maxOf(levels.size, 1)
             val slotW = size.width / n
             val midY = size.height / 2f
             val maxLevel = 15f

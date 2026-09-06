@@ -14,96 +14,56 @@ object Presets {
         val loudness: Int = 0
     )
 
+    // Build #93: EQ is fixed at 10 bands — every preset is now a dedicated
+    // 10-slot curve (was: 31-slot index math downsampled to the band count).
+    // Values use the raised ceiling: boosts go up to +15 dB where the old
+    // curves topped out around +8. Slot freqs ~ 31/62/125/250/500/1k/2k/4k/8k/16k.
     val presets: List<Preset> = listOf(
-        Preset("Flat", ShortArray(31) { 0 }),
+        Preset("Flat", shortArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
         // ── Bass family ──
-        Preset("Bass Boost", ShortArray(31) { i ->
-            when { i < 5 -> (8 - i).toShort(); i < 8 -> 3; else -> 0 }
-        }),
-        Preset("Bass Extreme", ShortArray(31) { i ->
-            when { i < 4 -> 8; i < 7 -> 4; else -> 0 }
-        }),
-        Preset("Sub Bass", ShortArray(31) { i ->
-            when { i < 3 -> 7; i < 6 -> 3; i < 10 -> -2; else -> 0 }
-        }),
+        Preset("Bass Boost", shortArrayOf(15, 13, 11, 7, 3, 0, 0, 0, 0, 0)),
+        Preset("Bass Extreme", shortArrayOf(15, 15, 13, 9, 4, 0, 0, 0, 0, 0)),
+        Preset("Sub Bass", shortArrayOf(15, 12, 6, 0, -2, -2, 0, 0, 0, 0)),
         // ── Treble family ──
-        Preset("Treble Boost", ShortArray(31) { i ->
-            when { i < 20 -> 0; i < 25 -> 5; else -> 8 }
-        }),
-        Preset("Air", ShortArray(31) { i ->
-            when { i < 22 -> 0; i < 27 -> 3; else -> 6 }
-        }),
+        Preset("Treble Boost", shortArrayOf(0, 0, 0, 0, 0, 0, 3, 7, 11, 15)),
+        Preset("Air", shortArrayOf(0, 0, 0, 0, 0, 0, 0, 2, 6, 12)),
         // ── Genre presets ──
-        Preset("Rock", ShortArray(31) { i ->
-            when { i < 3 -> 5; i < 6 -> 4; i in 6..12 -> 0; i in 13..20 -> 2; else -> 3 }
-        }),
-        Preset("Pop", ShortArray(31) { i ->
-            when { i < 4 -> -1; i in 4..10 -> 3; i in 11..18 -> 0; else -> -2 }
-        }),
-        Preset("Jazz", ShortArray(31) { i ->
-            when { i < 3 -> 4; i in 3..8 -> 2; i in 9..16 -> 0; else -> 3 }
-        }),
-        Preset("EDM", ShortArray(31) { i ->
-            when { i < 5 -> 5; i in 5..10 -> -2; i in 11..18 -> 1; else -> 3 }
-        }),
-        Preset("Classical", ShortArray(31) { i ->
-            when { i < 3 -> 3; i in 3..10 -> 0; i in 11..20 -> -1; else -> 2 }
-        }),
-        Preset("Dance", ShortArray(31) { i ->
-            when { i < 4 -> 6; i in 4..9 -> 0; i in 10..16 -> 4; else -> 3 }
-        }),
-        Preset("Vocal", ShortArray(31) { i ->
-            when { i < 6 -> -2; i in 6..14 -> 4; i in 15..22 -> 1; else -> -1 }
-        }),
-        Preset("Loudness", ShortArray(31) { i ->
-            when { i < 4 -> 6; i in 4..12 -> 0; i in 13..20 -> -1; else -> 5 }
-        }),
-        Preset("Hip Hop", ShortArray(31) { i ->
-            when { i < 5 -> 7; i in 5..10 -> -1; i in 11..20 -> 1; else -> 2 }
-        }),
-        Preset("Gaming", ShortArray(31) { i ->
-            when { i < 3 -> 4; i in 3..8 -> -2; i in 9..18 -> 0; else -> 3 }
-        }),
+        Preset("Rock", shortArrayOf(10, 8, 5, 2, 0, 0, 3, 5, 7, 8)),
+        Preset("Pop", shortArrayOf(-2, -1, 2, 4, 5, 4, 1, -1, -2, -3)),
+        Preset("Jazz", shortArrayOf(6, 5, 3, 1, 0, 0, 2, 3, 5, 6)),
+        Preset("EDM", shortArrayOf(13, 11, 6, 0, -2, -2, 0, 3, 5, 7)),
+        Preset("Classical", shortArrayOf(5, 4, 2, 0, 0, 0, -1, 1, 3, 4)),
+        Preset("Dance", shortArrayOf(13, 11, 5, 0, 0, 3, 5, 7, 6, 5)),
+        Preset("Vocal", shortArrayOf(-3, -2, 0, 2, 4, 5, 4, 2, 0, -1)),
+        Preset("Loudness", shortArrayOf(15, 12, 4, 0, -1, -1, 0, 2, 5, 8)),
+        Preset("Hip Hop", shortArrayOf(14, 12, 5, 0, -1, -1, 0, 2, 3, 4)),
+        Preset("Gaming", shortArrayOf(8, 6, 0, -2, -2, 0, 4, 6, 8, 9)),
         // ── New presets ──
-        Preset("Acoustic", ShortArray(31) { i ->
-            when { i < 3 -> 3; i in 3..8 -> 1; i in 9..18 -> 2; i in 19..25 -> 1; else -> 0 }
-        }),
-        Preset("R&B", ShortArray(31) { i ->
-            when { i < 5 -> 5; i in 5..10 -> 0; i in 11..20 -> 2; else -> 1 }
-        }),
-        Preset("Metal", ShortArray(31) { i ->
-            when { i < 3 -> 6; i in 3..8 -> -2; i in 9..16 -> 0; i in 17..25 -> 4; else -> 2 }
-        }),
-        Preset("Electronic", ShortArray(31) { i ->
-            when { i < 5 -> 6; i in 5..9 -> -3; i in 10..18 -> 0; i in 19..25 -> 3; else -> 5 }
-        }),
-        Preset("Latin", ShortArray(31) { i ->
-            when { i < 4 -> 4; i in 4..10 -> 1; i in 11..20 -> 3; else -> 2 }
-        }),
-        Preset("Podcast", ShortArray(31) { i ->
-            when { i < 6 -> -3; i in 6..14 -> 5; i in 15..22 -> 2; else -> -1 }
-        }),
-        Preset("Movie", ShortArray(31) { i ->
-            when { i < 4 -> 6; i in 4..8 -> 2; i in 9..16 -> -1; i in 17..25 -> 3; else -> 4 }
-        }),
-        Preset("Night Mode", ShortArray(31) { i ->
-            when { i < 5 -> -4; i in 5..12 -> 0; i in 13..22 -> -2; else -> -5 }
-        }),
-        Preset("Concert", ShortArray(31) { i ->
-            when { i < 3 -> 4; i in 3..10 -> -1; i in 11..20 -> 2; else -> 4 }
-        }),
-        Preset("Phone", ShortArray(31) { i ->
-            when { i < 8 -> -5; i in 8..16 -> 6; i in 17..25 -> -3; else -> -6 }
-        })
+        Preset("Acoustic", shortArrayOf(5, 4, 2, 1, 1, 2, 2, 4, 4, 3)),
+        Preset("R&B", shortArrayOf(12, 10, 4, 0, 1, 2, 2, 3, 4, 4)),
+        Preset("Metal", shortArrayOf(11, 8, 2, -2, -2, 0, 1, 4, 6, 7)),
+        Preset("Electronic", shortArrayOf(14, 11, 4, -2, -3, -1, 0, 4, 7, 9)),
+        Preset("Latin", shortArrayOf(9, 7, 4, 1, 1, 2, 3, 4, 5, 5)),
+        Preset("Podcast", shortArrayOf(-3, -2, 0, 3, 5, 6, 4, 2, 0, -1)),
+        Preset("Movie", shortArrayOf(14, 11, 3, 0, -1, 0, 3, 5, 8, 10)),
+        Preset("Night Mode", shortArrayOf(-6, -4, -1, 0, 1, 0, -1, -3, -5, -7)),
+        Preset("Concert", shortArrayOf(8, 6, 0, -1, 0, 1, 3, 4, 6, 8)),
+        Preset("Phone", shortArrayOf(-4, -3, -1, 1, 4, 6, 6, 3, 0, -2))
     )
 
+    // Build #93: with the EQ fixed at 10 bands this normally returns the
+    // preset as-is. The resample path stays for user-saved custom presets
+    // created under the old variable band counts (5-31 slots) so they map
+    // cleanly onto the 10-band curve instead of truncating.
     fun levelsForCount(preset: Preset, count: Int): ShortArray {
-        if (count >= 31) return preset.levels
+        val src = preset.levels
+        if (src.isEmpty()) return ShortArray(count)
+        if (src.size == count) return src.copyOf()
         val result = ShortArray(count)
-        val step = 31f / count
+        val step = src.size.toFloat() / count
         for (i in 0 until count) {
-            val srcIdx = (i * step).toInt().coerceAtMost(30)
-            result[i] = preset.levels[srcIdx]
+            val srcIdx = (i * step).toInt().coerceAtMost(src.size - 1)
+            result[i] = src[srcIdx]
         }
         return result
     }
