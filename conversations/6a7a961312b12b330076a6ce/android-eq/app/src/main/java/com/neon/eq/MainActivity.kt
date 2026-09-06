@@ -721,6 +721,83 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
+        Spacer(Modifier.height(16.dp))
+
+        // ── Effect dials — Build #95: back on the main screen in their old
+        // spot below the EQ curve (Settings stint lasted v92-v94). ──
+        NeonCard {
+            GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+            Spacer(Modifier.height(8.dp))
+            // Same honest readouts as always: TRUE hardware dB for bass
+            // (engine bassBoostDb()), percent width for 3D (no dB exists for
+            // stereo widening), real dB from loudnessMillibels() for loudness.
+            val bassDb = if (bassBoost > 0) String.format(java.util.Locale.US, "+%.1f dB", bassBoost / 15f) else "0 dB"
+            val loudDb = if (loudness > 0)
+                String.format(java.util.Locale.US, "+%.1f dB", engine.loudnessAppliedMb(loudness) / 100f)
+            else "0 dB"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                CircularDial("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
+                    bassBoost = v
+                    engine.setBassBoost(v)
+                }
+                CircularDial("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
+                    virtualizer = v
+                    engine.setVirtualizer(v)
+                }
+                CircularDial("LOUDNESS", loudness, 0..300, valueText = loudDb) { v ->
+                    loudness = v
+                    engine.setLoudness(v)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #89: PRO FX — noise gate + anti-clip limiter ──
+        NeonCard {
+            GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = noiseGate,
+                    onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
+                    label = { Text("NOISE GATE", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
+                        selectedLabelColor = T.primary
+                    )
+                )
+                FilterChip(
+                    selected = limiterOn,
+                    onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
+                    label = { Text("LIMITER", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = T.accent.copy(alpha = 0.2f),
+                        selectedLabelColor = T.accent
+                    )
+                )
+            }
+            Text(
+                if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
+                fontSize = 9.sp, color = Color.Gray
+            )
+            if (limiterOn) {
+                CircularDial("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
+                    limiterThr = v
+                    engine.setLimiterThreshold(v)
+                }
+                Text(
+                    "Anti-clip protection — keeps loud curves from distorting at high volume",
+                    fontSize = 9.sp, color = Color.Gray
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
         // ── Per-app profiles ──
         NeonCard {
             GradientText("APP PROFILES", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
@@ -1076,80 +1153,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 checkedTrackColor = T.primary.copy(alpha = 0.3f)
                             )
                         )
-                    }
-                    // ── Build #92: EFFECTS — moved off the main screen (EQ-only,
-                    // FxSound style); everything still drives the same engine calls. ──
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
-                        Spacer(Modifier.height(8.dp))
-                        // Build #94: FxSound-style dials — drag to spin, double-tap
-                        // resets. Same engine calls and honest readouts as the old
-                        // sliders: TRUE hardware dB for bass (engine bassBoostDb()),
-                        // percent width for 3D (no dB exists for stereo widening),
-                        // real dB from loudnessMillibels() for loudness.
-                        val bassDb = if (bassBoost > 0) String.format(java.util.Locale.US, "+%.1f dB", bassBoost / 15f) else "0 dB"
-                        val loudDb = if (loudness > 0)
-                            String.format(java.util.Locale.US, "+%.1f dB", engine.loudnessAppliedMb(loudness) / 100f)
-                        else "0 dB"
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            CircularDial("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
-                                bassBoost = v
-                                engine.setBassBoost(v)
-                            }
-                            CircularDial("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
-                                virtualizer = v
-                                engine.setVirtualizer(v)
-                            }
-                            CircularDial("LOUDNESS", loudness, 0..300, valueText = loudDb) { v ->
-                                loudness = v
-                                engine.setLoudness(v)
-                            }
-                        }
-                    }
-                    // ── Build #92: PRO FX — noise gate + anti-clip limiter ──
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = noiseGate,
-                                onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
-                                label = { Text("NOISE GATE", fontSize = 10.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = T.primary.copy(alpha = 0.2f),
-                                    selectedLabelColor = T.primary
-                                )
-                            )
-                            FilterChip(
-                                selected = limiterOn,
-                                onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
-                                label = { Text("LIMITER", fontSize = 10.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = T.accent.copy(alpha = 0.2f),
-                                    selectedLabelColor = T.accent
-                                )
-                            )
-                        }
-                        Text(
-                            if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
-                            fontSize = 9.sp, color = Color.Gray
-                        )
-                        if (limiterOn) {
-                            CircularDial("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
-                                limiterThr = v
-                                engine.setLimiterThreshold(v)
-                            }
-                            Text(
-                                "Anti-clip protection — keeps loud curves from distorting at high volume",
-                                fontSize = 9.sp, color = Color.Gray
-                            )
-                        }
                     }
                     // Show visualizer
                     Row(
