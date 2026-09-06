@@ -56,7 +56,11 @@ import com.neon.eq.engine.EqualizerEngine
 import com.neon.eq.engine.Presets
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.round
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import android.content.Context
 import android.os.Process
 import android.content.ActivityNotFoundException
@@ -1077,32 +1081,39 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     // FxSound style); everything still drives the same engine calls. ──
                     Column(modifier = Modifier.fillMaxWidth()) {
                         GradientText("EFFECTS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
-                        Spacer(Modifier.height(6.dp))
-                        // TRUE hardware dB — bass boost is an EQ band offset in real
-                        // millibels (engine bassBoostDb()), verifiable in diagnostics.
+                        Spacer(Modifier.height(8.dp))
+                        // Build #94: FxSound-style dials — drag to spin, double-tap
+                        // resets. Same engine calls and honest readouts as the old
+                        // sliders: TRUE hardware dB for bass (engine bassBoostDb()),
+                        // percent width for 3D (no dB exists for stereo widening),
+                        // real dB from loudnessMillibels() for loudness.
                         val bassDb = if (bassBoost > 0) String.format(java.util.Locale.US, "+%.1f dB", bassBoost / 15f) else "0 dB"
-                        EffectSlider("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
-                            bassBoost = v
-                            engine.setBassBoost(v)
-                        }
-                        // 3D Sound widens the stereo field — not a gain, so no dB can
-                        // exist for it; percent of max width instead.
-                        EffectSlider("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
-                            virtualizer = v
-                            engine.setVirtualizer(v)
-                        }
-                        // Display the real dB the hardware gets, derived from the same
-                        // loudnessMillibels() curve the engine applies.
                         val loudDb = if (loudness > 0)
                             String.format(java.util.Locale.US, "+%.1f dB", engine.loudnessAppliedMb(loudness) / 100f)
                         else "0 dB"
-                        EffectSlider("LOUDNESS", loudness, 0..300, valueText = loudDb) { v ->
-                            loudness = v
-                            engine.setLoudness(v)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            CircularDial("BASS BOOST", bassBoost, 0..300, valueText = bassDb) { v ->
+                                bassBoost = v
+                                engine.setBassBoost(v)
+                            }
+                            CircularDial("3D SOUND", virtualizer, 0..300, valueText = "${virtualizer / 3}%") { v ->
+                                virtualizer = v
+                                engine.setVirtualizer(v)
+                            }
+                            CircularDial("LOUDNESS", loudness, 0..300, valueText = loudDb) { v ->
+                                loudness = v
+                                engine.setLoudness(v)
+                            }
                         }
                     }
                     // ── Build #92: PRO FX — noise gate + anti-clip limiter ──
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
                         Spacer(Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1130,7 +1141,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             fontSize = 9.sp, color = Color.Gray
                         )
                         if (limiterOn) {
-                            EffectSlider("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
+                            CircularDial("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
                                 limiterThr = v
                                 engine.setLimiterThreshold(v)
                             }
@@ -2053,41 +2064,106 @@ fun CustomPresetChip(
     }
 }
 
-// Build #91: FxSound-style layout — label above a thin track with value at
-// the end of the same row, instead of label/slider/value crammed side by
-// side. Matches the reference's Clarity/Ambience/Bass Boost side-panel look.
+// Build #94: FxSound-style circular effect dial — the last piece of the
+// FxSound visual overhaul (the curved EQ landed in v91; effects were still
+// linear sliders). Canvas-drawn 270° arc with a neon gradient sweep, a knob
+// dot on the arc, and the value inside the dial. Drag anywhere on the dial
+// to spin it; double-tap resets to 0 (same haptic as before).
 @Composable
-fun EffectSlider(label: String, value: Int, range: IntRange, valueText: String? = null, onValueChange: (Int) -> Unit) {
+fun CircularDial(
+    label: String,
+    value: Int,
+    range: IntRange,
+    valueText: String? = null,
+    onValueChange: (Int) -> Unit
+) {
     val haptic = LocalHapticFeedback.current
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(label, fontSize = 11.sp, color = Color.Gray, letterSpacing = 1.sp)
-            Text(valueText ?: "$value", fontSize = 12.sp, color = T.accent, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(2.dp))
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { onValueChange(it.toInt()) },
-            valueRange = range.first.toFloat()..range.last.toFloat(),
-            modifier = Modifier
-                .fillMaxWidth()
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onDoubleTap = {
-                            onValueChange(0)
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+    val fraction = (value - range.first).toFloat() / (range.last - range.first).toFloat()
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(
+                modifier = Modifier
+                    .size(84.dp)
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, _ ->
+                            change.consume()
+                            val cx = size.width / 2f
+                            val cy = size.height / 2f
+                            val deg = Math.toDegrees(
+                                atan2(
+                                    (change.position.y - cy).toDouble(),
+                                    (change.position.x - cx).toDouble()
+                                ).toDouble()
+                            ).toFloat()
+                            // Dial starts at 135° (lower-left) and sweeps 270°.
+                            val a = ((deg - 135f) % 360f + 360f) % 360f
+                            val frac = (a / 270f).coerceIn(0f, 1f)
+                            val v = range.first + roundToInt(frac * (range.last - range.first))
+                            onValueChange(v)
                         }
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                onValueChange(0)
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                        )
+                    }
+            ) {
+                val strokePx = 8.dp.toPx()
+                val r = size.minDimension / 2f - strokePx / 2f
+                val topLeft = Offset((size.width / 2f) - r, (size.height / 2f) - r)
+                val arcSize = Size(r * 2f, r * 2f)
+
+                // Track — full 270° in muted surface tone
+                drawArc(
+                    color = Color.Gray.copy(alpha = 0.18f),
+                    startAngle = 135f,
+                    sweepAngle = 270f,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round)
+                )
+                // Progress — neon gradient sweep (cyan → purple), stops
+                // shifted so the gradient begins at the dial's 135° start.
+                drawArc(
+                    brush = Brush.sweepGradient(
+                        colorStops = listOf(
+                            0.375f to T.secondary,
+                            1.0f to T.primary
+                        ),
+                        center = Offset(size.width / 2f, size.height / 2f)
+                    ),
+                    startAngle = 135f,
+                    sweepAngle = 270f * fraction,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round)
+                )
+                // Knob dot riding the arc at the current value
+                val knobAngle = Math.toRadians((135f + 270f * fraction).toDouble())
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.9f),
+                    radius = strokePx * 0.75f,
+                    center = Offset(
+                        (size.width / 2f) + (r * cos(knobAngle)).toFloat(),
+                        (size.height / 2f) + (r * sin(knobAngle)).toFloat()
                     )
-                },
-            colors = SliderDefaults.colors(
-                thumbColor = T.accent,
-                activeTrackColor = T.accent.copy(alpha = 0.4f)
+                )
+            }
+            Text(
+                valueText ?: "$value",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = T.accent
             )
-        )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(label, fontSize = 10.sp, color = Color.Gray, letterSpacing = 1.sp)
     }
 }
 
