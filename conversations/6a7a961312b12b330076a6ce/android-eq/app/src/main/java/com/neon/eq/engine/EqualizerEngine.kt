@@ -330,7 +330,6 @@ class EqualizerEngine private constructor(context: Context) {
                         AudioEffect.EFFECT_TYPE_BASS_BOOST -> "Bass"
                         AudioEffect.EFFECT_TYPE_VIRTUALIZER -> "Virt"
                         AudioEffect.EFFECT_TYPE_LOUDNESS_ENHANCER -> "Loud"
-                        AudioEffect.EFFECT_TYPE_NOISE_SUPPRESSOR -> "Gate"
                         else -> null
                     }
                 } catch (_: Throwable) { null }
