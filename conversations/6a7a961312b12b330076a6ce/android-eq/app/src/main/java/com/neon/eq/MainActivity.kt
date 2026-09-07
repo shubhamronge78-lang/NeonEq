@@ -902,6 +902,56 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 fontSize = 10.sp, color = T.secondary
             )
             Spacer(Modifier.height(6.dp))
+            // Build #115: OUTPUT — Poweramp's method: direct volume control on
+            // our own stream, plus explicit device routing when headphones or
+            // Bluetooth are connected.
+            var outVol by remember { mutableStateOf(engine.getPlayerVolume()) }
+            LaunchedEffect(Unit) { player.setOutVolume(outVol) }
+            val outDevices = remember {
+                try {
+                    val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                    am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS).filter { d ->
+                        d.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
+                        d.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        d.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        d.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                    }
+                } catch (t: Throwable) { emptyList() }
+            }
+            var outSel by remember { mutableStateOf(-1) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("OUTPUT", fontSize = 10.sp, color = T.secondary)
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = { outVol = (outVol - 0.1f).coerceAtLeast(0f); player.setOutVolume(outVol); engine.setPlayerVolume(outVol) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("−", fontSize = 10.sp) }
+                Text("${(outVol * 100).toInt()}%", fontSize = 10.sp, color = T.secondary, modifier = Modifier.padding(horizontal = 6.dp))
+                Button(
+                    onClick = { outVol = (outVol + 0.1f).coerceAtMost(1.5f); player.setOutVolume(outVol); engine.setPlayerVolume(outVol) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("+", fontSize = 10.sp) }
+            }
+            if (outDevices.size > 1) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = { outSel = -1; player.setPreferredOutput(null) },
+                        colors = ButtonDefaults.buttonColors(containerColor = if (outSel == -1) T.primary else T.accent)
+                    ) { Text("AUTO", fontSize = 9.sp) }
+                    outDevices.forEachIndexed { i, dev ->
+                        Spacer(Modifier.width(6.dp))
+                        Button(
+                            onClick = { outSel = i; player.setPreferredOutput(dev) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (i == outSel) T.primary else T.accent)
+                        ) { Text(when (dev.type) {
+                            android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER"
+                            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BT"
+                            else -> "PHONES"
+                        }, fontSize = 9.sp) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
             if (!hasPerm) {
                 // Build #111: the permissionless path — system document picker.
                 // Works on every OEM (Funtouch included) with zero grants.
@@ -1624,7 +1674,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #114",
+                        "Neon EQ · Build #115",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

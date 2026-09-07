@@ -255,6 +255,22 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
     @Volatile private var requestStop = false
     @Volatile private var pauseReq = false
     @Volatile private var duckReq = false
+    // Build #115: Poweramp-style output control — DVC-style gain applied to
+    // our own stream (independent of system volume quirks) plus explicit
+    // output-device routing via setPreferredDevice.
+    @Volatile private var outVolume = 1f
+    @Volatile private var preferredDev: android.media.AudioDeviceInfo? = null
+    @Volatile private var outTrack: AudioTrack? = null
+
+    fun setOutVolume(v: Float) {
+        outVolume = v.coerceIn(0f, 1.5f)
+        try { outTrack?.setVolume(outVolume) } catch (_: Throwable) {}
+    }
+
+    fun setPreferredOutput(dev: android.media.AudioDeviceInfo?) {
+        preferredDev = dev
+        try { if (dev != null) outTrack?.preferredDevice = dev } catch (_: Throwable) {}
+    }
 
     val isRunning: Boolean get() = thread?.isAlive == true
     fun isPaused(): Boolean = pauseReq
@@ -336,6 +352,9 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
             val minBuf = AudioTrack.getMinBufferSize(sampleRate, chMask, AudioFormat.ENCODING_PCM_16BIT)
             val bufBytes = maxOf(minBuf * 2, 16384)
             track = AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, chMask, AudioFormat.ENCODING_PCM_16BIT, bufBytes, AudioTrack.MODE_STREAM)
+            outTrack = track
+            try { track.setVolume(outVolume) } catch (_: Throwable) {}
+            try { preferredDev?.let { track.preferredDevice = it } } catch (_: Throwable) {}
             track.play()
 
             val info = MediaCodec.BufferInfo()
@@ -386,6 +405,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
             try { codec?.release() } catch (_: Throwable) {}
             try { track?.stop() } catch (_: Throwable) {}
             try { track?.release() } catch (_: Throwable) {}
+            outTrack = null
             try { extractor?.release() } catch (_: Throwable) {}
             try { wl?.release() } catch (_: Throwable) {}
             try { am?.abandonAudioFocus(focusListener) } catch (_: Throwable) {}

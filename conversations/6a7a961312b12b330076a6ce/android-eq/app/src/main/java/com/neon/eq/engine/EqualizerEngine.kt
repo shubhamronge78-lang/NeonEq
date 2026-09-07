@@ -2049,6 +2049,12 @@ class EqualizerEngine private constructor(context: Context) {
     fun setMusicFolder(uri: String?) {
         try { prefs.edit().putString("music_folder_uri", uri).apply() } catch (_: Throwable) { }
     }
+
+    // Build #115: PLAYER output volume (Poweramp DVC-style, on our own stream).
+    fun getPlayerVolume(): Float = try { prefs.getFloat("player_volume", 1f) } catch (_: Throwable) { 1f }
+    fun setPlayerVolume(v: Float) {
+        try { prefs.edit().putFloat("player_volume", v).apply() } catch (_: Throwable) { }
+    }
     fun setShowVisualizer(on: Boolean) {
         try { prefs.edit().putBoolean(KEY_SHOW_VISUALIZER, on).apply() } catch (_: Throwable) { }
     }
