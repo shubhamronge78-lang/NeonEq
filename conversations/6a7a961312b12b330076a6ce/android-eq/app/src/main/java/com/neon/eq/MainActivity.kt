@@ -852,10 +852,29 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPerm = it }
             val dsp = remember { SoftwareEq() }
             val player = remember { SoftEqPlayer(dsp) }
-            DisposableEffect(Unit) { onDispose { player.stop() } }
+            val tone = remember { TonePlayer(dsp) }
+            var toneOn by remember { mutableStateOf(false) }
+            var diagTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { delay(700); diagTick++ } }
+            DisposableEffect(Unit) { onDispose { player.stop(); tone.stop() } }
             // Any change to the curve — drag, preset, startup reapply — reaches the software EQ instantly
             LaunchedEffect(bandLevels) { dsp.setGains(bandLevels) }
             LaunchedEffect(loudness) { dsp.setPreamp(engine.loudnessAppliedMb(loudness) / 100f) }
+            // Build #107: one-tap pipeline proof + live player status.
+            Button(
+                onClick = {
+                    if (tone.isRunning) { tone.stop(); toneOn = false } else { tone.play(); toneOn = true }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = T.primary)
+            ) { Text(if (toneOn) "STOP TEST TONE" else "PLAY TEST TONE · 30Hz-16kHz sweep", fontSize = 10.sp) }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "player: " + (if (player.isRunning) (if (player.isPaused()) "paused" else "playing") else "idle") +
+                    (if (player.isRunning && SoftEqPlayer.trackInfo.isNotEmpty()) " · " + SoftEqPlayer.trackInfo else "") +
+                    (SoftEqPlayer.lastError?.let { " · ERR: " + it } ?: "") + (if (diagTick < 0) "" else ""),
+                fontSize = 10.sp, color = T.secondary
+            )
+            Spacer(Modifier.height(6.dp))
             if (!hasPerm) {
                 Text("Music library access is needed to play tracks.", fontSize = 10.sp, color = T.secondary)
                 Spacer(Modifier.height(6.dp))
@@ -1481,7 +1500,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #106",
+                        "Neon EQ · Build #107",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

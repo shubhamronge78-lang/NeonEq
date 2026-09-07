@@ -136,11 +136,72 @@ class SoftwareEq {
 }
 
 /**
+ * Build #107: the no-excuses test path. A 30Hz->16kHz logarithmic sine
+ * sweep, generated in-app and pushed through the SAME SoftwareEq +
+ * AudioTrack chain as file playback. One tap proves the pipeline; a
+ * boosted curve should audibly boom the low end of the sweep.
+ */
+class TonePlayer(private val eq: SoftwareEq) {
+    private var thread: Thread? = null
+    @Volatile private var requestStop = false
+
+    val isRunning: Boolean get() = thread?.isAlive == true
+
+    fun play() {
+        stop()
+        requestStop = false
+        thread = Thread { toneLoop() }.apply { start() }
+    }
+
+    fun stop() {
+        requestStop = true
+        thread?.let { t -> try { t.join(400) } catch (_: Throwable) {} }
+        thread = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun toneLoop() {
+        var track: AudioTrack? = null
+        try {
+            val sr = 48000
+            eq.configure(sr, 2)
+            val minBuf = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+            track = AudioTrack(AudioManager.STREAM_MUSIC, sr, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf * 2, 16384), AudioTrack.MODE_STREAM)
+            track.play()
+            val frame = ShortArray(2048 * 2)
+            var phase = 0.0
+            var t = 0
+            while (!requestStop) {
+                for (f in 0 until 2048) {
+                    val tt = ((t * 2048 + f) % (sr * 24)) / (sr.toDouble() * 24.0)
+                    val freq = 30.0 * Math.pow(16000.0 / 30.0, tt)
+                    phase += 2.0 * PI * freq / sr
+                    val s = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767).toShort()
+                    frame[2 * f] = s
+                    frame[2 * f + 1] = s
+                }
+                eq.processAndWrite(java.nio.ShortBuffer.wrap(frame), track)
+                t++
+            }
+        } catch (_: Throwable) {
+        } finally {
+            try { track?.stop() } catch (_: Throwable) {}
+            try { track?.release() } catch (_: Throwable) {}
+        }
+    }
+}
+
+/**
  * Framework-only player: MediaExtractor -> MediaCodec -> software EQ ->
  * AudioTrack. One decode thread per track; every layer is wrapped in
  * Throwable catches so no codec quirk can ever crash the app.
  */
 class SoftEqPlayer(private val eq: SoftwareEq) {
+    companion object {
+        // Build #107: live player diagnostics, surfaced in the PLAYER card.
+        @Volatile var lastError: String? = null
+        @Volatile var trackInfo: String = ""
+    }
     private var thread: Thread? = null
     @Volatile private var requestStop = false
     @Volatile private var pauseReq = false
@@ -152,6 +213,8 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
         stop()
         requestStop = false
         pauseReq = false
+        lastError = null
+        trackInfo = ""
         thread = Thread { decodeLoop(context.applicationContext, uri) }.apply {
             priority = Thread.MAX_PRIORITY - 1
             start()
@@ -195,6 +258,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(fmt, null, null, 0)
             codec.start()
+            trackInfo = sampleRate.toString() + "Hz·" + channels + "ch·" + mime.substringAfter("/")
 
             val minBuf = AudioTrack.getMinBufferSize(sampleRate, chMask, AudioFormat.ENCODING_PCM_16BIT)
             val bufBytes = maxOf(minBuf * 2, 16384)
@@ -236,8 +300,9 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
                 }
                 if (inputDone && outIdx != MediaCodec.INFO_OUTPUT_FORMAT_CHANGED && outIdx < 0 && requestStop) break
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
             // Any codec quirk ends the track quietly — never the app.
+            lastError = t.message ?: t.toString()
         } finally {
             try { codec?.stop() } catch (_: Throwable) {}
             try { codec?.release() } catch (_: Throwable) {}
