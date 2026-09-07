@@ -14,11 +14,6 @@ import android.content.ContentUris
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.media3.common.MediaItem
-import androidx.media3.common.audio.AudioProcessor
-import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -855,21 +850,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
             var hasPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED) }
             val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPerm = it }
-            val dsp = remember { PlayerEqProcessor() }
-            val player = remember {
-                try {
-                    val sink = DefaultAudioSink.Builder(ctx).setAudioProcessors(arrayOf<AudioProcessor>(dsp)).build()
-                    val rf = DefaultRenderersFactory(ctx).setAudioSink(sink)
-                    ExoPlayer.Builder(ctx, rf).build()
-                } catch (_: Throwable) { null }
-            }
-            DisposableEffect(Unit) { onDispose { player?.release() } }
+            val dsp = remember { SoftwareEq() }
+            val player = remember { SoftEqPlayer(dsp) }
+            DisposableEffect(Unit) { onDispose { player.stop() } }
             // Any change to the curve — drag, preset, startup reapply — reaches the software EQ instantly
             LaunchedEffect(bandLevels) { dsp.setGains(bandLevels) }
             LaunchedEffect(loudness) { dsp.setPreamp(engine.loudnessAppliedMb(loudness) / 100f) }
-            if (player == null) {
-                Text("Player init failed on this device.", fontSize = 10.sp, color = T.secondary)
-            } else if (!hasPerm) {
+            if (!hasPerm) {
                 Text("Music library access is needed to play tracks.", fontSize = 10.sp, color = T.secondary)
                 Spacer(Modifier.height(6.dp))
                 Button(
@@ -900,6 +887,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         list
                     } catch (_: Throwable) { emptyList() }
                 }
+                LaunchedEffect(nowUri) {
+                    while (player.isRunning) {
+                        playing = !player.isPaused()
+                        delay(500)
+                    }
+                    playing = false
+                }
                 if (tracks.isEmpty()) {
                     Text("No music found on the device.", fontSize = 10.sp, color = T.secondary)
                 } else {
@@ -911,12 +905,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             Row(
                                 Modifier.fillMaxWidth().clickable {
                                     if (isNow) {
-                                        if (player.isPlaying) player.pause() else player.play()
-                                        playing = player.isPlaying
+                                        player.togglePause()
+                                        playing = player.isRunning && !player.isPaused()
                                     } else {
-                                        player.setMediaItem(MediaItem.fromUri(t.uri))
-                                        player.prepare()
-                                        player.play()
+                                        player.play(ctx, t.uri)
                                         nowUri = t.uri.toString()
                                         playing = true
                                     }
@@ -1489,7 +1481,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #105",
+                        "Neon EQ · Build #106",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
