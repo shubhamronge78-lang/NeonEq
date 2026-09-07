@@ -8,6 +8,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.os.PowerManager
 import android.os.SystemClock
 import java.nio.ByteOrder
 import java.nio.ShortBuffer
@@ -253,6 +254,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
     private var thread: Thread? = null
     @Volatile private var requestStop = false
     @Volatile private var pauseReq = false
+    @Volatile private var duckReq = false
 
     val isRunning: Boolean get() = thread?.isAlive == true
     fun isPaused(): Boolean = pauseReq
@@ -285,6 +287,27 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
         var extractor: MediaExtractor? = null
         var codec: MediaCodec? = null
         var track: AudioTrack? = null
+        // Build #112: the backend polish a real music player needs —
+        // audio focus (pause on calls, duck under notifications) and a
+        // wake lock so the decode thread never stutters on slow CPUs
+        // (Redmi 10C) with the screen off.
+        var am: AudioManager? = null
+        var focusListener: AudioManager.OnAudioFocusChangeListener? = null
+        var wl: PowerManager.WakeLock? = null
+        try {
+            am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            focusListener = AudioManager.OnAudioFocusChangeListener { loss ->
+                when (loss) {
+                    AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pauseReq = true
+                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> duckReq = true
+                    AudioManager.AUDIOFOCUS_GAIN -> { pauseReq = false; duckReq = false }
+                }
+            }
+            try { am.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN) } catch (_: Throwable) {}
+            wl = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "neoneq:softplay")
+            try { wl.acquire(120 * 60 * 1000L) } catch (_: Throwable) {}
+        } catch (_: Throwable) {}
         try {
             extractor = MediaExtractor()
             extractor.setDataSource(context, uri, null)
@@ -317,11 +340,16 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
 
             val info = MediaCodec.BufferInfo()
             var inputDone = false
+            var lastDuck = false
             while (!requestStop) {
                 if (pauseReq) {
                     track.pause()
                     while (pauseReq && !requestStop) try { Thread.sleep(60) } catch (_: Throwable) {}
                     if (!requestStop) track.play()
+                }
+                if (duckReq != lastDuck) {
+                    lastDuck = duckReq
+                    try { track.setVolume(if (duckReq) 0.25f else 1f) } catch (_: Throwable) {}
                 }
                 if (!inputDone) {
                     val inIdx = codec.dequeueInputBuffer(15_000)
@@ -359,6 +387,8 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
             try { track?.stop() } catch (_: Throwable) {}
             try { track?.release() } catch (_: Throwable) {}
             try { extractor?.release() } catch (_: Throwable) {}
+            try { wl?.release() } catch (_: Throwable) {}
+            try { am?.abandonAudioFocus(focusListener) } catch (_: Throwable) {}
             alive = false
         }
     }

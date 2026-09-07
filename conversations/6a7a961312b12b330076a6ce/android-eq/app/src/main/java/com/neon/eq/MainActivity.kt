@@ -910,6 +910,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 var pickedPlaying by remember { mutableStateOf(false) }
                 val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     if (uri != null) {
+                        // Build #112: keep read access across restarts so the
+                        // same picked track replays later without re-picking.
+                        try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
                         player.play(ctx, uri)
                         pickedName = (uri.lastPathSegment ?: "picked track").substringAfterLast('/')
                         pickedPlaying = true
@@ -1563,7 +1566,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #111",
+                        "Neon EQ · Build #112",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

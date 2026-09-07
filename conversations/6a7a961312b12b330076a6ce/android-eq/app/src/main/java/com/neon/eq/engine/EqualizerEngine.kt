@@ -667,10 +667,16 @@ class EqualizerEngine private constructor(context: Context) {
     // Restores the last saved preset's band levels + effects into the live engine.
     // Uses batched setBandLevels() — one audio-thread task instead of 31 separate
     // setBandLevel() calls (31 persist + 31 enqueue vs 1 persist + 1 enqueue).
+    private var lastStartupReapplyAt = 0L
     fun applyLastPreset(): Boolean {
         if (!isAutoApplyPreset()) return false
         val name = selectedPresetName
         if (name == "Flat" || name == "Custom") return false
+        // Build #112: service start and activity start BOTH call this —
+        // collapse the double reapply they fire within a few seconds.
+        val now = System.currentTimeMillis()
+        if (now - lastStartupReapplyAt < 3000) return true
+        lastStartupReapplyAt = now
         val ok = applyPresetByName(name)
         if (ok) tracePresetWrite("startup-reapply", name)
         return ok
