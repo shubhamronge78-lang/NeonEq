@@ -112,7 +112,10 @@ class SoftwareEq {
     /** Applies the curve to decoded PCM and writes it out, blocking. */
     fun processAndWrite(sh: ShortBuffer, out: AudioTrack) {
         if (!active) {
-            out.write(sh, sh.remaining())
+            val n = sh.remaining()
+            val buf = if (n <= scratch.size) scratch else ShortArray(n)
+            sh.get(buf, 0, n)
+            out.write(buf, 0, n)
             return
         }
         val ch = channels
@@ -195,7 +198,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
 
             val minBuf = AudioTrack.getMinBufferSize(sampleRate, chMask, AudioFormat.ENCODING_PCM_16BIT)
             val bufBytes = maxOf(minBuf * 2, 16384)
-            track = AudioTrack(AudioManager.STREAM_MUSIC, chMask, AudioFormat.ENCODING_PCM_16BIT, bufBytes, AudioTrack.MODE_STREAM)
+            track = AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, chMask, AudioFormat.ENCODING_PCM_16BIT, bufBytes, AudioTrack.MODE_STREAM)
             track.play()
 
             val info = MediaCodec.BufferInfo()
