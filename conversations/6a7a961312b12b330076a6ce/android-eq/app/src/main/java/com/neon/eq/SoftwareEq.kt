@@ -142,6 +142,10 @@ class SoftwareEq {
  * boosted curve should audibly boom the low end of the sweep.
  */
 class TonePlayer(private val eq: SoftwareEq) {
+    companion object {
+        @Volatile var alive: Boolean = false
+        fun line(): String = if (alive) "running" else "idle"
+    }
     private var thread: Thread? = null
     @Volatile private var requestStop = false
 
@@ -151,6 +155,7 @@ class TonePlayer(private val eq: SoftwareEq) {
         stop()
         requestStop = false
         thread = Thread { toneLoop() }.apply { start() }
+        alive = true
     }
 
     fun stop() {
@@ -187,6 +192,7 @@ class TonePlayer(private val eq: SoftwareEq) {
         } finally {
             try { track?.stop() } catch (_: Throwable) {}
             try { track?.release() } catch (_: Throwable) {}
+            alive = false
         }
     }
 }
@@ -201,6 +207,9 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
         // Build #107: live player diagnostics, surfaced in the PLAYER card.
         @Volatile var lastError: String? = null
         @Volatile var trackInfo: String = ""
+        @Volatile var alive: Boolean = false
+        fun line(): String =
+            (if (alive) "running" else "idle") + (if (trackInfo.isNotEmpty()) " · " + trackInfo else "")
     }
     private var thread: Thread? = null
     @Volatile private var requestStop = false
@@ -215,6 +224,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
         pauseReq = false
         lastError = null
         trackInfo = ""
+        alive = true
         thread = Thread { decodeLoop(context.applicationContext, uri) }.apply {
             priority = Thread.MAX_PRIORITY - 1
             start()
@@ -309,6 +319,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
             try { track?.stop() } catch (_: Throwable) {}
             try { track?.release() } catch (_: Throwable) {}
             try { extractor?.release() } catch (_: Throwable) {}
+            alive = false
         }
     }
 }

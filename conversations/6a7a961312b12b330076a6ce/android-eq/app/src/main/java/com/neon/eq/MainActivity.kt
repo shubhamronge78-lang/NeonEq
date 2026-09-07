@@ -1474,7 +1474,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     var diagText by remember { mutableStateOf("starting…") }
                     LaunchedEffect(Unit) {
                         while (true) {
-                            diagText = try { engine.diagnostics() } catch (t: Throwable) { "diag error: ${t.message}" }
+                            diagText = try {
+                                engine.diagnostics() + "\nplayer: " + SoftEqPlayer.line() + " | tone: " + TonePlayer.line() + " | dspErr: " + (SoftEqPlayer.lastError ?: "-")
+                            } catch (t: Throwable) { "diag error: ${t.message}" }
                             delay(1000)
                         }
                     }
@@ -1500,7 +1502,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #107",
+                        "Neon EQ · Build #108",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
