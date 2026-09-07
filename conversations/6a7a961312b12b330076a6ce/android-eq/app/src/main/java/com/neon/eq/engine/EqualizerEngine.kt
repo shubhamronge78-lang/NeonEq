@@ -2042,6 +2042,13 @@ class EqualizerEngine private constructor(context: Context) {
     }
 
     fun isShowVisualizer(): Boolean = prefs.getBoolean(KEY_SHOW_VISUALIZER, false)
+
+    // Build #114: persisted music-folder tree URI (SAF) — the permissionless
+    // library. Survives restarts via the persistable tree grant.
+    fun getMusicFolder(): String? = try { prefs.getString("music_folder_uri", null) } catch (_: Throwable) { null }
+    fun setMusicFolder(uri: String?) {
+        try { prefs.edit().putString("music_folder_uri", uri).apply() } catch (_: Throwable) { }
+    }
     fun setShowVisualizer(on: Boolean) {
         try { prefs.edit().putBoolean(KEY_SHOW_VISUALIZER, on).apply() } catch (_: Throwable) { }
     }

@@ -2,6 +2,7 @@ package com.neon.eq
 
 import android.Manifest
 import android.content.Intent
+import androidx.compose.foundation.clickable
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -943,6 +944,61 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     Text("playing: $pickedName — through the software EQ", fontSize = 10.sp, color = T.secondary)
                 }
                 Spacer(Modifier.height(6.dp))
+                // Build #114: Poweramp-style folder library — zero permission.
+                // Pick the music folder once; the tree grant persists across
+                // restarts, so the list restores on the next launch.
+                var folderTracks by remember { mutableStateOf<List<Pair<String, Uri>>>(emptyList()) }
+                var folderName by remember { mutableStateOf<String?>(null) }
+                var folderScanned by remember { mutableStateOf(false) }
+                val openTree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                    if (uri != null) {
+                        try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
+                        engine.setMusicFolder(uri.toString())
+                        folderName = (uri.lastPathSegment ?: "folder").substringAfterLast(':')
+                        scope2.launch {
+                            folderTracks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                scanAudioFolder(ctx.contentResolver, uri)
+                            }
+                        }
+                    }
+                }
+                LaunchedEffect(folderScanned) {
+                    if (folderScanned) return@LaunchedEffect
+                    folderScanned = true
+                    val saved = engine.getMusicFolder()
+                    if (saved != null) {
+                        folderName = "saved folder"
+                        folderTracks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            try { scanAudioFolder(ctx.contentResolver, Uri.parse(saved)) } catch (t: Throwable) { emptyList() }
+                        }
+                    }
+                }
+                Button(
+                    onClick = { openTree.launch(null) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.accent)
+                ) { Text(if (folderTracks.isEmpty()) "OPEN MUSIC FOLDER" else "SWITCH MUSIC FOLDER", fontSize = 10.sp) }
+                if (folderName != null && folderTracks.isEmpty()) {
+                    Text("no audio files found in $folderName", fontSize = 10.sp, color = T.secondary)
+                }
+                if (folderTracks.isNotEmpty()) {
+                    Text("${folderTracks.size} tracks in $folderName — tap to play", fontSize = 10.sp, color = T.secondary)
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
+                        items(folderTracks) { tr ->
+                            Text(
+                                tr.first,
+                                fontSize = 10.sp, color = T.secondary,
+                                maxLines = 1,
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    tone.stop(); toneOn = false
+                                    player.play(ctx, tr.second)
+                                    pickedName = tr.first
+                                    pickedPlaying = true
+                                }.padding(vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
                 Button(
                     onClick = { permLauncher.launch(perm) },
                     colors = ButtonDefaults.buttonColors(containerColor = T.accent)
@@ -1568,7 +1624,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #113",
+                        "Neon EQ · Build #114",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
@@ -1738,6 +1794,44 @@ fun BreathingGlow(active: Boolean) {
                 )
             )
     )
+}
+
+// Build #114: scans a SAF tree for audio files — Poweramp-style folder
+// browsing with zero permissions. BFS over subfolders, capped at 500 tracks
+// so slow storage on low-end devices can't stall the UI. Fully qualified
+// DocumentsContract keeps this dependency-free.
+private fun scanAudioFolder(resolver: android.content.ContentResolver, tree: Uri): List<Pair<String, Uri>> {
+    val out = ArrayList<Pair<String, Uri>>()
+    try {
+        val queue = ArrayDeque<String>()
+        queue.add(android.provider.DocumentsContract.getTreeDocumentId(tree))
+        val proj = arrayOf(
+            android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+        val audioExt = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma")
+        while (queue.isNotEmpty() && out.size < 500) {
+            val dirId = queue.removeFirst()
+            val children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree, dirId)
+            val cur = resolver.query(children, proj, null, null, null) ?: continue
+            cur.use {
+                while (it.moveToNext()) {
+                    val id = it.getString(0) ?: continue
+                    val name = it.getString(1) ?: continue
+                    val mime = it.getString(2) ?: ""
+                    if (mime == android.provider.DocumentsContract.Document.MIME_TYPE_DIR) queue.add(id)
+                    else {
+                        val ext = name.substringAfterLast('.', "").lowercase()
+                        if (mime.startsWith("audio/") || ext in audioExt)
+                            out.add(name to android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, id))
+                    }
+                }
+            }
+        }
+    } catch (_: Throwable) { }
+    out.sortBy { it.first.lowercase() }
+    return out
 }
 
 // Live spectrum visualizer rendered from raw waveform bytes off the master mix.
