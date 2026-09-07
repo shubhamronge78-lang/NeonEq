@@ -8,6 +8,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.os.SystemClock
 import java.nio.ByteOrder
 import java.nio.ShortBuffer
 import kotlin.math.PI
@@ -71,6 +72,26 @@ data class Track(val uri: Uri, val title: String, val artist: String)
 class SoftwareEq {
     companion object {
         val FREQS = floatArrayOf(31f, 62f, 125f, 250f, 500f, 1000f, 2000f, 4000f, 8000f, 16000f)
+
+        // Build #110: waveform capture from the software pipeline so the
+        // main-screen visualizer can dance even on devices where the system
+        // Visualizer API is blocked (Vivo Y21). The decode thread is the only
+        // writer; the UI only reads the published copy.
+        @Volatile var sharedWaveform: ByteArray? = null
+        @Volatile var sharedWaveformAt: Long = 0
+        private val capTmp = ByteArray(128)
+        fun publishCapture(samples: ShortArray, from: Int, len: Int) {
+            if (len <= 0) return
+            val stride = (len / 128).coerceAtLeast(1)
+            var ci = 0
+            var i = from
+            while (i < from + len && ci < 128) {
+                capTmp[ci++] = (samples[i] / 256).toInt().toByte()
+                i += stride
+            }
+            sharedWaveform = capTmp.copyOf()
+            sharedWaveformAt = SystemClock.elapsedRealtime()
+        }
     }
 
     @Volatile private var gainsDb = FloatArray(10)
@@ -116,6 +137,7 @@ class SoftwareEq {
             val n = sh.remaining()
             val buf = if (n <= scratch.size) scratch else ShortArray(n)
             sh.get(buf, 0, n)
+            publishCapture(buf, 0, n)
             out.write(buf, 0, n)
             framesOut += n / channels
             return
@@ -129,12 +151,14 @@ class SoftwareEq {
             for (i in 0 until 10) s = c[i].process(s)
             scratch[w++] = (s * 32767f).toInt().coerceIn(-32768, 32767).toShort()
             if (w == scratch.size) {
+                publishCapture(scratch, 0, w)
                 out.write(scratch, 0, w)
                 framesOut += w / ch
                 w = 0
             }
         }
         if (w > 0) {
+            publishCapture(scratch, 0, w)
             out.write(scratch, 0, w)
             framesOut += w / ch
         }

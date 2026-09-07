@@ -837,6 +837,32 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
+        // ── Build #110: VISUALIZER on the main screen — system capture when
+        // the device allows it, software-player capture when it doesn't ──
+        NeonCard {
+            var softWave by remember { mutableStateOf(ByteArray(0)) }
+            var softWaveAt by remember { mutableStateOf(0L) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    val w = SoftwareEq.sharedWaveform
+                    val at = SoftwareEq.sharedWaveformAt
+                    if (w != null && at != softWaveAt) { softWave = w; softWaveAt = at }
+                    delay(33)
+                }
+            }
+            val now = SystemClock.elapsedRealtime()
+            val sysFresh = waveformAt > 0 && now - waveformAt < 1500
+            val softFresh = softWaveAt > 0 && now - softWaveAt < 1500
+            VisualizerBars(
+                if (sysFresh) waveform else softWave,
+                if (sysFresh) waveformAt else softWaveAt,
+                active = sysFresh || softFresh,
+                style = visStyle
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
         // ── Build #105: PLAYER — the one audio path no OEM can block ──
         NeonCard {
             GradientText("PLAYER — EQ INSIDE NEONEQ", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
@@ -1502,7 +1528,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #109",
+                        "Neon EQ · Build #110",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
