@@ -902,12 +902,47 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             )
             Spacer(Modifier.height(6.dp))
             if (!hasPerm) {
-                Text("Music library access is needed to play tracks.", fontSize = 10.sp, color = T.secondary)
+                // Build #111: the permissionless path — system document picker.
+                // Works on every OEM (Funtouch included) with zero grants.
+                Text("Library permission is blocked or ungranted — pick any track directly instead, no permission needed:", fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp)
+                Spacer(Modifier.height(6.dp))
+                var pickedName by remember { mutableStateOf<String?>(null) }
+                var pickedPlaying by remember { mutableStateOf(false) }
+                val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                    if (uri != null) {
+                        player.play(ctx, uri)
+                        pickedName = (uri.lastPathSegment ?: "picked track").substringAfterLast('/')
+                        pickedPlaying = true
+                    }
+                }
+                LaunchedEffect(pickedName) {
+                    while (player.isRunning) {
+                        pickedPlaying = !player.isPaused()
+                        delay(500)
+                    }
+                    pickedPlaying = false
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = { pickFile.launch(arrayOf("audio/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = T.primary)
+                    ) { Text("PICK A TRACK", fontSize = 10.sp) }
+                    if (pickedName != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { player.togglePause(); pickedPlaying = player.isRunning && !player.isPaused() },
+                            colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                        ) { Text(if (pickedPlaying) "PAUSE" else "RESUME", fontSize = 10.sp) }
+                    }
+                }
+                if (pickedName != null) {
+                    Text("playing: $pickedName — through the software EQ", fontSize = 10.sp, color = T.secondary)
+                }
                 Spacer(Modifier.height(6.dp))
                 Button(
                     onClick = { permLauncher.launch(perm) },
                     colors = ButtonDefaults.buttonColors(containerColor = T.accent)
-                ) { Text("GRANT MUSIC ACCESS", fontSize = 11.sp) }
+                ) { Text("GRANT MUSIC ACCESS (optional)", fontSize = 11.sp) }
             } else {
                 var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
                 var nowUri by remember { mutableStateOf<String?>(null) }
@@ -1528,7 +1563,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #110",
+                        "Neon EQ · Build #111",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
