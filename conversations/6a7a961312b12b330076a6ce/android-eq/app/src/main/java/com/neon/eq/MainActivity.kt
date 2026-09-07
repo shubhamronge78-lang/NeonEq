@@ -889,7 +889,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             // Build #107: one-tap pipeline proof + live player status.
             Button(
                 onClick = {
-                    if (tone.isRunning) { tone.stop(); toneOn = false } else { tone.play(); toneOn = true }
+                    if (tone.isRunning) { tone.stop(); toneOn = false } else { player.stop(); tone.play(); toneOn = true }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = T.primary)
             ) { Text(if (toneOn) "STOP TEST TONE" else "PLAY TEST TONE · 30Hz-16kHz sweep", fontSize = 10.sp) }
@@ -913,6 +913,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         // Build #112: keep read access across restarts so the
                         // same picked track replays later without re-picking.
                         try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
+                        tone.stop(); toneOn = false
                         player.play(ctx, uri)
                         pickedName = (uri.lastPathSegment ?: "picked track").substringAfterLast('/')
                         pickedPlaying = true
@@ -991,6 +992,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                         player.togglePause()
                                         playing = player.isRunning && !player.isPaused()
                                     } else {
+                                        tone.stop(); toneOn = false
                                         player.play(ctx, t.uri)
                                         nowUri = t.uri.toString()
                                         playing = true
@@ -1566,7 +1568,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #112",
+                        "Neon EQ · Build #113",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
