@@ -77,6 +77,7 @@ class SoftwareEq {
     @Volatile private var preampDb = 0f
     @Volatile private var sampleRate = 44100
     @Volatile private var channels = 2
+    @Volatile var framesOut: Long = 0
     // 2 channel chains x 10 bands — matches the locked 10-band UI exactly
     private val chains = Array(2) { Array(10) { BiquadBand() } }
     private val scratch = ShortArray(16384)
@@ -116,6 +117,7 @@ class SoftwareEq {
             val buf = if (n <= scratch.size) scratch else ShortArray(n)
             sh.get(buf, 0, n)
             out.write(buf, 0, n)
+            framesOut += n / channels
             return
         }
         val ch = channels
@@ -128,10 +130,14 @@ class SoftwareEq {
             scratch[w++] = (s * 32767f).toInt().coerceIn(-32768, 32767).toShort()
             if (w == scratch.size) {
                 out.write(scratch, 0, w)
+                framesOut += w / ch
                 w = 0
             }
         }
-        if (w > 0) out.write(scratch, 0, w)
+        if (w > 0) {
+            out.write(scratch, 0, w)
+            framesOut += w / ch
+        }
     }
 }
 
@@ -144,7 +150,12 @@ class SoftwareEq {
 class TonePlayer(private val eq: SoftwareEq) {
     companion object {
         @Volatile var alive: Boolean = false
-        fun line(): String = if (alive) "running" else "idle"
+        @Volatile var taps: Int = 0
+        @Volatile var outFrames: Long = 0
+        @Volatile var lastErr: String? = null
+        fun line(): String =
+            (if (alive) "running" else "idle") + "·taps:" + taps + "·out:" + outFrames + "f" +
+                (lastErr?.let { "·ERR:" + it } ?: "")
     }
     private var thread: Thread? = null
     @Volatile private var requestStop = false
@@ -154,6 +165,7 @@ class TonePlayer(private val eq: SoftwareEq) {
     fun play() {
         stop()
         requestStop = false
+        taps++
         thread = Thread { toneLoop() }.apply { start() }
         alive = true
     }
@@ -186,9 +198,11 @@ class TonePlayer(private val eq: SoftwareEq) {
                     frame[2 * f + 1] = s
                 }
                 eq.processAndWrite(java.nio.ShortBuffer.wrap(frame), track)
+                outFrames += 2048
                 t++
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            lastErr = t.message ?: t.toString()
         } finally {
             try { track?.stop() } catch (_: Throwable) {}
             try { track?.release() } catch (_: Throwable) {}
@@ -208,8 +222,9 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
         @Volatile var lastError: String? = null
         @Volatile var trackInfo: String = ""
         @Volatile var alive: Boolean = false
+        @Volatile var starts: Int = 0
         fun line(): String =
-            (if (alive) "running" else "idle") + (if (trackInfo.isNotEmpty()) " · " + trackInfo else "")
+            (if (alive) "running" else "idle") + "·starts:" + starts + (if (trackInfo.isNotEmpty()) " · " + trackInfo else "")
     }
     private var thread: Thread? = null
     @Volatile private var requestStop = false
@@ -224,6 +239,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
         pauseReq = false
         lastError = null
         trackInfo = ""
+        starts++
         alive = true
         thread = Thread { decodeLoop(context.applicationContext, uri) }.apply {
             priority = Thread.MAX_PRIORITY - 1

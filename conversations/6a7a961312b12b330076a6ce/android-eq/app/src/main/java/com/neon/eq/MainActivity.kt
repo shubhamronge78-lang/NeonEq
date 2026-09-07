@@ -1502,7 +1502,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #108",
+                        "Neon EQ · Build #109",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
