@@ -315,11 +315,11 @@ class CaptureEqService : Service() {
                 } else {
                     dspMs = 0.0; dspLoadPct = 0.0
                 }
-                track.write(chunk, 0, n)
+                track?.write(chunk, 0, n)
                 framesDone += n / 2
                 totalLatencyMs = capLatencyMs + dspMs + outLatencyMs
                 if (framesDone % 48000L < chunkFrames * 2L) {
-                    try { underruns = track.underrunCount } catch (t: Throwable) { }
+                    try { track?.let { underruns = it.underrunCount } } catch (t: Throwable) { }
                 }
                 // Re-mirror the live graphic curve + volume every ~2s so EQ
                 // changes and volume pills affect the processed signal live.
@@ -330,7 +330,7 @@ class CaptureEqService : Service() {
                             val snap = eng.bandLevelsSnapshot()
                             NeonDsp.setGraphicGains(FloatArray(eng.bandCount) { i -> (snap.getOrNull(i)?.toInt() ?: 0).toFloat() })
                         }
-                        track.setVolume(outVolume)
+                        track?.setVolume(outVolume)
                     } catch (t: Throwable) { }
                     // Build #118: adaptive buffer — never keep a size that
                     // continuously underruns on this device.
@@ -352,7 +352,7 @@ class CaptureEqService : Service() {
                         } catch (t: Throwable) { sr }
                         if (newSr != sr) {
                             try {
-                                track.pause(); track.flush(); track.stop(); track.release()
+                                track?.pause(); track?.flush(); track?.stop(); track?.release()
                                 val minOut2 = AudioTrack.getMinBufferSize(newSr, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
                                 val rebuilt = AudioTrack.Builder()
                                     .setAudioAttributes(
