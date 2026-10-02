@@ -1176,6 +1176,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             @Suppress("UNUSED_EXPRESSION")
             val step = { v: Int -> if (dspVer < 0) v else v }
 
+            @androidx.compose.runtime.Composable
             fun miniBtn(label: String, onClick: () -> Unit, active: Boolean = false) {
                 Button(
                     onClick = onClick,
@@ -1185,6 +1186,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     modifier = Modifier.padding(end = 4.dp)
                 ) { Text(label, fontSize = 9.sp) }
             }
+            @androidx.compose.runtime.Composable
             fun parRow(name: String, value: String, onMinus: () -> Unit, onPlus: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(name, fontSize = 10.sp, color = T.secondary, modifier = Modifier.width(64.dp))
@@ -1220,26 +1222,31 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             Spacer(Modifier.height(4.dp))
             val peqFreqs = remember { floatArrayOf(31f, 62f, 125f, 250f, 500f, 1000f, 2000f, 4000f, 8000f, 16000f) }
             dspP.slots.forEachIndexed { idx, slot ->
-                val fIdx = remember(idx, dspVer) { peqFreqs.indexOfFirst { it >= slot.freq }.let { if (it < 0) 5 else it } }
+                val fq = slot.freq
+                fun setSlot(s: com.neon.eq.dsp.PeqSlot) {
+                    dspP.slots = dspP.slots.toMutableList().also { it[idx] = s }
+                    dspP.applyTo(NeonDsp)
+                    dspP.save(engine)
+                    bump()
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     miniBtn("P" + (idx + 1) + if (slot.on) " ✓" else "",
-                        { dspP.slots[idx] = slot.copy(on = !slot.on); dspP.applyTo(NeonDsp); dspP.save(engine); bump() },
+                        { setSlot(slot.copy(on = !slot.on)) },
                         slot.on)
-                    val fq = slot.freq
                     miniBtn("F−", {
                         val i2 = (peqFreqs.indexOfFirst { it >= fq } - 1).coerceAtLeast(0)
-                        dspP.slots[idx] = slot.copy(freq = peqFreqs[i2]); dspP.applyTo(NeonDsp); dspP.save(engine); bump()
+                        setSlot(slot.copy(freq = peqFreqs[i2]))
                     })
                     miniBtn("F+", {
                         val i2 = (peqFreqs.indexOfFirst { it >= fq } + 1).coerceAtMost(peqFreqs.size - 1)
-                        dspP.slots[idx] = slot.copy(freq = peqFreqs[i2]); dspP.applyTo(NeonDsp); dspP.save(engine); bump()
+                        setSlot(slot.copy(freq = peqFreqs[i2]))
                     })
-                    Text((if (fq >= 1000) (fq / 1000).toInt() + "k" else fq.toInt().toString()) + "Hz", fontSize = 9.sp, color = T.text, modifier = Modifier.width(44.dp))
-                    miniBtn("G−", { dspP.slots[idx] = slot.copy(gain = (slot.gain - 3f).coerceIn(-30f, 30f)); dspP.applyTo(NeonDsp); dspP.save(engine); bump() })
-                    miniBtn("G+", { dspP.slots[idx] = slot.copy(gain = (slot.gain + 3f).coerceIn(-30f, 30f)); dspP.applyTo(NeonDsp); dspP.save(engine); bump() })
+                    Text((if (fq >= 1000) (fq / 1000).toInt().toString() + "k" else fq.toInt().toString()) + "Hz", fontSize = 9.sp, color = T.text, modifier = Modifier.width(44.dp))
+                    miniBtn("G−", { setSlot(slot.copy(gain = (slot.gain - 3f).coerceIn(-30f, 30f))) })
+                    miniBtn("G+", { setSlot(slot.copy(gain = (slot.gain + 3f).coerceIn(-30f, 30f))) })
                     Text((if (slot.gain >= 0) "+" else "") + slot.gain.toInt() + "dB", fontSize = 9.sp, color = T.text, modifier = Modifier.width(44.dp))
-                    miniBtn("Q−", { dspP.slots[idx] = slot.copy(q = (slot.q / 2f).coerceAtLeast(0.25f)); dspP.applyTo(NeonDsp); dspP.save(engine); bump() })
-                    miniBtn("Q+", { dspP.slots[idx] = slot.copy(q = (slot.q * 2f).coerceAtMost(10f)); dspP.applyTo(NeonDsp); dspP.save(engine); bump() })
+                    miniBtn("Q−", { setSlot(slot.copy(q = (slot.q / 2f).coerceAtLeast(0.25f))) })
+                    miniBtn("Q+", { setSlot(slot.copy(q = (slot.q * 2f).coerceAtMost(10f))) })
                 }
             }
             Text(
