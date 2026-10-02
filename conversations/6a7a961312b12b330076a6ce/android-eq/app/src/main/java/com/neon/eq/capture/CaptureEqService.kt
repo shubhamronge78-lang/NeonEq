@@ -102,19 +102,7 @@ class CaptureEqService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createChannel()
-        val openPi = PendingIntent.getActivity(
-            this, 2, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0))
-        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("NeonEQ Audio Engine Active")
-            .setContentText("Android capture path active — tap OPEN for controls")
-            .setOngoing(true)
-            .setContentIntent(openPi)
-            .addAction(0, "Pause", actionPi(ACTION_PAUSE))
-            .addAction(0, "Stop", actionPi(ACTION_STOP))
-            .build()
+        val notif = buildRichNotification()
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
@@ -360,6 +348,12 @@ class CaptureEqService : Service() {
                         }
                         track?.setVolume(outVolume)
                     } catch (t: Throwable) { }
+                    // Build #121: refresh the foreground notification with
+                    // current route + meters (mirror thread, not audio thread).
+                    try {
+                        (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                            .notify(NOTIF_ID, buildRichNotification())
+                    } catch (_: Throwable) { }
                     // Build #119: rolling-threshold escalation — a single
                     // underrun never changes the mode. Escalate only after
                     // 3 consecutive 2s windows with >5 underruns each.
@@ -480,7 +474,33 @@ class CaptureEqService : Service() {
         }
     }
 
-    private fun createChannel() {
+        // ── Build #121: rich notification (spec 32) — technical facts only,
+    // never sensitive playback information. Rebuilt every ~2s from the
+    // mirror loop (never from the audio thread). ──
+    private fun buildRichNotification(): android.app.Notification {
+        val openPi = PendingIntent.getActivity(
+            this, 2, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0))
+        val dev = try { AudioPath.outputDevice(this) } catch (_: Throwable) { "output" }
+        fun dbOf(ms: Int): String =
+            if (NeonDsp.available && ms > 0) "%.0f".format(20 * kotlin.math.log10(ms / 1000.0)) + " dB" else "-"
+        val inDb = if (NeonDsp.available) runCatching { dbOf(NeonDsp.inRmsMs()) }.getOrDefault("-") else "-"
+        val outDb = if (NeonDsp.available) runCatching { dbOf(NeonDsp.outRmsMs()) }.getOrDefault("-") else "-"
+        val state = if (bypass) "DSP BYPASS" else "DSP ACTIVE"
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("NeonEQ · " + state + " · " + (captureSampleRate / 1000) + "kHz")
+            .setContentText(dev + " · in " + inDb + " · out " + outDb + " — tap to open")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(openPi)
+            .addAction(0, "Pause", actionPi(ACTION_PAUSE))
+            .addAction(0, "Stop", actionPi(ACTION_STOP))
+            .build()
+    }
+
+private fun createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             val ch = NotificationChannel(
                 CHANNEL_ID, "System capture", NotificationManager.IMPORTANCE_LOW)

@@ -50,6 +50,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +79,7 @@ import android.content.ActivityNotFoundException
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import org.json.JSONObject
 import java.io.File
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -314,6 +317,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var limiterThr by remember { mutableStateOf(engine.limiterThresholdValue()) }
     var selectedPreset by remember { mutableStateOf(engine.selectedPresetName) }
     var customPresets by remember { mutableStateOf(engine.listCustomPresets()) }
+    var resetArmed by remember { mutableStateOf(false) }
     var showSaveDialog by remember { mutableStateOf(false) }
     var showOverwriteDialog by remember { mutableStateOf(false) }
     var pendingPresetName by remember { mutableStateOf("") }
@@ -598,6 +602,401 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
+        // ── Build #121: STATUS — the professional dashboard header ──
+        NeonCard {
+            val recentData = CaptureEqService.running &&
+                (android.os.SystemClock.elapsedRealtime() - CaptureEqService.lastDataAt) < 2500L
+            val dspChip = when {
+                !NeonDsp.available -> "DSP ERROR ✗"
+                CaptureEqService.running && CaptureEqService.bypass -> "DSP BYPASS ○"
+                SoftwareEq.lastEngineLabel?.startsWith("KOTLIN") == true -> "DSP FALLBACK !"
+                CaptureEqService.running && !CaptureEqService.bypass -> "DSP ACTIVE ✓"
+                else -> "DSP READY ✓"
+            }
+            val dspColor = when {
+                !NeonDsp.available -> T.accent
+                CaptureEqService.running && !CaptureEqService.bypass -> T.primary
+                else -> T.secondary
+            }
+            Text(dspChip, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = dspColor)
+            val capLine = when {
+                !CaptureEqService.running -> "READY — no capture session running"
+                CaptureEqService.noEligiblePlayback -> "CAPTURE BLOCKED — the source application does not permit playback capture"
+                !recentData -> "WAITING FOR PLAYBACK — play audio in another app"
+                else -> "CAPTURE ACTIVE · " + CaptureEqService.captureSampleRate + " Hz · Stereo"
+            }
+            Text(capLine, fontSize = 11.sp, color = if (CaptureEqService.running && recentData && !CaptureEqService.noEligiblePlayback) T.primary else T.secondary)
+            if (SoftwareEq.lastEngineLabel != null) {
+                Text("PLAYER ENGINE: " + SoftwareEq.lastEngineLabel, fontSize = 9.sp, color = T.secondary)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                AudioCapabilityManager.outputDeviceLine(context) + " · latency ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + " ms · buffer " + CaptureEqService.bufferMode +
+                    (CaptureEqService.lastBufferChange?.let { " (auto-changed " + it + ")" } ?: ""),
+                fontSize = 10.sp, color = T.secondary
+            )
+            if (CaptureEqService.lastError != null) {
+                Text("⚠ " + CaptureEqService.lastError!!, fontSize = 9.sp, color = T.accent)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #121: METERS — measured L/R input + output, dBFS, peak hold ──
+        NeonCard {
+            GradientText("METERS", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
+            Spacer(Modifier.height(4.dp))
+            Text("Measured from the native DSP path. Not a claim about what you physically hear.", fontSize = 8.sp, color = T.secondary)
+            Spacer(Modifier.height(6.dp))
+            var mTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(120); mTick++ } }
+            var mPeak by remember { mutableStateOf(FloatArray(8)) }
+            var mRms by remember { mutableStateOf(FloatArray(4)) }
+            var mDb by remember { mutableStateOf(FloatArray(4)) }
+            fun msToDb(ms: Int): Float = if (ms > 0) (20.0 * Math.log10(ms / 1000.0)).toFloat() else -60f
+            fun norm(db: Float): Float = ((db + 60f) / 60f).coerceIn(0f, 1f)
+            LaunchedEffect(mTick) {
+                if (mTick > 0 && NeonDsp.available) {
+                    val v = intArrayOf(
+                        NeonDsp.inLRmsMs(), NeonDsp.inRRmsMs(), NeonDsp.outLRmsMs(), NeonDsp.outRRmsMs(),
+                        NeonDsp.inLPkMs(), NeonDsp.inRPkMs(), NeonDsp.outLPkMs(), NeonDsp.outRPkMs()
+                    )
+                    mDb = FloatArray(4) { i -> msToDb(v[i]) }
+                    val rms = FloatArray(4) { i -> norm(msToDb(v[i])) }
+                    mRms = rms
+                    val pk = FloatArray(8) { i ->
+                        val cur = if (i < 4) rms[i] else norm(msToDb(v[i + 4]))
+                        maxOf(mPeak[i] - 0.012f, cur)
+                    }
+                    mPeak = pk
+                }
+            }
+            val labels = listOf("INPUT L", "INPUT R", "OUTPUT L", "OUTPUT R")
+            val clip = (if (NeonDsp.available) runCatching { NeonDsp.clipCount() }.getOrDefault(0L) else 0L) > 0
+            Column {
+                labels.forEachIndexed { i, label ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+                        Text(label, fontSize = 9.sp, color = T.secondary, modifier = Modifier.width(64.dp))
+                        Canvas(modifier = Modifier.weight(1f).height(12.dp).semantics { contentDescription = label + " level" }) {
+                            val w = size.width
+                            val h = size.height
+                            drawRoundRect(color = T.secondary.copy(alpha = 0.15f), size = androidx.compose.ui.geometry.Size(w, h), cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f))
+                            if (mRms[i] > 0.001f) {
+                                drawRoundRect(color = if (i < 2) T.primary else T.accent, size = androidx.compose.ui.geometry.Size(w * mRms[i], h), cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f))
+                            }
+                            val px = w * mPeak[i]
+                            drawLine(color = Color.White.copy(alpha = 0.8f), start = androidx.compose.ui.geometry.Offset(px, 0f), end = androidx.compose.ui.geometry.Offset(px, h), strokeWidth = 2f)
+                            if (mRms[i] > 0.999f) {
+                                drawLine(color = T.accent, start = androidx.compose.ui.geometry.Offset(w - 3f, 0f), end = androidx.compose.ui.geometry.Offset(w - 3f, h), strokeWidth = 3f)
+                            }
+                        }
+                        Text(
+                            (if (mDb[i] <= -60f) "-∞" else "%.1f dB".format(mDb[i])),
+                            fontSize = 9.sp, color = T.secondary, modifier = Modifier.width(62.dp), textAlign = TextAlign.End
+                        )
+                    }
+                }
+            }
+            if (clip) Text("⚠ CLIPPING DETECTED", fontSize = 9.sp, color = T.accent)
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #121: SPECTRUM — real-time FFT of the live signal ──
+        NeonCard {
+            GradientText("SPECTRUM", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
+            Spacer(Modifier.height(4.dp))
+            var spTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(100); spTick++ } }
+            var spBars by remember { mutableStateOf(FloatArray(48)) }
+            var spHold by remember { mutableStateOf(FloatArray(48)) }
+            var spSmooth by remember { mutableStateOf(true) }
+            var spPeakHold by remember { mutableStateOf(true) }
+            val spActive = NeonDsp.available && runCatching { NeonDsp.inRmsMs() > 0 || NeonDsp.outRmsMs() > 0 }.getOrDefault(false)
+            LaunchedEffect(spTick) {
+                if (spTick > 0 && NeonDsp.available && spActive) {
+                    val cur = FloatArray(48)
+                    try { NeonDsp.spectrum(cur) } catch (_: Throwable) { }
+                    val nb = spBars.copyOf()
+                    for (i in 0 until 48) nb[i] = if (spSmooth) nb[i] * 0.55f + cur[i] * 0.45f else cur[i]
+                    spBars = nb
+                    val nh = spHold.copyOf()
+                    for (i in 0 until 48) nh[i] = maxOf(nh[i] * 0.985f, nb[i])
+                    spHold = nh
+                }
+            }
+            Canvas(modifier = Modifier.fillMaxWidth().height(110.dp).semantics { contentDescription = "Spectrum analyzer, 20 hertz to 20 kilohertz" }) {
+                val w = size.width
+                val h = size.height
+                val topPad = 6f
+                val barW = w / 48f
+                for (g in 1..3) {
+                    val y = topPad + (h - topPad) * g / 4f
+                    drawLine(color = T.secondary.copy(alpha = 0.15f), start = androidx.compose.ui.geometry.Offset(0f, y), end = androidx.compose.ui.geometry.Offset(w, y), strokeWidth = 1f)
+                }
+                for (i in 0 until 48) {
+                    val bh = (h - topPad) * spBars[i]
+                    if (bh > 1f) {
+                        drawRoundRect(
+                            color = T.primary.copy(alpha = 0.9f),
+                            topLeft = androidx.compose.ui.geometry.Offset(i * barW + 1f, h - bh),
+                            size = androidx.compose.ui.geometry.Size(barW - 2f, bh),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
+                        )
+                    }
+                    if (spPeakHold && spHold[i] > 0.02f) {
+                        val y = h - (h - topPad) * spHold[i]
+                        drawLine(color = T.accent, start = androidx.compose.ui.geometry.Offset(i * barW + 1f, y), end = androidx.compose.ui.geometry.Offset((i + 1) * barW - 1f, y), strokeWidth = 1.5f)
+                    }
+                }
+            }
+            if (!spActive) {
+                Text("no signal — play audio to see the spectrum", fontSize = 9.sp, color = T.secondary)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("SMOOTHING", fontSize = 9.sp, color = if (spSmooth) T.primary else T.secondary,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).background((if (spSmooth) T.primary else T.secondary).copy(alpha = 0.12f)).clickable { spSmooth = !spSmooth }.padding(horizontal = 8.dp, vertical = 3.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("PEAK HOLD", fontSize = 9.sp, color = if (spPeakHold) T.accent else T.secondary,
+                    modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background((if (spPeakHold) T.accent else T.secondary).copy(alpha = 0.12f)).clickable { spPeakHold = !spPeakHold }.padding(horizontal = 8.dp, vertical = 3.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("20 Hz – 20 kHz · log", fontSize = 8.sp, color = T.secondary)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #121: OUTPUT — route, format, latency, buffer at a glance ──
+        NeonCard {
+            GradientText("OUTPUT", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+            Spacer(Modifier.height(4.dp))
+            val routeIcon = when {
+                AudioCapabilityManager.btConnected(context) -> "◉ Bluetooth"
+                AudioCapabilityManager.usbConnected(context) -> "▤ USB Audio"
+                AudioCapabilityManager.wiredConnected(context) -> "♪ Wired Headphones"
+                else -> "▷ Phone Speaker"
+            }
+            Text(routeIcon, fontSize = 13.sp, color = T.primary)
+            Text(
+                AudioCapabilityManager.suggestedSampleRate(context) + " Hz · " + AudioCapabilityManager.channelsLine() +
+                    " · buffer " + CaptureEqService.bufferMode + " · " + "%.0f".format(CaptureEqService.captureBufferMs) + " ms",
+                fontSize = 10.sp, color = T.secondary
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "LATENCY (estimated)\n" +
+                "  capture      " + "%.1f".format(CaptureEqService.capLatencyMs) + " ms\n" +
+                "  dsp          " + "%.1f".format(CaptureEqService.dspMs) + " ms\n" +
+                "  output       " + "%.1f".format(CaptureEqService.outLatencyMs) + " ms\n" +
+                "  pipeline     ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + " ms",
+                fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp
+            )
+            Text("Estimates from buffer sizes and measured processing time — Android provides no exact end-to-end latency API.", fontSize = 8.sp, color = T.secondary)
+            if (CaptureEqService.oldRouteLine != null) {
+                Text("ROUTE CHANGED: " + CaptureEqService.oldRouteLine + " → " + AudioCapabilityManager.outputDeviceLine(context), fontSize = 9.sp, color = T.accent)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #121: QUICK DSP — collapsible atomic toggles (same engine, no parallel pipelines) ──
+        NeonCard {
+            var qcOpen by remember { mutableStateOf(false) }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { qcOpen = !qcOpen }) {
+                GradientText("QUICK DSP", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
+                Spacer(Modifier.weight(1f))
+                Text(if (qcOpen) "▲" else "▼", fontSize = 10.sp, color = T.secondary)
+            }
+            if (qcOpen) {
+                Spacer(Modifier.height(4.dp))
+                Text("Toggles map to the same native chain through atomic commits. A toggle stores your current value and restores it exactly.", fontSize = 8.sp, color = T.secondary)
+                Spacer(Modifier.height(6.dp))
+                var qcBase by remember { mutableStateOf<DspParams?>(null) }
+                var qcEqBands by remember { mutableStateOf<FloatArray?>(null) }
+                var qcDspOn by remember { mutableStateOf(true) }
+                var qcEqOn by remember { mutableStateOf(true) }
+                var qcBassOn by remember { mutableStateOf(true) }
+                var qcTrebleOn by remember { mutableStateOf(true) }
+                var qcStereoOn by remember { mutableStateOf(true) }
+                var qcLimOn by remember { mutableStateOf(true) }
+                fun qcPush() {
+                    val base = qcBase ?: DspParams.load(engine).also { qcBase = it }
+                    val p = DspParams()
+                    p.preamp = base.preamp
+                    p.bass = if (qcBassOn) base.bass else 0f
+                    p.treble = if (qcTrebleOn) base.treble else 0f
+                    p.width = if (qcStereoOn) base.width else 1f
+                    p.balance = base.balance
+                    p.mono = base.mono
+                    p.swap = base.swap
+                    p.compOn = base.compOn
+                    p.compThresh = base.compThresh
+                    p.limiterOn = qcLimOn
+                    p.limThresh = base.limThresh
+                    p.slots = if (qcEqOn) base.slots else List(8) { PeqSlot() }
+                    p.applyTo(NeonDsp)
+                    if (!qcEqOn) {
+                        if (qcEqBands == null) qcEqBands = bandLevels.copyOf()
+                        NeonDsp.setGraphicGains(FloatArray(engine.bandCount) { 0f })
+                    } else if (qcEqBands != null) {
+                        NeonDsp.setGraphicGains(qcEqBands!!)
+                        qcEqBands = null
+                    }
+                }
+                Row {
+                    Text(if (qcDspOn) "DSP ✓ ON" else "DSP ○ OFF (capture bypass)", fontSize = 10.sp, color = if (qcDspOn) T.primary else T.accent,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.10f)).clickable { qcDspOn = !qcDspOn; CaptureEqService.bypass = !qcDspOn }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle DSP" })
+                    Text(if (qcEqOn) "EQ ✓" else "EQ ✗", fontSize = 10.sp, color = if (qcEqOn) T.primary else T.accent,
+                        modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.10f)).clickable { qcEqOn = !qcEqOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle EQ" })
+                    Text(if (qcBassOn) "BASS ✓" else "BASS ✗", fontSize = 10.sp, color = if (qcBassOn) T.primary else T.accent,
+                        modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.10f)).clickable { qcBassOn = !qcBassOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle bass" })
+                }
+                Row(modifier = Modifier.padding(top = 4.dp)) {
+                    Text(if (qcTrebleOn) "TREBLE ✓" else "TREBLE ✗", fontSize = 10.sp, color = if (qcTrebleOn) T.primary else T.accent,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.10f)).clickable { qcTrebleOn = !qcTrebleOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle treble" })
+                    Text(if (qcStereoOn) "STEREO ✓" else "STEREO ✗", fontSize = 10.sp, color = if (qcStereoOn) T.primary else T.accent,
+                        modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.10f)).clickable { qcStereoOn = !qcStereoOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle stereo width" })
+                    Text(if (qcLimOn) "LIMITER ✓" else "LIMITER ✗", fontSize = 10.sp, color = if (qcLimOn) T.primary else T.accent,
+                        modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f)).clickable { qcLimOn = !qcLimOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle limiter" })
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #121: PERFORMANCE — compact live counters ──
+        NeonCard {
+            var perfTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); perfTick++ } }
+            GradientText("PERFORMANCE", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.accent)))
+            Spacer(Modifier.height(4.dp))
+            val clipN = if (NeonDsp.available) runCatching { NeonDsp.clipCount() }.getOrDefault(0L) else 0L
+            val nanN = if (NeonDsp.available) runCatching { NeonDsp.nanCount() }.getOrDefault(0L) else 0L
+            val sessSec = if (CaptureEqService.running && CaptureEqService.sessionStartedAt > 0)
+                (android.os.SystemClock.elapsedRealtime() - CaptureEqService.sessionStartedAt) / 1000 else 0L
+            val framesIn = CaptureEqService.framesCaptured
+            val framesOut = CaptureEqService.framesDone
+            Text(
+                "DSP CPU " + "%.1f".format(CaptureEqService.dspLoadPct) + "% · loop " + "%.1f".format(CaptureEqService.loopMs) + " ms · session " + sessSec + "s\n" +
+                "frames in " + framesIn + " · out " + framesOut + "\n" +
+                "underruns " + CaptureEqService.underruns + " · clips " + clipN + " · NaN events " + nanN + "\n" +
+                "route changes " + CaptureEqService.sessionRouteChanges + " · buffer changes " + CaptureEqService.sessionBufferChanges,
+                fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #121: AUDIO HEALTH — plain-language pass/fail, error codes in details ──
+        NeonCard {
+            GradientText("AUDIO HEALTH", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
+            Spacer(Modifier.height(4.dp))
+            var healthDetail by remember { mutableStateOf(false) }
+            val recentData = CaptureEqService.running &&
+                (android.os.SystemClock.elapsedRealtime() - CaptureEqService.lastDataAt) < 2500L
+            val hCap = when {
+                !CaptureEqService.running -> "—"
+                CaptureEqService.noEligiblePlayback -> "⚠ CAPTURE — source application does not permit capture"
+                recentData -> "✓ CAPTURE"
+                else -> "○ CAPTURE — waiting"
+            }
+            val hDsp = when {
+                !NeonDsp.available -> "✗ DSP — native library unavailable"
+                CaptureEqService.bypass -> "○ DSP — bypassed (A/B or quick toggle)"
+                CaptureEqService.running && recentData -> "✓ DSP"
+                else -> "✓ DSP — ready"
+            }
+            val hOut = if (CaptureEqService.framesDone > 0) "✓ OUTPUT" else "— OUTPUT"
+            val hBuf = if (CaptureEqService.underruns > 0) "⚠ BUFFER — " + CaptureEqService.underruns + " underruns" else "✓ BUFFER"
+            val hRoute = if (CaptureEqService.lastError?.startsWith("OUTPUT_ROUTE_CHANGED") == true) "⚠ ROUTE — rebuilding" else "✓ ROUTE"
+            Text(hCap + "\n" + hDsp + "\n" + hOut + "\n" + hBuf + "\n" + hRoute, fontSize = 11.sp, color = T.secondary, lineHeight = 16.sp)
+            if (CaptureEqService.lastError != null) {
+                Text(
+                    if (healthDetail) "VIEW DETAILS ▲" else "VIEW DETAILS ▼",
+                    fontSize = 10.sp, color = T.accent,
+                    modifier = Modifier.clickable { healthDetail = !healthDetail }.padding(vertical = 2.dp)
+                )
+                if (healthDetail) {
+                    Text("Error layer: " + CaptureEqService.lastError, fontSize = 9.sp, color = T.accent)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #121: SESSIONS — local history from the recorded session log ──
+        NeonCard {
+            GradientText("SESSIONS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+            Spacer(Modifier.height(4.dp))
+            var sessTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(3000); sessTick++ } }
+            var sessSel by remember { mutableStateOf(-1) }
+            val sessCtx = LocalContext.current
+            val sessLines = try {
+                val f = File(sessCtx.filesDir, "sessions.jsonl")
+                if (f.exists()) f.readLines().takeLast(4).reversed() else emptyList()
+            } catch (t: Throwable) { emptyList<String>() }
+            if (sessLines.isEmpty()) {
+                Text("No capture sessions recorded yet — technical counters only, never audio.", fontSize = 9.sp, color = T.secondary)
+            }
+            sessLines.forEachIndexed { li, line ->
+                try {
+                    val o = JSONObject(line)
+                    val verdict = when {
+                        o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 && !o.optBoolean("bypass") -> "SIGNAL PATH ACTIVE"
+                        o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 -> "SIGNAL PATH ACTIVE (RAW)"
+                        o.optLong("frames_cap") > 0 -> "CAPTURE → DSP CONNECTION FAILURE"
+                        else -> "NO ELIGIBLE PLAYBACK"
+                    }
+                    val tMs = System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - o.optLong("start_ms", 0L))
+                    Text(
+                        java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(tMs)) +
+                            " · " + (o.optInt("sr") / 1000) + "kHz · " + o.optString("route") + " — " + verdict,
+                        fontSize = 10.sp,
+                        color = if (verdict.startsWith("SIGNAL PATH ACTIVE")) T.primary else T.secondary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { sessSel = if (sessSel == li) -1 else li }
+                            .padding(vertical = 3.dp)
+                            .semantics { contentDescription = "Session " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(tMs)) + ", " + verdict }
+                    )
+                    if (sessSel == li) {
+                        Text(
+                            "VERDICT: " + verdict + "\n" +
+                            "duration " + o.optLong("dur_ms") / 1000 + "s · route changes " + o.optInt("route_changes") + " · buffer changes " + o.optInt("buffer_changes") + "\n" +
+                            "cap " + o.optLong("frames_cap") + " · rec " + o.optLong("frames_rec") + " · jni " + o.optLong("frames_jni") + " · dsp " + o.optLong("frames_dsp") + " · out " + o.optLong("frames_out") + "\n" +
+                            "underruns " + o.optLong("underruns") + " · clips " + o.optLong("clips") + " · NaN " + o.optLong("nan") + " · dsp cpu " + (o.optInt("dsp_cpu") / 10.0) + "%" + "\n" +
+                            "error: " + o.optString("error", "none"),
+                            fontSize = 9.sp, color = T.secondary, lineHeight = 13.sp
+                        )
+                    }
+                } catch (t: Throwable) { }
+            }
+            Text(
+                "EXPORT DIAGNOSTICS",
+                fontSize = 10.sp, color = T.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(T.primary.copy(alpha = 0.10f))
+                    .clickable {
+                        try {
+                            val file = File(sessCtx.cacheDir, "neoneq_sessions.txt")
+                            file.writeText(AudioCapabilityManager.exportSessions(sessCtx))
+                            val uri = FileProvider.getUriForFile(sessCtx, sessCtx.packageName + ".fileprovider", file)
+                            sessCtx.startActivity(Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }, "Share session diagnostics"))
+                        } catch (t: Throwable) { }
+                    }
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
         // ── Presets ──
         NeonCard {
         Row(
@@ -608,7 +1007,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("PRESETS", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
             Row {
                 Text(
-                    "↺ Reset All",
+                    if (resetArmed) "↺ TAP AGAIN TO CONFIRM" else "↺ Reset All",
                     fontSize = 11.sp,
                     color = T.accent,
                     modifier = Modifier
@@ -616,11 +1015,23 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         .clip(RoundedCornerShape(50))
                         .background(T.accent.copy(alpha = 0.10f))
                         .clickable {
-                        animateLevelsTo(FloatArray(31) { 0f })
-                        selectedPreset = "Flat"
-                        engine.setSelectedPresetName("Flat")
-                        bassBoost = 0; virtualizer = 0; loudness = 0
-                        engine.applyFullState(ShortArray(31) { 0 }, 0, 0, 0, smooth = true)
+                        if (resetArmed) {
+                            resetArmed = false
+                            // RESET TO FLAT — restores DSP chain defaults; saved presets untouched
+                            animateLevelsTo(FloatArray(31) { 0f })
+                            selectedPreset = "Flat"
+                            engine.setSelectedPresetName("Flat")
+                            bassBoost = 0; virtualizer = 0; loudness = 0
+                            engine.applyFullState(ShortArray(31) { 0 }, 0, 0, 0, smooth = true)
+                            try {
+                                val flat = com.neon.eq.dsp.DspParams()
+                                flat.applyTo(com.neon.eq.dsp.NeonDsp)
+                                flat.save(engine)
+                            } catch (t: Throwable) { }
+                            Toast.makeText(context, "Reset to flat — saved presets kept", Toast.LENGTH_SHORT).show()
+                        } else {
+                            resetArmed = true
+                        }
                     }
                 )
                 Spacer(Modifier.width(12.dp))
@@ -765,6 +1176,31 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         containerColor = if (bandCount == n) T.primary else T.accent),
                     modifier = Modifier.padding(end = 6.dp)
                 ) { Text("$n", fontSize = 9.sp) }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        // Build #121: quick preset strip — one tap applies, never interrupts playback
+        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(com.neon.eq.engine.Presets.BUILTIN_QUICK.size) { qi ->
+                val (qname, _) = com.neon.eq.engine.Presets.BUILTIN_QUICK[qi]
+                Text(
+                    qname,
+                    fontSize = 10.sp,
+                    color = if (selectedPreset == qname) T.primary else T.secondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background((if (selectedPreset == qname) T.primary else T.secondary).copy(alpha = 0.12f))
+                        .clickable {
+                            val lv = com.neon.eq.engine.Presets.builtinForCount(qname, bandCount)
+                            animateLevelsTo(FloatArray(31) { i -> (lv.getOrNull(i)?.toInt() ?: 0).toFloat() })
+                            selectedPreset = qname
+                            engine.setSelectedPresetName(qname)
+                            engine.applyFullState(ShortArray(31) { i -> lv.getOrNull(i) ?: 0 }, bassBoost, virtualizer, loudness, smooth = true)
+                            Toast.makeText(context, "Preset applied: " + qname, Toast.LENGTH_SHORT).show()
+                        }
+                        .semantics { contentDescription = "Apply preset " + qname }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -2279,7 +2715,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #120",
+                        "Neon EQ · Build #121",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

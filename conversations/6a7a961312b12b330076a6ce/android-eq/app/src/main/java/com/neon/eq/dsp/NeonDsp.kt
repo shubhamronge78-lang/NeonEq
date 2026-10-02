@@ -41,6 +41,17 @@ object NeonDsp {
     external fun inPeakMs(): Int
     external fun outRmsMs(): Int
     external fun outPeakMs(): Int
+    // Build #121: per-channel meters + spectrum analyzer (analysis runs on caller thread)
+    external fun inLRmsMs(): Int
+    external fun inRRmsMs(): Int
+    external fun inLPkMs(): Int
+    external fun inRPkMs(): Int
+    external fun outLRmsMs(): Int
+    external fun outRRmsMs(): Int
+    external fun outLPkMs(): Int
+    external fun outRPkMs(): Int
+    /** Fills [bins] with normalized log-frequency magnitudes (0..1). UI thread only. */
+    external fun spectrum(bins: FloatArray)
     external fun processedFrames(): Long
     external fun resetStats()
 }

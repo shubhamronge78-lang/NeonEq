@@ -55,6 +55,41 @@ object Presets {
     // preset as-is. The resample path stays for user-saved custom presets
     // created under the old variable band counts (5-31 slots) so they map
     // cleanly onto the 10-band curve instead of truncating.
+    // ── Build #121: safe built-in quick presets (10-band dB levels) ──
+    val BUILTIN_QUICK: List<Pair<String, IntArray>> = listOf(
+        "Flat" to intArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        "Bass Boost" to intArrayOf(7, 6, 5, 2, 0, 0, 0, 0, 0, 0),
+        "Treble Boost" to intArrayOf(0, 0, 0, 0, 0, 1, 2, 4, 5, 6),
+        "Vocal" to intArrayOf(-2, -1, 0, 2, 4, 4, 3, 2, 0, -1),
+        "Rock" to intArrayOf(5, 4, 3, 1, -1, -1, 1, 3, 4, 5),
+        "Pop" to intArrayOf(0, 1, 3, 4, 4, 3, 1, 0, -1, -2),
+        "Classical" to intArrayOf(4, 3, 2, 1, -1, -1, 0, 2, 3, 4),
+        "Electronic" to intArrayOf(6, 5, 3, 0, -2, 1, 0, 3, 4, 5),
+        "Acoustic" to intArrayOf(3, 2, 1, 1, 2, 1, 2, 3, 2, 1),
+        "Podcast" to intArrayOf(-3, -2, 0, 2, 4, 4, 3, 1, -1, -2),
+        "Movie" to intArrayOf(5, 4, 2, 1, 0, 0, 1, 2, 3, 3)
+    )
+
+    /** Resample a 10-band built-in to any band count (log-frequency spacing). */
+    fun builtinForCount(name: String, count: Int): ShortArray {
+        val base = BUILTIN_QUICK.firstOrNull { it.first == name }?.second ?: return ShortArray(count)
+        val freqs10 = doubleArrayOf(31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0)
+        val out = ShortArray(count)
+        for (i in 0 until count) {
+            val f = 20.0 * Math.pow(1000.0, i.toDouble() / (count - 1).coerceAtLeast(1).toDouble())
+            val lo = freqs10.indexOfFirst { it >= f }
+            out[i] = when {
+                lo <= 0 -> base[0].toShort()
+                lo >= 10 -> base[9].toShort()
+                else -> {
+                    val t = (f - freqs10[lo - 1]) / (freqs10[lo] - freqs10[lo - 1])
+                    (base[lo - 1] + t * (base[lo] - base[lo - 1])).toInt().toShort()
+                }
+            }
+        }
+        return out
+    }
+
     fun levelsForCount(preset: Preset, count: Int): ShortArray {
         val src = preset.levels
         if (src.isEmpty()) return ShortArray(count)

@@ -54,6 +54,14 @@ static long nanEvents = 0;
 static long jniFramesIn = 0;   /* frames handed to the JNI process() entry */
 static int inRmsMs = 0, inPeakMs = 0;    /* pre-DSP meters, 0..1000 units */
 static int outRmsMs = 0, outPeakMs = 0; /* post-DSP meters, 0..1000 units */
+/* Build #121: per-channel meters (L/R) for the dashboard */
+static int inLRmsMs = 0, inRRmsMs = 0, inLPkMs = 0, inRPkMs = 0;
+static int outLRmsMs = 0, outRRmsMs = 0, outLPkMs = 0, outRPkMs = 0;
+/* Build #121: spectrum snapshot ring — audio thread does only a bounded
+   O(n) mono-mix store; ALL analysis (FFT, band mapping) runs on the caller
+   (UI) thread inside the spectrum() getter. Never on the audio thread. */
+static short specSnap[2048];
+static int specIdx = 0;
 
 static const double F10[10] = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
 static const double F15[15] = {25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000};
@@ -124,6 +132,35 @@ static inline double runB(Biquad* f, double x) {
     double y = f->b0 * x + f->b1 * f->x1 + f->b2 * f->x2 - f->a1 * f->y1 - f->a2 * f->y2;
     f->x2 = f->x1; f->x1 = x; f->y2 = f->y1; f->y1 = y;
     return y;
+}
+
+/* Build #121: 1024-point radix-2 FFT for the spectrum analyzer.
+   Called ONLY from the spectrum() JNI getter (UI thread), never from the
+   audio callback. */
+static void fft1024(float* re, float* im) {
+    int n = 1024, i, j, bit;
+    for (i = 1, j = 0; i < n; i++) {
+        bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { float t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+        float ang = -6.2831853f / (float) len;
+        float wr = cosf(ang), wi = sinf(ang);
+        for (i = 0; i < n; i += len) {
+            float cr = 1.0f, ci = 0.0f;
+            for (j = 0; j < len / 2; j++) {
+                float ur = re[i + j], ui = im[i + j];
+                float ar = re[i + j + len / 2], ai = im[i + j + len / 2];
+                float vr = ar * cr - ai * ci;
+                float vi = ar * ci + ai * cr;
+                re[i + j] = ur + vr; im[i + j] = ui + vi;
+                re[i + j + len / 2] = ur - vr; im[i + j + len / 2] = ui - vi;
+                float ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+            }
+        }
+    }
 }
 
 static void applyPendingParams() {
@@ -391,30 +428,54 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
     applyPendingParams();   /* whole-block commit: audio never sees partial configs */
     /* input meters — measured on raw captured PCM BEFORE any processing */
     {
-        double sum = 0.0; int pk = 0;
-        for (int i = 0; i < frames * 2; i++) {
-            int s = (int) p[i];
-            int a = s < 0 ? -s : s;
-            if (a > pk) pk = a;
-            sum += (double) s * (double) s;
+        double sum = 0.0, sumL = 0.0, sumR = 0.0; int pk = 0, pkL = 0, pkR = 0;
+        for (int i = 0; i < frames; i++) {
+            int l = (int) p[2 * i], r = (int) p[2 * i + 1];
+            int al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
+            if (al > pkL) pkL = al;
+            if (ar > pkR) pkR = ar;
+            if (al > pk) pk = al;
+            if (ar > pk) pk = ar;
+            sum += (double) l * (double) l + (double) r * (double) r;
+            sumL += (double) l * (double) l;
+            sumR += (double) r * (double) r;
         }
         double rms = sqrt(sum / (frames * 2.0));
         inRmsMs = (int) ((rms * 1000.0) / 32768.0);
         inPeakMs = (pk * 1000) / 32768;
+        inLRmsMs = (int) ((sqrt(sumL / frames) * 1000.0) / 32768.0);
+        inRRmsMs = (int) ((sqrt(sumR / frames) * 1000.0) / 32768.0);
+        inLPkMs = (pkL * 1000) / 32768;
+        inRPkMs = (pkR * 1000) / 32768;
+        /* spectrum snapshot ring: bounded O(n) mono mix, no allocation,
+           no locks — analysis happens on the UI thread in spectrum() */
+        for (int i = 0; i < frames; i++) {
+            specSnap[specIdx] = (short) (((int) p[2 * i] + (int) p[2 * i + 1]) >> 1);
+            if (++specIdx >= 2048) specIdx = 0;
+        }
     }
     for (int i = 0; i < frames; i++) processFrame(p + 2 * i);
     /* output meters — measured AFTER the full DSP chain */
     {
-        double sum = 0.0; int pk = 0;
-        for (int i = 0; i < frames * 2; i++) {
-            int s = (int) p[i];
-            int a = s < 0 ? -s : s;
-            if (a > pk) pk = a;
-            sum += (double) s * (double) s;
+        double sum = 0.0, sumL = 0.0, sumR = 0.0; int pk = 0, pkL = 0, pkR = 0;
+        for (int i = 0; i < frames; i++) {
+            int l = (int) p[2 * i], r = (int) p[2 * i + 1];
+            int al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
+            if (al > pkL) pkL = al;
+            if (ar > pkR) pkR = ar;
+            if (al > pk) pk = al;
+            if (ar > pk) pk = ar;
+            sum += (double) l * (double) l + (double) r * (double) r;
+            sumL += (double) l * (double) l;
+            sumR += (double) r * (double) r;
         }
         double rms = sqrt(sum / (frames * 2.0));
         outRmsMs = (int) ((rms * 1000.0) / 32768.0);
         outPeakMs = (pk * 1000) / 32768;
+        outLRmsMs = (int) ((sqrt(sumL / frames) * 1000.0) / 32768.0);
+        outRRmsMs = (int) ((sqrt(sumR / frames) * 1000.0) / 32768.0);
+        outLPkMs = (pkL * 1000) / 32768;
+        outRPkMs = (pkR * 1000) / 32768;
     }
     env->ReleasePrimitiveArrayCritical(buf, p, 0);
 }
@@ -446,5 +507,59 @@ Java_com_neon_eq_dsp_NeonDsp_outRmsMs(JNIEnv* env, jobject thiz) { return outRms
 
 JNIEXPORT jint JNICALL
 Java_com_neon_eq_dsp_NeonDsp_outPeakMs(JNIEnv* env, jobject thiz) { return outPeakMs; }
+
+/* Build #121: per-channel meters */
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_inLRmsMs(JNIEnv* e, jobject t) { return inLRmsMs; }
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_inRRmsMs(JNIEnv* e, jobject t) { return inRRmsMs; }
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_inLPkMs(JNIEnv* e, jobject t) { return inLPkMs; }
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_inRPkMs(JNIEnv* e, jobject t) { return inRPkMs; }
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_outLRmsMs(JNIEnv* e, jobject t) { return outLRmsMs; }
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_outRRmsMs(JNIEnv* e, jobject t) { return outRRmsMs; }
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_outLPkMs(JNIEnv* e, jobject t) { return outLPkMs; }
+JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_outRPkMs(JNIEnv* e, jobject t) { return outRPkMs; }
+
+/* Build #121: spectrum analyzer — fills `out` (n bins) with normalized
+   log-frequency magnitudes (20Hz..20kHz, 0.0..1.0, -66dBFS floor).
+   Runs entirely on the CALLER's thread; the audio callback only maintains
+   the cheap snapshot ring. */
+JNIEXPORT void JNICALL
+Java_com_neon_eq_dsp_NeonDsp_spectrum(JNIEnv* env, jobject thiz, jfloatArray out) {
+    jsize n = env->GetArrayLength(out);
+    if (n < 4) return;
+    jfloat* dst = env->GetFloatArrayElements(out, NULL);
+    if (dst == NULL) return;
+    static float re[1024], im[1024];
+    double binHz = sr / 1024.0;
+    int i;
+    /* assemble oldest-first window and apply Hann */
+    for (i = 0; i < 1024; i++) {
+        int idx = (specIdx + i) & 2047;
+        float s = (float) specSnap[idx] / 32768.0f;
+        re[i] = s * (0.5f - 0.5f * cosf(6.2831853f * (float) i / 1024.0f));
+        im[i] = 0.0f;
+    }
+    fft1024(re, im);
+    const double fMin = 20.0, fMax = 20000.0;
+    int prevBin = 1;
+    for (int b = 0; b < n; b++) {
+        double f0 = fMin * pow(fMax / fMin, (double) b / n);
+        double f1 = fMin * pow(fMax / fMin, (double) (b + 1) / n);
+        int bin0 = (int) (f0 / binHz); if (bin0 < 1) bin0 = 1;
+        int bin1 = (int) (f1 / binHz); if (bin1 <= bin0) bin1 = bin0 + 1;
+        if (bin1 > 512) bin1 = 512;
+        float mag = 0.0f;
+        for (int k = bin0; k < bin1 && k <= 512; k++) {
+            float m = sqrtf(re[k] * re[k] + im[k] * im[k]);
+            if (m > mag) mag = m;
+        }
+        double db = 20.0 * log10((double) mag + 1e-9);
+        double v = (db + 66.0) / 66.0;
+        if (v < 0.0) v = 0.0; else if (v > 1.0) v = 1.0;
+        dst[b] = (jfloat) v;
+        prevBin = bin1;
+    }
+    (void) prevBin;
+    env->ReleaseFloatArrayElements(out, dst, 0);
+}
 
 } /* extern "C" */
