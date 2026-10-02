@@ -307,9 +307,9 @@ object AudioCapabilityManager {
         sb.append("Native DSP: ").append(dspSelfTest()).append('\n')
         for (rate in intArrayOf(44100, 48000, 96000)) {
             sb.append("Output @ ").append(rate).append("Hz: ")
-                .append(if (audioTrack(rate) == CapState.SUPPORTED) "SUPPORTED" else "UNSUPPORTED by this device/route").append(''\n'')
+                .append(if (audioTrack(rate) == CapState.SUPPORTED) "SUPPORTED" else "UNSUPPORTED by this device/route").append('\n')
         }
-        sb.append("(Pitch/latency at each rate needs an on-device listening check — no public API measures end-to-end audio path.)").append(''\n'')
+        sb.append("(Pitch/latency at each rate needs an on-device listening check — no public API measures end-to-end audio path.)").append('\n')
         sb.append("=== CURRENT ROUTE ===\n")
         sb.append("Speaker: PRESENT\n")
         sb.append("Wired: ").append(if (wiredConnected(ctx)) "CONNECTED" else "not connected").append('\n')
