@@ -1265,7 +1265,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             Text("CAPTURE MODE", fontSize = 10.sp, color = T.accent)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Android 10+ public API: NeonEQ captures other apps' playback with your consent (MediaProjection), processes it through the shared native DSP, and plays the result. This is the legitimate Android capture path, available identically on every brand — Samsung, Xiaomi, OnePlus, OPPO, Motorola, Pixel and all others.
+                "Android 10+ public API: NeonEQ captures other apps' playback with your consent (MediaProjection), processes it through the shared native DSP, and plays the result. This is the legitimate Android capture path, available identically on every brand — Samsung, Xiaomi, OnePlus, OPPO, Motorola, Pixel and all others.",
                 fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
             )
             Spacer(Modifier.height(6.dp))
