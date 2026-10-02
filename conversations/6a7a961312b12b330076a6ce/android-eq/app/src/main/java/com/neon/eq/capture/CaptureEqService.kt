@@ -157,7 +157,6 @@ class CaptureEqService : Service() {
                 .setBufferSizeInBytes(maxOf(minOut * 2, 16384))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
-            try { track.performanceMode = AudioTrack.PERFORMANCE_MODE_LOW_LATENCY } catch (t: Throwable) { }
 
             // Mirror the live engine curve into the native DSP chain.
             try {
