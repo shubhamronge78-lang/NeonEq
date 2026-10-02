@@ -1166,7 +1166,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             )
             Spacer(Modifier.height(6.dp))
             val mpm = remember {
-                try { capCtx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? android.media.MediaProjectionManager } catch (t: Throwable) { null }
+                try { capCtx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? android.media.projection.MediaProjectionManager } catch (t: Throwable) { null }
             }
             val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
                 if (res.resultCode == android.app.Activity.RESULT_OK && res.data != null) {

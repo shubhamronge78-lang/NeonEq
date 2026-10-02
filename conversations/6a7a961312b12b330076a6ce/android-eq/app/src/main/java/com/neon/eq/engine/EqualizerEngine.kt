@@ -2050,6 +2050,10 @@ class EqualizerEngine private constructor(context: Context) {
         try { prefs.edit().putString("music_folder_uri", uri).apply() } catch (_: Throwable) { }
     }
 
+    // Build #116: read-only snapshots for the native DSP mirror (capture path).
+    fun bandLevelsSnapshot(): ShortArray = try { currentBandLevels.copyOf() } catch (t: Throwable) { ShortArray(31) }
+    fun currentLoudnessLevel(): Int = currentLoudness
+
     // Build #115: PLAYER output volume (Poweramp DVC-style, on our own stream).
     fun getPlayerVolume(): Float = try { prefs.getFloat("player_volume", 1f) } catch (_: Throwable) { 1f }
     fun setPlayerVolume(v: Float) {

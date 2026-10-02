@@ -12,8 +12,8 @@ import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.AudioTrack
-import android.media.MediaProjection
-import android.media.MediaProjectionManager
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -123,10 +123,11 @@ class CaptureEqService : Service() {
             val sr = 48000
             captureSampleRate = sr
 
-            val captureConfig = AudioPlaybackCaptureConfiguration(projection)
+            val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .build()
 
             val minIn = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
             recorder = AudioRecord.Builder()
@@ -163,9 +164,10 @@ class CaptureEqService : Service() {
                 if (NeonDsp.available) {
                     val eng = com.neon.eq.engine.EqualizerEngine.getInstance(applicationContext)
                     NeonDsp.init(sr, 10)
-                    val gains = FloatArray(10) { i -> (eng.currentBandLevels.getOrNull(i)?.toInt() ?: 0).toFloat() }
+                    val lv = eng.bandLevelsSnapshot()
+                    val gains = FloatArray(10) { i -> (lv.getOrNull(i)?.toInt() ?: 0).toFloat() }
                     NeonDsp.setGraphicGains(gains)
-                    NeonDsp.setPreamp(eng.loudnessAppliedMb(eng.currentLoudness) / 100f)
+                    NeonDsp.setPreamp(eng.loudnessAppliedMb(eng.currentLoudnessLevel()) / 100f)
                     NeonDsp.setShelves(0f, 0f)
                     NeonDsp.setStereo(1f, 0f, false, false)
                     NeonDsp.setCompressor(false, -18f, 4f, 5f, 150f)
