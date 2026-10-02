@@ -50,6 +50,7 @@ static bool limOn = true;
 static double limThreshDb = -1.0, limEnvDb = 0.0;
 
 static long clipCount = 0, procFrames = 0;
+static long nanEvents = 0;
 
 static const double F10[10] = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
 static const double F15[15] = {25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000};
@@ -111,19 +112,8 @@ static inline double runB(Biquad* f, double x) {
 }
 
 static inline void processFrame(jshort* p) {
-    double l = (double) p[0], r = (double) p[1];
-    /* stereo stage */
-    if (stMono) { l = r = (l + r) * 0.5; }
-    if (stSwap) { double tmp = l; l = r; r = tmp; }
-    {
-        double m = (l + r) * 0.5;
-        double s = (l - r) * 0.5 * stWidth;
-        l = m + s; r = m - s;
-    }
-    if (stBalance != 0.0) {
-        if (stBalance > 0) l *= (1.0 - stBalance * 0.99);
-        else r *= (1.0 + stBalance * 0.99);
-    }
+    jshort inL = p[0], inR = p[1];
+    double l = (double) inL, r = (double) inR;
     /* preamp */
     if (preampDb != 0.0) {
         double g = pow(10.0, preampDb / 20.0);
@@ -141,6 +131,18 @@ static inline void processFrame(jshort* p) {
     /* shelves */
     if (bassDb != 0.0) { l = runB(&bassSh[0], l); r = runB(&bassSh[1], r); }
     if (trebleDb != 0.0) { l = runB(&trebSh[0], l); r = runB(&trebSh[1], r); }
+    /* stereo stage: width, balance, swap, mono */
+    if (stMono) { l = r = (l + r) * 0.5; }
+    if (stSwap) { double tmp = l; l = r; r = tmp; }
+    {
+        double m = (l + r) * 0.5;
+        double s = (l - r) * 0.5 * stWidth;
+        l = m + s; r = m - s;
+    }
+    if (stBalance != 0.0) {
+        if (stBalance > 0) l *= (1.0 - stBalance * 0.99);
+        else r *= (1.0 + stBalance * 0.99);
+    }
     /* convolver */
     if (convOn && irTaps > 0) {
         histL[histIdx] = (float) l;
@@ -174,6 +176,18 @@ static inline void processFrame(jshort* p) {
         double g = pow(10.0, (limEnvDb - detDb) / 20.0);
         l *= g; r *= g;
     }
+    /* NaN/Inf safety (spec 17): flush all filter states and pass the raw
+       frame through — the audio service must never crash or emit garbage. */
+    if (!isfinite(l) || !isfinite(r)) {
+        nanEvents++;
+        for (int i = 0; i < MAXBANDS; i++) { clearB(&graphic[i][0]); clearB(&graphic[i][1]); }
+        for (int i = 0; i < MAXPEQ; i++) { clearB(&peq[i][0]); clearB(&peq[i][1]); }
+        clearB(&bassSh[0]); clearB(&bassSh[1]); clearB(&trebSh[0]); clearB(&trebSh[1]);
+        compEnvDb = 0.0; limEnvDb = 0.0;
+        p[0] = inL; p[1] = inR;
+        procFrames++;
+        return;
+    }
     /* clip detect + clamp */
     if (l > 32767.0 || l < -32768.0 || r > 32767.0 || r < -32768.0) clipCount++;
     if (l > 32767.0) l = 32767.0; else if (l < -32768.0) l = -32768.0;
@@ -203,7 +217,9 @@ Java_com_neon_eq_dsp_NeonDsp_init(JNIEnv* env, jobject thiz, jint rate, jint ban
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setPreamp(JNIEnv* env, jobject thiz, jfloat db) {
-    preampDb = (double) db;
+    double v = (double) db;
+    if (!isfinite(v)) return;
+    preampDb = v < -30.0 ? -30.0 : (v > 30.0 ? 30.0 : v);
 }
 
 JNIEXPORT void JNICALL
@@ -211,8 +227,11 @@ Java_com_neon_eq_dsp_NeonDsp_setGraphicGains(JNIEnv* env, jobject thiz, jfloatAr
     jfloat* g = env->GetFloatArrayElements(gains, NULL);
     jsize n = env->GetArrayLength(gains);
     for (int i = 0; i < nbands && i < n; i++) {
-        setPeak(&graphic[i][0], bandFreq(i), (double) g[i], 1.0);
-        setPeak(&graphic[i][1], bandFreq(i), (double) g[i], 1.0);
+        double gd = (double) g[i];
+        if (!isfinite(gd)) gd = 0.0;
+        if (gd < -30.0) gd = -30.0; else if (gd > 30.0) gd = 30.0;
+        setPeak(&graphic[i][0], bandFreq(i), gd, 1.0);
+        setPeak(&graphic[i][1], bandFreq(i), gd, 1.0);
     }
     env->ReleaseFloatArrayElements(gains, g, JNI_ABORT);
 }
@@ -223,8 +242,13 @@ Java_com_neon_eq_dsp_NeonDsp_setParametric(JNIEnv* env, jobject thiz, jint slot,
     if (slot < 0 || slot >= MAXPEQ) return;
     peqOn[slot] = on ? 1 : 0;
     if (on) {
-        setPeak(&peq[slot][0], (double) freq, (double) gainDb, (double) q);
-        setPeak(&peq[slot][1], (double) freq, (double) gainDb, (double) q);
+        double f = (double) freq, g = (double) gainDb, qq = (double) q;
+        if (!isfinite(f) || !isfinite(g) || !isfinite(qq)) return;
+        if (f < 10.0) f = 10.0; else if (f > 20000.0) f = 20000.0;
+        if (g < -30.0) g = -30.0; else if (g > 30.0) g = 30.0;
+        if (qq < 0.1) qq = 0.1; else if (qq > 10.0) qq = 10.0;
+        setPeak(&peq[slot][0], f, g, qq);
+        setPeak(&peq[slot][1], f, g, qq);
     }
 }
 
@@ -251,7 +275,10 @@ Java_com_neon_eq_dsp_NeonDsp_setCompressor(JNIEnv* env, jobject thiz, jboolean o
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setStereo(JNIEnv* env, jobject thiz, jfloat width, jfloat balance,
                                        jboolean swap, jboolean mono) {
-    stWidth = width > 0.0f ? (double) width : 1.0;
+    double wv = (double) width;
+    if (!isfinite(wv)) wv = 1.0;
+    if (wv < 0.0) wv = 0.0; else if (wv > 4.0) wv = 4.0;
+    stWidth = wv > 0.0 ? wv : 1.0;
     stBalance = balance < -1.0f ? -1.0 : (balance > 1.0f ? 1.0 : (double) balance);
     stSwap = swap == JNI_TRUE;
     stMono = mono == JNI_TRUE;
@@ -260,7 +287,10 @@ Java_com_neon_eq_dsp_NeonDsp_setStereo(JNIEnv* env, jobject thiz, jfloat width, 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setLimiter(JNIEnv* env, jobject thiz, jboolean on, jfloat threshDb) {
     limOn = on == JNI_TRUE;
-    limThreshDb = (double) threshDb;
+    double tv = (double) threshDb;
+    if (!isfinite(tv)) tv = -1.0;
+    if (tv < -60.0) tv = -60.0; else if (tv > 0.0) tv = 0.0;
+    limThreshDb = tv;
     limEnvDb = 0.0;
 }
 
@@ -287,9 +317,10 @@ Java_com_neon_eq_dsp_NeonDsp_loadIr(JNIEnv* env, jobject thiz, jfloatArray left,
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf, jint frames) {
-    jshort* p = env->GetShortArrayElements(buf, NULL);
+    jshort* p = (jshort*) env->GetPrimitiveArrayCritical(buf, NULL);
+    if (p == NULL) return;
     for (int i = 0; i < frames; i++) processFrame(p + 2 * i);
-    env->ReleaseShortArrayElements(buf, p, 0);
+    env->ReleasePrimitiveArrayCritical(buf, p, 0);
 }
 
 JNIEXPORT jlong JNICALL
@@ -299,6 +330,9 @@ JNIEXPORT jlong JNICALL
 Java_com_neon_eq_dsp_NeonDsp_processedFrames(JNIEnv* env, jobject thiz) { return (jlong) procFrames; }
 
 JNIEXPORT void JNICALL
-Java_com_neon_eq_dsp_NeonDsp_resetStats(JNIEnv* env, jobject thiz) { clipCount = 0; procFrames = 0; }
+Java_com_neon_eq_dsp_NeonDsp_resetStats(JNIEnv* env, jobject thiz) { clipCount = 0; procFrames = 0; nanEvents = 0; }
+
+JNIEXPORT jlong JNICALL
+Java_com_neon_eq_dsp_NeonDsp_nanCount(JNIEnv* env, jobject thiz) { return (jlong) nanEvents; }
 
 } /* extern "C" */

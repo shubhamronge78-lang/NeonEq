@@ -185,8 +185,9 @@ class TonePlayer(private val eq: SoftwareEq) {
     private var thread: Thread? = null
     @Volatile private var requestStop = false
 
-    // Build #116: "sweep" (30Hz-16kHz) | "lr" (440Hz alternating L/R every
-    // 0.5s — the left/right channel diagnostic test).
+    // Build #117 test signals: "sweep" (30Hz-16kHz) | "sweep20" (20Hz-20kHz)
+    // | "lr" (440Hz alternating L/R) | "tone440" | "tone1k" | "pink" |
+    // "lonly" | "ronly". All at a safe 0.6 level into the limiter chain.
     @Volatile var mode: String = "sweep"
 
     val isRunning: Boolean get() = thread?.isAlive == true
@@ -217,23 +218,65 @@ class TonePlayer(private val eq: SoftwareEq) {
             val frame = ShortArray(2048 * 2)
             var phase = 0.0
             var t = 0
-            val lrMode = mode == "lr"
+            val m = mode
+            // pink noise state — Paul Kellet one-pole filter
+            var pb0 = 0.0; var pb1 = 0.0; var pb2 = 0.0
             while (!requestStop) {
                 for (f in 0 until 2048) {
-                    if (lrMode) {
-                        val side = ((t * 2048 + f) / 24000) % 2
-                        phase += 2.0 * PI * 440.0 / sr
-                        val s = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767).toShort()
-                        frame[2 * f] = if (side == 0) s else 0
-                        frame[2 * f + 1] = if (side == 0) 0 else s
-                    } else {
-                        val tt = ((t * 2048 + f) % (sr * 24)) / (sr.toDouble() * 24.0)
-                        val freq = 30.0 * Math.pow(16000.0 / 30.0, tt)
-                        phase += 2.0 * PI * freq / sr
-                        val s = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767).toShort()
-                        frame[2 * f] = s
-                        frame[2 * f + 1] = s
+                    val abs = t * 2048 + f
+                    val side = (abs / 24000) % 2
+                    var sl = 0
+                    var sr2 = 0
+                    when (m) {
+                        "lr" -> {
+                            phase += 2.0 * PI * 440.0 / sr
+                            val v = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767)
+                            sl = if (side == 0) v else 0
+                            sr2 = if (side == 0) 0 else v
+                        }
+                        "lonly" -> {
+                            phase += 2.0 * PI * 440.0 / sr
+                            sl = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767)
+                        }
+                        "ronly" -> {
+                            phase += 2.0 * PI * 440.0 / sr
+                            sr2 = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767)
+                        }
+                        "tone440" -> {
+                            phase += 2.0 * PI * 440.0 / sr
+                            val v = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767)
+                            sl = v; sr2 = v
+                        }
+                        "tone1k" -> {
+                            phase += 2.0 * PI * 1000.0 / sr
+                            val v = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767)
+                            sl = v; sr2 = v
+                        }
+                        "pink" -> {
+                            val w = Math.random() * 2 - 1
+                            pb0 = 0.99765 * pb0 + w * 0.0990460
+                            pb1 = 0.96300 * pb1 + w * 0.2965164
+                            pb2 = 0.57000 * pb2 + w * 1.0526913
+                            val v = ((pb0 + pb1 + pb2 + w * 0.1848) * 0.12 * 32767).toInt().coerceIn(-32768, 32767)
+                            sl = v; sr2 = v
+                        }
+                        "sweep20" -> {
+                            val tt = (abs % (sr * 24)) / (sr.toDouble() * 24.0)
+                            val freq = 20.0 * Math.pow(1000.0, tt)
+                            phase += 2.0 * PI * freq / sr
+                            val v = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767)
+                            sl = v; sr2 = v
+                        }
+                        else -> { // "sweep" 30Hz-16kHz
+                            val tt = (abs % (sr * 24)) / (sr.toDouble() * 24.0)
+                            val freq = 30.0 * Math.pow(16000.0 / 30.0, tt)
+                            phase += 2.0 * PI * freq / sr
+                            val v = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767)
+                            sl = v; sr2 = v
+                        }
                     }
+                    frame[2 * f] = sl.toShort()
+                    frame[2 * f + 1] = sr2.toShort()
                 }
                 eq.processAndWrite(java.nio.ShortBuffer.wrap(frame), track)
                 outFrames += 2048

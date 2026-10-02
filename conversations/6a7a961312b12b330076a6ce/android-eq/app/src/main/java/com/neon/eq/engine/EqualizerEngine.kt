@@ -113,10 +113,23 @@ class EqualizerEngine private constructor(context: Context) {
     // callback) and by the session-poll thread (incremented on stall retries).
     @Volatile private var visRetryCount = 0
 
-    // Build #93: the EQ is fixed at 10 bands. Any legacy stored band_count
-    // (5/7/12/31 from the old selector) is intentionally ignored.
-    @Volatile var bandCount = 10
+    // Build #117: the UI band selector returns (10/15/31) on top of the same
+    // 31-level internal model. Legacy stored band_count values are still
+    // ignored; the new selection persists via ui_band_count and both the
+    // hardware mapping (pickBands) and the native DSP scale with it.
+    @Volatile var bandCount = try { prefs.getInt("ui_band_count", 10).coerceIn(10, 31) } catch (_: Throwable) { 10 }
         private set
+
+    fun setUiBandCount(n: Int) {
+        val count = n.coerceIn(10, 31)
+        if (count == bandCount) return
+        try { prefs.edit().putInt("ui_band_count", count).apply() } catch (_: Throwable) { }
+        bandCount = count
+        // Regenerate the UI band table so the canvas shows the new count.
+        // If a hardware session is attached, the next scan re-picks real
+        // frequencies; on locked devices (Vivo) the fallback table is used.
+        try { if (bands.size < count) bands = fallbackBands(count) } catch (_: Throwable) { }
+    }
     @Volatile var bands: List<BandInfo> = emptyList()
     @Volatile var enabled = false
         private set
@@ -2053,6 +2066,14 @@ class EqualizerEngine private constructor(context: Context) {
     // Build #116: read-only snapshots for the native DSP mirror (capture path).
     fun bandLevelsSnapshot(): ShortArray = try { currentBandLevels.copyOf() } catch (t: Throwable) { ShortArray(31) }
     fun currentLoudnessLevel(): Int = currentLoudness
+
+    // Build #117: capture pipeline prefs — buffer mode, output volume, DSP chain.
+    fun getCaptureBufferMode(): String = try { prefs.getString("capture_buffer_mode", "balanced") ?: "balanced" } catch (_: Throwable) { "balanced" }
+    fun setCaptureBufferMode(m: String) { try { prefs.edit().putString("capture_buffer_mode", m).apply() } catch (_: Throwable) { } }
+    fun getCaptureOutVolume(): Float = try { prefs.getFloat("capture_out_volume", 1f).coerceIn(0f, 1.5f) } catch (_: Throwable) { 1f }
+    fun setCaptureOutVolume(v: Float) { try { prefs.edit().putFloat("capture_out_volume", v.coerceIn(0f, 1.5f)).apply() } catch (_: Throwable) { } }
+    fun getDspParamsJson(): String = try { prefs.getString("dsp_params_json", "{}") ?: "{}" } catch (_: Throwable) { "{}" }
+    fun setDspParamsJson(s: String) { try { prefs.edit().putString("dsp_params_json", s).apply() } catch (_: Throwable) { } }
 
     // Build #115: PLAYER output volume (Poweramp DVC-style, on our own stream).
     fun getPlayerVolume(): Float = try { prefs.getFloat("player_volume", 1f) } catch (_: Throwable) { 1f }

@@ -34,6 +34,7 @@ object NeonDsp {
     external fun loadIr(left: FloatArray, right: FloatArray)
     external fun process(buffer: ShortArray, frames: Int)
     external fun clipCount(): Long
+    external fun nanCount(): Long
     external fun processedFrames(): Long
     external fun resetStats()
 }
