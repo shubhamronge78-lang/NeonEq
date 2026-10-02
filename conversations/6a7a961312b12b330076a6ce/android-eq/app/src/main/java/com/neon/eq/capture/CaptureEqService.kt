@@ -368,12 +368,14 @@ class CaptureEqService : Service() {
                             routeNote = "Buffer automatically changed: LOW → BALANCED (sustained underruns)"
                             lastBufferChange = "LOW → BALANCED"
                             sessionBufferChanges++
+                            notifyBufferAdjusted("LOW → BALANCED")
                         } else if (bufferMode == "balanced") {
                             bufferMode = "stable"
                             eng.setCaptureBufferMode("stable")
                             routeNote = "Buffer automatically changed: BALANCED → STABLE (sustained underruns)"
                             lastBufferChange = "BALANCED → STABLE"
                             sessionBufferChanges++
+                            notifyBufferAdjusted("BALANCED → STABLE")
                         }
                     }
                     // Build #118: output route change -> safe reconfigure
@@ -415,6 +417,12 @@ class CaptureEqService : Service() {
                                     rebuilt.play()
                                     routeNote = "ROUTE CHANGED: " + (oldRouteLine ?: "?") + " to " + AudioPath.outputDevice(this) +
                                         " | " + (oldRateLine ?: "?") + " to " + newSr + "Hz — output rebuilt, DSP state preserved"
+                                    // Build #122: report the new route only AFTER the rebuild
+                                    // confirmed the output path is ready.
+                                    try {
+                                        (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                                            .notify(NOTIF_ID, buildRichNotification())
+                                    } catch (_: Throwable) { }
                                 } else {
                                     lastError = AudioErrors.AUDIO_TRACK_INITIALIZATION_FAILED + ": rebuild after route change failed"
                                     try { rebuilt.release() } catch (t: Throwable) { }
@@ -474,7 +482,27 @@ class CaptureEqService : Service() {
         }
     }
 
-        // ── Build #121: rich notification (spec 32) — technical facts only,
+        private fun notifyBufferAdjusted(change: String) {
+        try {
+            val openPi = PendingIntent.getActivity(
+                this, 2, Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0))
+            (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                .notify(NOTIF_ID, NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle("NeonEQ")
+                    .setContentText("Audio buffer adjusted: " + change)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText("Audio buffer adjusted: " + change))
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+                    .setContentIntent(openPi)
+                    .addAction(0, "Stop", actionPi(ACTION_STOP))
+                    .build())
+        } catch (_: Throwable) { }
+    }
+
+    // ── Build #121: rich notification (spec 32) — technical facts only,
     // never sensitive playback information. Rebuilt every ~2s from the
     // mirror loop (never from the audio thread). ──
     private fun buildRichNotification(): android.app.Notification {
@@ -482,22 +510,67 @@ class CaptureEqService : Service() {
             this, 2, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or
                 (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0))
-        val dev = try { AudioPath.outputDevice(this) } catch (_: Throwable) { "output" }
-        fun dbOf(ms: Int): String =
-            if (NeonDsp.available && ms > 0) "%.0f".format(20 * kotlin.math.log10(ms / 1000.0)) + " dB" else "-"
-        val inDb = if (NeonDsp.available) runCatching { dbOf(NeonDsp.inRmsMs()) }.getOrDefault("-") else "-"
-        val outDb = if (NeonDsp.available) runCatching { dbOf(NeonDsp.outRmsMs()) }.getOrDefault("-") else "-"
-        val state = if (bypass) "DSP BYPASS" else "DSP ACTIVE"
+        // Build #122: explicit notification states derived ONLY from the
+        // existing authoritative state (companion counters, lastError,
+        // noEligiblePlayback, bypass, NeonDsp availability). No second
+        // status system, no fabricated values: unavailable fields are
+        // omitted, never invented.
+        val recentData = lastDataAt > 0L &&
+            (android.os.SystemClock.elapsedRealtime() - lastDataAt) < 3000L
+        val title: String
+        val body: String
+        if (lastError != null) {
+            title = "NeonEQ · AUDIO ERROR"
+            body = simpleErrorText(lastError!!) + "\nTap to view diagnostics."
+        } else if (noEligiblePlayback) {
+            title = "NeonEQ · CAPTURE BLOCKED"
+            body = "Source app does not permit playback capture"
+        } else if (!recentData && framesCaptured == 0L) {
+            title = "NeonEQ · WAITING"
+            body = "Waiting for eligible playback"
+        } else if (bypass) {
+            title = "NeonEQ · DSP BYPASS"
+            body = "Capture active · DSP bypassed"
+        } else if (!NeonDsp.available) {
+            title = "NeonEQ · DSP ERROR"
+            body = "Native DSP unavailable — tap to view diagnostics"
+        } else {
+            title = "NeonEQ · DSP ACTIVE"
+            val sb = StringBuilder()
+            if (captureSampleRate > 0) sb.append(captureSampleRate / 1000).append(" kHz · Stereo")
+            val dev = try { AudioPath.outputDevice(this) } catch (_: Throwable) { "" }
+            if (dev.isNotEmpty()) { if (sb.isNotEmpty()) sb.append('\n'); sb.append(dev) }
+            fun dbOf(ms: Int): String =
+                if (NeonDsp.available && ms > 0) "%.1f".format(20 * kotlin.math.log10(ms / 1000.0)) + " dB" else ""
+            val inDb = if (NeonDsp.available) runCatching { dbOf(NeonDsp.inRmsMs()) }.getOrDefault("") else ""
+            val outDb = if (NeonDsp.available) runCatching { dbOf(NeonDsp.outRmsMs()) }.getOrDefault("") else ""
+            if (inDb.isNotEmpty() && outDb.isNotEmpty()) {
+                if (sb.isNotEmpty()) sb.append('\n')
+                sb.append("Input ").append(inDb).append(" · Output ").append(outDb)
+            }
+            body = sb.toString()
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("NeonEQ · " + state + " · " + (captureSampleRate / 1000) + "kHz")
-            .setContentText(dev + " · in " + inDb + " · out " + outDb + " — tap to open")
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openPi)
             .addAction(0, "Pause", actionPi(ACTION_PAUSE))
             .addAction(0, "Stop", actionPi(ACTION_STOP))
             .build()
+    }
+
+    /** Simple, non-technical explanation for the notification; the detailed
+     *  error code stays on the diagnostics screen (spec 12). */
+    private fun simpleErrorText(err: String): String = when {
+        err.contains("permission", ignoreCase = true) -> "Capture permission denied."
+        err.contains("projection", ignoreCase = true) -> "MediaProjection stopped."
+        err.contains("track", ignoreCase = true) -> "AudioTrack initialization failed."
+        err.contains("record", ignoreCase = true) -> "AudioRecord initialization failed."
+        else -> "An audio component failed."
     }
 
 private fun createChannel() {

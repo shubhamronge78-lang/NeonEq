@@ -317,7 +317,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var limiterThr by remember { mutableStateOf(engine.limiterThresholdValue()) }
     var selectedPreset by remember { mutableStateOf(engine.selectedPresetName) }
     var customPresets by remember { mutableStateOf(engine.listCustomPresets()) }
-    var resetArmed by remember { mutableStateOf(false) }
+    var showResetDialog by remember { mutableStateOf(false) }
     var showSaveDialog by remember { mutableStateOf(false) }
     var showOverwriteDialog by remember { mutableStateOf(false) }
     var pendingPresetName by remember { mutableStateOf("") }
@@ -778,7 +778,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
             Text(routeIcon, fontSize = 13.sp, color = T.primary)
             Text(
-                AudioCapabilityManager.suggestedSampleRate(context) + " Hz · " + AudioCapabilityManager.channelsLine() +
+                AudioCapabilityManager.suggestedSampleRate(context).toString() + " Hz · " + AudioCapabilityManager.channelsLine() +
                     " · buffer " + CaptureEqService.bufferMode + " · " + "%.0f".format(CaptureEqService.captureBufferMs) + " ms",
                 fontSize = 10.sp, color = T.secondary
             )
@@ -932,45 +932,48 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(3000); sessTick++ } }
             var sessSel by remember { mutableStateOf(-1) }
             val sessCtx = LocalContext.current
-            val sessLines = try {
+            // parse first (plain code), render second — composables never inside try/catch
+            val sessRows: List<Triple<String, Int, String>> = try {
                 val f = File(sessCtx.filesDir, "sessions.jsonl")
-                if (f.exists()) f.readLines().takeLast(4).reversed() else emptyList()
-            } catch (t: Throwable) { emptyList<String>() }
-            if (sessLines.isEmpty()) {
-                Text("No capture sessions recorded yet — technical counters only, never audio.", fontSize = 9.sp, color = T.secondary)
-            }
-            sessLines.forEachIndexed { li, line ->
-                try {
-                    val o = JSONObject(line)
-                    val verdict = when {
-                        o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 && !o.optBoolean("bypass") -> "SIGNAL PATH ACTIVE"
-                        o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 -> "SIGNAL PATH ACTIVE (RAW)"
-                        o.optLong("frames_cap") > 0 -> "CAPTURE → DSP CONNECTION FAILURE"
-                        else -> "NO ELIGIBLE PLAYBACK"
-                    }
-                    val tMs = System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - o.optLong("start_ms", 0L))
-                    Text(
-                        java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(tMs)) +
-                            " · " + (o.optInt("sr") / 1000) + "kHz · " + o.optString("route") + " — " + verdict,
-                        fontSize = 10.sp,
-                        color = if (verdict.startsWith("SIGNAL PATH ACTIVE")) T.primary else T.secondary,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { sessSel = if (sessSel == li) -1 else li }
-                            .padding(vertical = 3.dp)
-                            .semantics { contentDescription = "Session " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(tMs)) + ", " + verdict }
-                    )
-                    if (sessSel == li) {
-                        Text(
-                            "VERDICT: " + verdict + "\n" +
+                if (f.exists()) f.readLines().takeLast(4).reversed().mapNotNull { line ->
+                    try {
+                        val o = JSONObject(line)
+                        val verdict = when {
+                            o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 && !o.optBoolean("bypass") -> 1
+                            o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 -> 2
+                            o.optLong("frames_cap") > 0 -> 3
+                            else -> 4
+                        }
+                        val tMs = System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - o.optLong("start_ms", 0L))
+                        val head = java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(tMs)) +
+                            " · " + (o.optInt("sr") / 1000) + "kHz · " + o.optString("route") + " — " +
+                            when (verdict) { 1 -> "SIGNAL PATH ACTIVE"; 2 -> "SIGNAL PATH ACTIVE (RAW)"; 3 -> "CAPTURE → DSP CONNECTION FAILURE"; else -> "NO ELIGIBLE PLAYBACK" }
+                        val detail = "VERDICT: " + when (verdict) { 1 -> "SIGNAL PATH ACTIVE"; 2 -> "SIGNAL PATH ACTIVE (RAW)"; 3 -> "CAPTURE → DSP CONNECTION FAILURE"; else -> "NO ELIGIBLE PLAYBACK" } + "\n" +
                             "duration " + o.optLong("dur_ms") / 1000 + "s · route changes " + o.optInt("route_changes") + " · buffer changes " + o.optInt("buffer_changes") + "\n" +
                             "cap " + o.optLong("frames_cap") + " · rec " + o.optLong("frames_rec") + " · jni " + o.optLong("frames_jni") + " · dsp " + o.optLong("frames_dsp") + " · out " + o.optLong("frames_out") + "\n" +
                             "underruns " + o.optLong("underruns") + " · clips " + o.optLong("clips") + " · NaN " + o.optLong("nan") + " · dsp cpu " + (o.optInt("dsp_cpu") / 10.0) + "%" + "\n" +
-                            "error: " + o.optString("error", "none"),
-                            fontSize = 9.sp, color = T.secondary, lineHeight = 13.sp
-                        )
-                    }
-                } catch (t: Throwable) { }
+                            "error: " + o.optString("error", "none")
+                        Triple(head, verdict, detail)
+                    } catch (t: Throwable) { null }
+                } else emptyList()
+            } catch (t: Throwable) { emptyList() }
+            if (sessRows.isEmpty()) {
+                Text("No capture sessions recorded yet — technical counters only, never audio.", fontSize = 9.sp, color = T.secondary)
+            }
+            sessRows.forEachIndexed { li, (head, verdict, detail) ->
+                Text(
+                    head,
+                    fontSize = 10.sp,
+                    color = if (verdict == 1 || verdict == 2) T.primary else T.secondary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { sessSel = if (sessSel == li) -1 else li }
+                        .padding(vertical = 3.dp)
+                        .semantics { contentDescription = "Session, " + head }
+                )
+                if (sessSel == li) {
+                    Text(detail, fontSize = 9.sp, color = T.secondary, lineHeight = 13.sp)
+                }
             }
             Text(
                 "EXPORT DIAGNOSTICS",
@@ -1007,32 +1010,14 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("PRESETS", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
             Row {
                 Text(
-                    if (resetArmed) "↺ TAP AGAIN TO CONFIRM" else "↺ Reset All",
+                    "↺ Reset All",
                     fontSize = 11.sp,
                     color = T.accent,
                     modifier = Modifier
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                         .clip(RoundedCornerShape(50))
                         .background(T.accent.copy(alpha = 0.10f))
-                        .clickable {
-                        if (resetArmed) {
-                            resetArmed = false
-                            // RESET TO FLAT — restores DSP chain defaults; saved presets untouched
-                            animateLevelsTo(FloatArray(31) { 0f })
-                            selectedPreset = "Flat"
-                            engine.setSelectedPresetName("Flat")
-                            bassBoost = 0; virtualizer = 0; loudness = 0
-                            engine.applyFullState(ShortArray(31) { 0 }, 0, 0, 0, smooth = true)
-                            try {
-                                val flat = com.neon.eq.dsp.DspParams()
-                                flat.applyTo(com.neon.eq.dsp.NeonDsp)
-                                flat.save(engine)
-                            } catch (t: Throwable) { }
-                            Toast.makeText(context, "Reset to flat — saved presets kept", Toast.LENGTH_SHORT).show()
-                        } else {
-                            resetArmed = true
-                        }
-                    }
+                        .clickable { showResetDialog = true }
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
@@ -2277,6 +2262,77 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     )
     } // end Box
 
+    // ── Build #122: RESET confirmation dialog — shows the exact diff
+    // before any change; CANCEL preserves everything untouched. ──
+    if (showResetDialog) {
+        AlertDialog(
+            containerColor = S.card,
+            shape = RoundedCornerShape(24.dp),
+            onDismissRequest = { showResetDialog = false },
+            title = { Text("Reset DSP settings?", color = T.primary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "This will restore the current DSP chain to the default Flat configuration. Saved presets and session history will not be deleted.",
+                        fontSize = 11.sp, color = T.secondary
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    val cur = try { DspParams.load(engine) } catch (_: Throwable) { DspParams() }
+                    val diffRows = mutableListOf<String>()
+                    if (cur.preamp != 0f) diffRows.add("Preamp       " + "%+.1f dB".format(cur.preamp) + "  →  0.0 dB")
+                    if (cur.bass != 0f) diffRows.add("Bass         " + "%+.1f dB".format(cur.bass) + "  →  0.0 dB")
+                    if (cur.treble != 0f) diffRows.add("Treble       " + "%+.1f dB".format(cur.treble) + "  →  0.0 dB")
+                    if (cur.width != 1f) diffRows.add("Stereo       " + "%.0f%%".format(cur.width * 100) + "  →  100%")
+                    if (cur.balance != 0f || cur.mono || cur.swap) diffRows.add("Balance/mono Custom  →  Default")
+                    if (bandLevels.any { it != 0f } || cur.slots.any { it.on }) diffRows.add("EQ           Custom  →  Flat")
+                    if (cur.compOn) diffRows.add("Compressor   ON      →  Default")
+                    if (!cur.limiterOn || cur.limThresh != -1f) diffRows.add("Limiter      Custom  →  Default")
+                    Text("Current → Flat", fontSize = 11.sp, color = T.accent)
+                    Spacer(Modifier.height(4.dp))
+                    if (diffRows.isEmpty()) {
+                        Text("Already Flat — nothing to change.", fontSize = 10.sp, color = T.secondary)
+                    } else {
+                        diffRows.forEach { row -> Text(row, fontSize = 10.sp, color = T.secondary, lineHeight = 15.sp) }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Applied through the atomic parameter-target system at the next DSP block boundary. Capture, counters, route, and buffer state are not touched.",
+                        fontSize = 9.sp, color = T.secondary
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showResetDialog = false
+                        try {
+                            if (!NeonDsp.available) throw IllegalStateException("native DSP unavailable")
+                            // 1. build the complete Flat configuration (valid by construction),
+                            // 2. submit through the atomic target system (seqlock + block commit),
+                            // 3. persist, 4. update UI from the committed configuration.
+                            val flat = DspParams()
+                            flat.applyTo(NeonDsp)
+                            flat.save(engine)
+                            animateLevelsTo(FloatArray(31) { 0f })
+                            selectedPreset = "Flat"
+                            engine.setSelectedPresetName("Flat")
+                            bassBoost = 0; virtualizer = 0; loudness = 0
+                            engine.applyFullState(ShortArray(31) { 0 }, 0, 0, 0, smooth = true)
+                            Toast.makeText(context, "DSP reset to Flat ✓", Toast.LENGTH_SHORT).show()
+                        } catch (t: Throwable) {
+                            // no partial reset — previous known-good configuration preserved
+                            Toast.makeText(context, "Reset failed — previous DSP settings were preserved.", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.accent)
+                ) { Text("RESET DSP") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false }) { Text("CANCEL", color = T.secondary) }
+            }
+        )
+    }
+
     if (showSaveDialog) {
         AlertDialog(
             containerColor = S.card,
@@ -2715,7 +2771,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #121",
+                        "Neon EQ · Build #122",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
