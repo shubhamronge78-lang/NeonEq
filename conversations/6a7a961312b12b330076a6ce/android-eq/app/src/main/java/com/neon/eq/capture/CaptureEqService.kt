@@ -328,7 +328,6 @@ class CaptureEqService : Service() {
             lastError = t.message ?: t.toString()
         } finally {
             running = false
-            activeTrack = null
             try { recorder?.stop() } catch (t: Throwable) { }
             try { recorder?.release() } catch (t: Throwable) { }
             try { track?.stop() } catch (t: Throwable) { }

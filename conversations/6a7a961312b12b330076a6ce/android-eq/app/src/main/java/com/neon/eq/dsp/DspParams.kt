@@ -49,7 +49,7 @@ class DspParams {
             val arr = JSONArray()
             slots.forEach { s ->
                 val p = JSONObject()
-                p.put("on", s.on); p.put("f", s.freq.toDouble()); p.put("g", s.g.toDouble()); p.put("q", s.q.toDouble())
+                p.put("on", s.on); p.put("f", s.freq.toDouble()); p.put("g", s.gain.toDouble()); p.put("q", s.q.toDouble())
                 arr.put(p)
             }
             o.put("peq", arr)
