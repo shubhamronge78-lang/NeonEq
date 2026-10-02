@@ -68,6 +68,7 @@ class CaptureEqService : Service() {
         @Volatile var resultCode = 0
         @Volatile var resultData: Intent? = null
         @Volatile private var requestStop = false
+        @Volatile var routeDirty = false
 
         const val ACTION_STOP = "com.neon.eq.capture.STOP"
         const val ACTION_PAUSE = "com.neon.eq.capture.PAUSE"
@@ -76,8 +77,9 @@ class CaptureEqService : Service() {
 
         fun statusReport(): String =
             "CAPTURE API: " + (if (Build.VERSION.SDK_INT >= 29) "SUPPORTED" else "UNSUPPORTED") + "\n" +
-                "MEDIA PROJECTION: " + (if (running) "GRANTED" else if (lastError?.contains("projection") == true) "DENIED" else "NOT REQUESTED") + "\n" +
+                "MEDIA PROJECTION: " + (if (running) "GRANTED" else if (lastError?.startsWith(AudioErrors.CAPTURE_PERMISSION_DENIED) == true) "DENIED" else "NOT REQUESTED") + "\n" +
                 "AUDIO CAPTURE: " + (if (!running) "INACTIVE" else if (noEligiblePlayback) "NO ELIGIBLE PLAYBACK" else "ACTIVE") + "\n" +
+                "SOURCE PLAYBACK: " + (if (!running) "-" else if (noEligiblePlayback) "NOT DETECTED (source app may block capture)" else "DETECTED") + "\n" +
                 "DSP: " + (if (!NeonDsp.available) "ERROR (native lib unavailable)" else if (bypass) "BYPASSED (A)" else "ACTIVE") + "\n" +
                 "OUTPUT: " + (if (running && !noEligiblePlayback) "ACTIVE" else if (running) "WAITING FOR PLAYBACK" else "INACTIVE")
     }
@@ -150,7 +152,7 @@ class CaptureEqService : Service() {
 
             val data = resultData
             if (data == null || Build.VERSION.SDK_INT < 29) {
-                lastError = "playback capture requires Android 10+ and MediaProjection consent"
+                lastError = AudioErrors.CAPTURE_PERMISSION_DENIED + ": MediaProjection consent missing or Android below 10"
                 return
             }
             // The service is already foreground with type mediaProjection —
@@ -159,11 +161,14 @@ class CaptureEqService : Service() {
             projection = try {
                 mpm.getMediaProjection(resultCode, data)
             } catch (t: Throwable) {
-                lastError = "MediaProjection permission denied: " + (t.message ?: t.toString()); null
+                lastError = AudioErrors.CAPTURE_PERMISSION_DENIED + ": " + (t.message ?: t.toString()); null
             } ?: return
 
             projection.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() { requestStop = true }
+                override fun onStop() {
+                    lastError = AudioErrors.MEDIA_PROJECTION_STOPPED + ": projection ended by user or system"
+                    requestStop = true
+                }
             }, null)
 
             val eng = com.neon.eq.engine.EqualizerEngine.getInstance(applicationContext)
@@ -171,8 +176,11 @@ class CaptureEqService : Service() {
             // Spec 8: detect the device's real output rate instead of assuming
             // 44.1/48. Capture and output run at the SAME rate, so no resampler
             // is ever needed and audio is never pitch-shifted.
+            // Build #118: brand-neutral capability-driven rate selection —
+            // never hard-code a rate. Capture and output run at the SAME rate,
+            // so no resampler is needed and audio is never pitch-shifted.
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val sr = try { am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48000 } catch (t: Throwable) { 48000 }
+            var sr = AudioCapabilityManager.suggestedSampleRate(this)
             captureSampleRate = sr
 
             bufferMode = eng.getCaptureBufferMode()
@@ -201,7 +209,7 @@ class CaptureEqService : Service() {
                 .setAudioPlaybackCaptureConfig(captureConfig)
                 .build()
             if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                lastError = "AudioRecord initialization failed (capture unavailable for this device state)"
+                lastError = AudioErrors.AUDIO_RECORD_INITIALIZATION_FAILED + ": capture record session could not start"
                 return
             }
 
@@ -222,7 +230,7 @@ class CaptureEqService : Service() {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
             if (track.state != AudioTrack.STATE_INITIALIZED) {
-                lastError = "AudioTrack initialization failed: " + (try { track.state } catch (t: Throwable) { -1 })
+                lastError = AudioErrors.AUDIO_TRACK_INITIALIZATION_FAILED + ": output track state " + (try { track.state } catch (t: Throwable) { -1 })
                 return
             }
             try { track.setVolume(outVolume) } catch (t: Throwable) { }
@@ -236,17 +244,19 @@ class CaptureEqService : Service() {
                     NeonDsp.resetStats()
                 }
             } catch (t: Throwable) {
-                lastError = "DSP setup error: " + (t.message ?: t.toString())
+                lastError = AudioErrors.DSP_INITIALIZATION_FAILED + ": " + (t.message ?: t.toString())
             }
 
             // Route-change awareness (Bluetooth/wired connect/disconnect) —
             // informational only; AudioTrack reroutes without crashing.
             devCallback = object : AudioDeviceCallback() {
                 override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) {
-                    routeNote = "Output device changed: " + AudioPath.outputDevice(this@CaptureEqService)
+                    routeNote = AudioErrors.OUTPUT_ROUTE_CHANGED + ": " + AudioPath.outputDevice(this@CaptureEqService)
+                    routeDirty = true
                 }
                 override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) {
-                    routeNote = "Output device changed: " + AudioPath.outputDevice(this@CaptureEqService)
+                    routeNote = AudioErrors.OUTPUT_ROUTE_CHANGED + ": " + AudioPath.outputDevice(this@CaptureEqService)
+                    routeDirty = true
                 }
             }
             try { am.registerAudioDeviceCallback(devCallback, null); registerCb = true } catch (t: Throwable) { }
@@ -280,7 +290,7 @@ class CaptureEqService : Service() {
                 }
                 val n = recorder.read(chunk, 0, chunk.size)
                 if (n < 0) {
-                    lastError = "Capture read failed (code $n) — capture path stopped by the system"
+                    lastError = AudioErrors.CAPTURE_READ_FAILED + ": system returned code $n — capture path stopped"
                     break
                 }
                 if (n == 0) {
@@ -296,7 +306,7 @@ class CaptureEqService : Service() {
                 if (!bypass && NeonDsp.available) {
                     val tDsp0 = System.nanoTime()
                     try { NeonDsp.process(chunk, n / 2) } catch (t: Throwable) {
-                        lastError = "DSP error (bypassing): " + (t.message ?: t.toString())
+                        lastError = AudioErrors.DSP_PROCESSING_ERROR + ": " + (t.message ?: t.toString()) + " — bypassing safely"
                         bypass = true
                     }
                     val dMs = (System.nanoTime() - tDsp0) / 1e6
@@ -322,6 +332,61 @@ class CaptureEqService : Service() {
                         }
                         track.setVolume(outVolume)
                     } catch (t: Throwable) { }
+                    // Build #118: adaptive buffer — never keep a size that
+                    // continuously underruns on this device.
+                    if (bufferMode == "low" && underruns > 50) {
+                        bufferMode = "balanced"
+                        eng.setCaptureBufferMode("balanced")
+                        routeNote = "Adaptive buffer: LOW to BALANCED (underruns detected)"
+                    } else if (bufferMode == "balanced" && underruns > 250) {
+                        bufferMode = "stable"
+                        eng.setCaptureBufferMode("stable")
+                        routeNote = "Adaptive buffer: BALANCED to STABLE (underruns detected)"
+                    }
+                    // Build #118: output route change -> safe reconfigure
+                    // (STOP -> UPDATE FORMAT -> RESTART OUTPUT -> RESUME DSP).
+                    if (routeDirty) {
+                        routeDirty = false
+                        val newSr = try {
+                            am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: sr
+                        } catch (t: Throwable) { sr }
+                        if (newSr != sr) {
+                            try {
+                                track.pause(); track.flush(); track.stop(); track.release()
+                                val minOut2 = AudioTrack.getMinBufferSize(newSr, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+                                val rebuilt = AudioTrack.Builder()
+                                    .setAudioAttributes(
+                                        AudioAttributes.Builder()
+                                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                            .build())
+                                    .setAudioFormat(
+                                        AudioFormat.Builder()
+                                            .setSampleRate(newSr)
+                                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                            .build())
+                                    .setBufferSizeInBytes(maxOf(minOut2 * outMult, 16384))
+                                    .setTransferMode(AudioTrack.MODE_STREAM)
+                                    .build()
+                                if (rebuilt.state == AudioTrack.STATE_INITIALIZED) {
+                                    track = rebuilt
+                                    sr = newSr
+                                    captureSampleRate = sr
+                                    capLatencyMs = chunkFrames * 1000.0 / sr
+                                    outLatencyMs = try { rebuilt.bufferSizeInFrames * 1000.0 / sr } catch (t: Throwable) { 0.0 }
+                                    try { rebuilt.setVolume(outVolume) } catch (t: Throwable) { }
+                                    rebuilt.play()
+                                    routeNote = AudioErrors.OUTPUT_ROUTE_CHANGED + ": output rebuilt at " + newSr + "Hz"
+                                } else {
+                                    lastError = AudioErrors.AUDIO_TRACK_INITIALIZATION_FAILED + ": rebuild after route change failed"
+                                    try { rebuilt.release() } catch (t: Throwable) { }
+                                }
+                            } catch (t: Throwable) {
+                                lastError = AudioErrors.OUTPUT_ROUTE_CHANGED + ": rebuild failed — " + (t.message ?: t.toString())
+                            }
+                        }
+                    }
                 }
             }
         } catch (t: Throwable) {
@@ -337,6 +402,12 @@ class CaptureEqService : Service() {
             try { if (registerCb) devCallback?.let {
                 (getSystemService(Context.AUDIO_SERVICE) as AudioManager).unregisterAudioDeviceCallback(it)
             } } catch (t: Throwable) { }
+            // Build #118: anonymized local capability log (spec 15) —
+            // technical facts only, never user content.
+            try {
+                val result = if (framesCaptured > 0) "CAPTURE_OK" else if (noEligiblePlayback) "NO_ELIGIBLE_PLAYBACK" else "ERROR"
+                AudioCapabilityManager.appendCapabilityLog(this, result, framesCaptured, underruns, NeonDsp.available)
+            } catch (t: Throwable) { }
             stopSelf()
         }
     }

@@ -86,6 +86,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import com.neon.eq.capture.AudioCapabilityManager
 import com.neon.eq.capture.AudioPath
 import com.neon.eq.capture.CaptureEqService
 import com.neon.eq.dsp.NeonDsp
@@ -1166,7 +1167,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("DSP CHAIN", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
             Spacer(Modifier.height(4.dp))
             Text(
-                "The native C++ chain: preamp → parametric EQ (8 slots) → graphic EQ → bass/treble → stereo width/balance/swap/mono → compressor → convolver → output limiter. Affects the capture path live; the PLAYER migrates onto this engine in a later build. Settings persist.",
+                "The shared native C++ chain: preamp → parametric EQ (8 slots) → graphic EQ → bass/treble → stereo width/balance/swap/mono → compressor → convolver → output limiter. PLAYER and CAPTURE both process through this engine (player: graphic EQ + preamp + limiter; capture: full chain). Settings persist.",
                 fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
             )
             Spacer(Modifier.height(8.dp))
@@ -1264,7 +1265,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             Text("CAPTURE MODE", fontSize = 10.sp, color = T.accent)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Android 10+ public API: NeonEQ captures other apps' playback with your consent (MediaProjection), processes it through the native DSP, and plays the result. This is the legitimate Android capture path — Vivo cannot block it.",
+                "Android 10+ public API: NeonEQ captures other apps' playback with your consent (MediaProjection), processes it through the shared native DSP, and plays the result. This is the legitimate Android capture path, available identically on every brand — Samsung, Xiaomi, OnePlus, OPPO, Motorola, Pixel and all others.
                 fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
             )
             Spacer(Modifier.height(6.dp))
@@ -1364,7 +1365,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             try { capCtx.stopService(Intent(capCtx, CaptureEqService::class.java)) } catch (t: Throwable) { }
                         } else {
                             if (mpm == null || !AudioPath.captureSupported()) {
-                                Toast.makeText(capCtx, "Audio capture is unavailable for this application (needs Android 10+).", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(capCtx, "System playback capture requires Android 10 or newer.", Toast.LENGTH_SHORT).show()
                             } else {
                                 CaptureEqService.framesCaptured = 0
                                 CaptureEqService.framesDone = 0
@@ -1387,37 +1388,50 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        // ── Build #117: AUDIO PATH — the honest diagnostic screen ──
+        // ── Build #118: AUDIO PATH — universal, capability-driven, brand-neutral ──
         NeonCard {
             GradientText("AUDIO PATH", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
             Spacer(Modifier.height(6.dp))
             val apCtx = LocalContext.current
             var pathTick by remember { mutableStateOf(0) }
             LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); pathTick++ } }
-            val vivo = AudioPath.isVivo()
-            val sysVerdict = if (vivo)
-                "BLOCKED — Vivo firmware refuses all third-party effect attach (Error -3 on every engine), verified on this device class"
-            else "device-dependent — see diagnostics footer"
+            var compatReport by remember { mutableStateOf<String?>(null) }
+            val clipC2 = if (NeonDsp.available) runCatching { NeonDsp.clipCount() }.getOrDefault(0L) else 0L
             Text(
-                "· " + AudioPath.androidLine() + "\n" +
-                "· " + AudioPath.osLine() + "\n" +
-                "· output device: " + AudioPath.outputDevice(apCtx) + "\n" +
-                "· output format: " + AudioPath.rateLine(apCtx) + "\n" +
-                "· input (while capturing): " + (if (CaptureEqService.running) CaptureEqService.captureSampleRate.toString() + "Hz / stereo / 16-bit" else "n/a") + "\n" +
-                "· DSP: " + (if (CaptureEqService.running) "native · " + CaptureEqService.captureSampleRate + "Hz / stereo" else "standby") + "\n" +
-                "· playback capture (Android 10+): " + (if (AudioPath.captureSupported()) "SUPPORTED" else "UNSUPPORTED on this Android") + "\n" +
-                "· MediaProjection: " + (if (CaptureEqService.running) "GRANTED" else "NOT REQUESTED") + "\n" +
-                "· capture status: " + (if (!CaptureEqService.running) "inactive" else if (CaptureEqService.noEligiblePlayback) "no eligible playback" else "ACTIVE") + "\n" +
-                "· buffer: " + CaptureEqService.bufferMode + " · underruns: " + CaptureEqService.underruns + "\n" +
-                "· frames processed: " + CaptureEqService.framesDone + "\n" +
-                "· estimated latency: " + (if (CaptureEqService.running) "~" + "%.0f".format(CaptureEqService.totalLatencyMs) + "ms" else "n/a") + "\n" +
-                "· system EQ attach (AudioEffect): " + sysVerdict +
+                "DEVICE: " + AudioCapabilityManager.osLine() + "\n" +
+                "MANUFACTURER: " + AudioCapabilityManager.manufacturer() + " · MODEL: " + AudioCapabilityManager.model() + "\n" +
+                "ANDROID: " + AudioCapabilityManager.androidLine() + "\n" +
+                "CAPTURE: " + (if (AudioCapabilityManager.playbackCapture().toString() == "SUPPORTED") "SUPPORTED" else "UNSUPPORTED") + "\n" +
+                "MEDIA PROJECTION: " + (if (CaptureEqService.running) "GRANTED" else "NOT REQUESTED") + "\n" +
+                "SOURCE PLAYBACK: " + (if (!CaptureEqService.running) "—" else if (CaptureEqService.noEligiblePlayback) "NOT DETECTED (source app may block capture)" else "DETECTED") + "\n" +
+                "DSP: " + (if (CaptureEqService.running) "ACTIVE · " + CaptureEqService.captureSampleRate + "Hz" else if (NeonDsp.available) "READY" else "ERROR") + "\n" +
+                "OUTPUT: " + (if (CaptureEqService.running && !CaptureEqService.noEligiblePlayback) "ACTIVE" else if (CaptureEqService.running) "WAITING" else "INACTIVE") + "\n" +
+                "OUTPUT DEVICE: " + AudioCapabilityManager.outputDeviceLine(apCtx) + "\n" +
+                "SAMPLE RATE: " + (if (CaptureEqService.running) CaptureEqService.captureSampleRate.toString() + "Hz in / " + CaptureEqService.captureSampleRate + "Hz out (same rate, no resampling)" else AudioCapabilityManager.suggestedSampleRate(apCtx).toString() + "Hz (detected)") + "\n" +
+                "CHANNELS: " + AudioCapabilityManager.channelsLine() + "\n" +
+                "BUFFER: " + CaptureEqService.bufferMode + " mode · " + AudioCapabilityManager.framesPerBufferLine(apCtx) + "\n" +
+                "LATENCY: capture " + "%.0f".format(CaptureEqService.capLatencyMs) + "ms · dsp " + "%.1f".format(CaptureEqService.dspMs) + "ms · output " + "%.0f".format(CaptureEqService.outLatencyMs) + "ms · total ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + "ms\n" +
+                "UNDERRUNS: " + CaptureEqService.underruns + " · CLIPS: " + clipC2 + " · DSP CPU LOAD: " + "%.0f".format(CaptureEqService.dspLoadPct) + "%" +
                 (if (pathTick < 0) "" else ""),
                 fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp
             )
             Spacer(Modifier.height(8.dp))
             Text("CAPTURE REPORT", fontSize = 10.sp, color = T.accent)
             Text(CaptureEqService.statusReport(), fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "RUN AUDIO COMPATIBILITY TEST",
+                fontSize = 11.sp,
+                color = T.primary,
+                modifier = Modifier
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(T.primary.copy(alpha = 0.10f))
+                    .clickable { compatReport = AudioCapabilityManager.runFullTest(apCtx) }
+            )
+            if (compatReport != null) {
+                Text(compatReport!!, fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp)
+            }
             Spacer(Modifier.height(8.dp))
             Text("TEST SIGNALS — safe 0.6 level into the limiter chain", fontSize = 9.sp, color = T.secondary)
             Spacer(Modifier.height(4.dp))
@@ -1448,18 +1462,22 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         try {
                             val diag = buildString {
                                 appendLine("NeonEQ Audio Diagnostics — " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.ROOT).format(java.util.Date()))
-                                appendLine("Device: " + AudioPath.osLine())
-                                appendLine("Android: " + AudioPath.androidLine())
-                                appendLine("Capture API: " + (if (AudioPath.captureSupported()) "SUPPORTED" else "UNSUPPORTED"))
-                                appendLine("MediaProjection: " + (if (CaptureEqService.running) "GRANTED" else if (CaptureEqService.lastError?.contains("projection") == true) "DENIED" else "NOT REQUESTED"))
+                                appendLine("Device: " + AudioCapabilityManager.osLine())
+                                appendLine("Android: " + AudioCapabilityManager.androidLine())
+                                appendLine("Capture API: " + (if (AudioCapabilityManager.playbackCapture().toString() == "SUPPORTED") "SUPPORTED" else "UNSUPPORTED"))
+                                appendLine("MediaProjection: " + (if (CaptureEqService.running) "GRANTED" else if (CaptureEqService.lastError?.startsWith("CAPTURE_PERMISSION_DENIED") == true) "DENIED" else "NOT REQUESTED"))
                                 appendLine("Capture: " + (if (CaptureEqService.running) "ACTIVE" else "inactive") + " · frames in " + CaptureEqService.framesCaptured + " / out " + CaptureEqService.framesDone)
                                 appendLine("Input: " + (if (CaptureEqService.running) CaptureEqService.captureSampleRate.toString() + "Hz stereo 16-bit" else "n/a"))
-                                appendLine("Output: " + AudioPath.outputDevice(apCtx) + " · " + AudioPath.rateLine(apCtx))
+                                appendLine("Output: " + AudioCapabilityManager.outputDeviceLine(apCtx))
                                 appendLine("DSP: " + (if (NeonDsp.available) "native loaded" else "unavailable: " + NeonDsp.loadError) + " · bypass " + (if (CaptureEqService.bypass) "ON" else "OFF"))
                                 appendLine("Buffer: " + CaptureEqService.bufferMode + " · underruns: " + CaptureEqService.underruns + " · clips: " + (if (NeonDsp.available) NeonDsp.clipCount() else 0) + " · nan-bypass: " + (if (NeonDsp.available) NeonDsp.nanCount() else 0))
                                 appendLine("Latency: ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + "ms (in " + "%.0f".format(CaptureEqService.capLatencyMs) + " / dsp " + "%.1f".format(CaptureEqService.dspMs) + " / out " + "%.0f".format(CaptureEqService.outLatencyMs) + ") · dsp load " + "%.0f".format(CaptureEqService.dspLoadPct) + "%")
                                 appendLine("Route note: " + (CaptureEqService.routeNote ?: "none"))
                                 appendLine("Errors: " + (CaptureEqService.lastError ?: "none"))
+                                appendLine("--- Compatibility test ---")
+                                appendLine(compatReport ?: "(not run)")
+                                appendLine("--- Capability log (last 5, local, anonymized) ---")
+                                appendLine(AudioCapabilityManager.logTail(apCtx))
                             }
                             val file = File(apCtx.cacheDir, "neoneq_diagnostics.txt")
                             file.writeText(diag)
@@ -2031,7 +2049,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #117",
+                        "Neon EQ · Build #118",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

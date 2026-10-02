@@ -16,6 +16,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.sin
+import com.neon.eq.dsp.NeonDsp
 
 /**
  * Build #106: in-app software EQ — the one audio path no OEM can block.
@@ -74,6 +75,10 @@ class SoftwareEq {
     companion object {
         val FREQS = floatArrayOf(31f, 62f, 125f, 250f, 500f, 1000f, 2000f, 4000f, 8000f, 16000f)
 
+        // Build #118: shared native engine marker — set after the native path
+        // has been used at least once (diagnostics display).
+        @Volatile var nativePathUsed: Boolean = false
+
         // Build #110: waveform capture from the software pipeline so the
         // main-screen visualizer can dance even on devices where the system
         // Visualizer API is blocked (Vivo Y21). The decode thread is the only
@@ -104,18 +109,43 @@ class SoftwareEq {
     private val chains = Array(2) { Array(10) { BiquadBand() } }
     private val scratch = ShortArray(16384)
 
+    // Build #118: PLAYER and CAPTURE share the same native NeonDsp engine.
+    // The Kotlin chain below stays as an automatic fallback for devices
+    // where the native library fails to load, or for mono content (the
+    // native engine processes stereo interleaved PCM).
+    private val useNative: Boolean
+        get() = NeonDsp.available && channels == 2
+
     fun setGains(g: FloatArray) {
         val copy = FloatArray(10)
         for (i in 0 until 10) copy[i] = g.getOrElse(i) { 0f }
         gainsDb = copy
+        if (useNative) try { NeonDsp.setGraphicGains(copy) } catch (_: Throwable) { }
         reconfigure()
     }
 
-    fun setPreamp(db: Float) { preampDb = db }
+    fun setPreamp(db: Float) {
+        preampDb = db
+        if (useNative) try { NeonDsp.setPreamp(db) } catch (_: Throwable) { }
+    }
 
     fun configure(sr: Int, ch: Int) {
         sampleRate = sr
         channels = ch.coerceIn(1, 2)
+        if (useNative) {
+            try {
+                NeonDsp.init(sr, 10)
+                NeonDsp.setGraphicGains(gainsDb)
+                NeonDsp.setPreamp(preampDb)
+                NeonDsp.setStereo(1f, 0f, false, false)
+                NeonDsp.setShelves(0f, 0f)
+                NeonDsp.setCompressor(false, -18f, 4f, 5f, 150f)
+                NeonDsp.setLimiter(true, -1f)
+                NeonDsp.setConvolverEnabled(false)
+                NeonDsp.resetStats()
+                nativePathUsed = true
+            } catch (_: Throwable) { }
+        }
         reconfigure()
     }
 
@@ -134,6 +164,18 @@ class SoftwareEq {
 
     /** Applies the curve to decoded PCM and writes it out, blocking. */
     fun processAndWrite(sh: ShortBuffer, out: AudioTrack) {
+        // Build #118: native shared-engine path — PLAYER files and test tones
+        // go through the SAME NeonDsp chain as the capture pipeline.
+        if (useNative) {
+            val n = sh.remaining()
+            val buf = if (n <= scratch.size) scratch else ShortArray(n)
+            sh.get(buf, 0, n)
+            try { NeonDsp.process(buf, n / 2) } catch (_: Throwable) { }
+            publishCapture(buf, 0, n)
+            out.write(buf, 0, n)
+            framesOut += n / channels
+            return
+        }
         if (!active) {
             val n = sh.remaining()
             val buf = if (n <= scratch.size) scratch else ShortArray(n)
