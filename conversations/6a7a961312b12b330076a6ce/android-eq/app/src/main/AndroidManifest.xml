@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <application
         android:allowBackup="true"
@@ -31,6 +32,10 @@
         <service
             android:name=".engine.EQService"
             android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+        <service
+            android:name=".capture.CaptureEqService"
+            android:foregroundServiceType="mediaProjection"
             android:exported="false" />
 
         <receiver

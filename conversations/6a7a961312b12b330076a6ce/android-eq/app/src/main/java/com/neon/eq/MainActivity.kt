@@ -86,6 +86,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import com.neon.eq.capture.AudioPath
+import com.neon.eq.capture.CaptureEqService
+import com.neon.eq.dsp.NeonDsp
 
 private const val UI_PREFS = "ui_prefs"
 
@@ -888,12 +891,22 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             LaunchedEffect(bandLevels) { dsp.setGains(bandLevels) }
             LaunchedEffect(loudness) { dsp.setPreamp(engine.loudnessAppliedMb(loudness) / 100f) }
             // Build #107: one-tap pipeline proof + live player status.
-            Button(
-                onClick = {
-                    if (tone.isRunning) { tone.stop(); toneOn = false } else { player.stop(); tone.play(); toneOn = true }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = T.primary)
-            ) { Text(if (toneOn) "STOP TEST TONE" else "PLAY TEST TONE · 30Hz-16kHz sweep", fontSize = 10.sp) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        if (tone.isRunning) { tone.stop(); toneOn = false } else { player.stop(); tone.mode = "sweep"; tone.play(); toneOn = true }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.primary)
+                ) { Text(if (toneOn) "STOP TEST TONE" else "PLAY TEST TONE · 30Hz-16kHz sweep", fontSize = 10.sp) }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick = {
+                        if (tone.isRunning && tone.mode == "lr") { tone.stop(); toneOn = false }
+                        else { player.stop(); tone.mode = "lr"; tone.play(); toneOn = true }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("L/R TEST · 440Hz", fontSize = 10.sp) }
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 "player: " + (if (player.isRunning) (if (player.isPaused()) "paused" else "playing") else "idle") +
@@ -1118,6 +1131,104 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                 }
             }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #116: SYSTEM CAPTURE — the honest no-root path to other apps' audio ──
+        NeonCard {
+            GradientText("SYSTEM CAPTURE", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.accent)))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Android 10+ lets an app capture other apps' playback (music, games, video) with your consent via MediaProjection, process it, and play it back. This is a public API — no root needed, and Vivo cannot block it.",
+                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "The honest limit: Android plays the ORIGINAL audio and the processed copy together — no public API lets one app silence or redirect another app's output. Best with the source app at low volume; for a clean EQ use the PLAYER. DRM content, calls, and apps that opt out of capture are excluded by Android itself.",
+                fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            var capTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(700); capTick++ } }
+            val capCtx = LocalContext.current
+            Text(
+                "capture: " + (if (CaptureEqService.running) "ACTIVE" else "off") +
+                    (if (capTick < 0) "" else "") +
+                    " | frames: " + CaptureEqService.framesDone +
+                    " | underruns: " + CaptureEqService.underruns +
+                    " | dsp: " + (if (NeonDsp.available) "native ✓" else "unavailable") +
+                    (if (NeonDsp.available && CaptureEqService.running) " | clip: " + runCatching { NeonDsp.clipCount() }.getOrDefault(0L) else "") +
+                    " | " + CaptureEqService.captureSampleRate + "Hz" +
+                    (if (CaptureEqService.running) " | ~" + "%.0f".format(CaptureEqService.latencyMs) + "ms" else "") +
+                    (CaptureEqService.lastError?.let { " | ERR: " + it } ?: ""),
+                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            val mpm = remember {
+                try { capCtx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? android.media.MediaProjectionManager } catch (t: Throwable) { null }
+            }
+            val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+                if (res.resultCode == android.app.Activity.RESULT_OK && res.data != null) {
+                    CaptureEqService.resultCode = res.resultCode
+                    CaptureEqService.resultData = res.data
+                    try { capCtx.startForegroundService(Intent(capCtx, CaptureEqService::class.java)) }
+                    catch (t: Throwable) { Toast.makeText(capCtx, "Could not start capture: " + t.message, Toast.LENGTH_SHORT).show() }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        if (CaptureEqService.running) {
+                            try { capCtx.stopService(Intent(capCtx, CaptureEqService::class.java)) } catch (t: Throwable) { }
+                        } else {
+                            if (mpm == null || !AudioPath.captureSupported()) {
+                                Toast.makeText(capCtx, "Playback capture needs Android 10+", Toast.LENGTH_SHORT).show()
+                            } else {
+                                CaptureEqService.framesDone = 0
+                                CaptureEqService.underruns = 0
+                                captureLauncher.launch(mpm.createScreenCaptureIntent())
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (CaptureEqService.running) T.accent else T.primary)
+                ) { Text(if (CaptureEqService.running) "STOP CAPTURE" else "START CAPTURE", fontSize = 10.sp) }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (CaptureEqService.running) "NeonEq Active — persistent notification shows status"
+                    else "Asks for screen-record consent (only audio is captured)",
+                    fontSize = 9.sp, color = T.secondary
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #116: AUDIO PATH — the honest diagnostic screen ──
+        NeonCard {
+            GradientText("AUDIO PATH", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
+            Spacer(Modifier.height(6.dp))
+            val apCtx = LocalContext.current
+            var pathTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); pathTick++ } }
+            val vivo = AudioPath.isVivo()
+            val sysVerdict = if (vivo)
+                "BLOCKED — Vivo firmware refuses all third-party effect attach (Error -3 on every engine), verified on this device class"
+            else "device-dependent — see diagnostics footer"
+            Text(
+                "· " + AudioPath.androidLine() + "\n" +
+                "· " + AudioPath.osLine() + "\n" +
+                "· output device: " + AudioPath.outputDevice(apCtx) + "\n" +
+                "· output format: " + AudioPath.rateLine(apCtx) + "\n" +
+                "· playback capture (Android 10+): " + (if (AudioPath.captureSupported()) "supported" else "NOT supported on this Android") + "\n" +
+                "· capture permission: " + (if (CaptureEqService.running) "granted · active" else if (AudioPath.captureSupported()) "not requested yet" else "n/a") + "\n" +
+                "· system EQ attach (AudioEffect): " + sysVerdict + "\n" +
+                "· processing: capture " + (if (CaptureEqService.running) "ON" else "off") + " · in-app player available · system-wide AudioEffect " + (if (vivo) "blocked by firmware" else "device-dependent") + "\n" +
+                "· estimated latency: " + (if (CaptureEqService.running) "~" + "%.0f".format(CaptureEqService.latencyMs) + "ms" else "n/a") +
+                (if (pathTick < 0) "" else ""),
+                fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp
+            )
         }
 
         Spacer(Modifier.height(16.dp))
@@ -1674,7 +1785,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #115",
+                        "Neon EQ · Build #116",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

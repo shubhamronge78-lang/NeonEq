@@ -185,6 +185,10 @@ class TonePlayer(private val eq: SoftwareEq) {
     private var thread: Thread? = null
     @Volatile private var requestStop = false
 
+    // Build #116: "sweep" (30Hz-16kHz) | "lr" (440Hz alternating L/R every
+    // 0.5s — the left/right channel diagnostic test).
+    @Volatile var mode: String = "sweep"
+
     val isRunning: Boolean get() = thread?.isAlive == true
 
     fun play() {
@@ -213,14 +217,23 @@ class TonePlayer(private val eq: SoftwareEq) {
             val frame = ShortArray(2048 * 2)
             var phase = 0.0
             var t = 0
+            val lrMode = mode == "lr"
             while (!requestStop) {
                 for (f in 0 until 2048) {
-                    val tt = ((t * 2048 + f) % (sr * 24)) / (sr.toDouble() * 24.0)
-                    val freq = 30.0 * Math.pow(16000.0 / 30.0, tt)
-                    phase += 2.0 * PI * freq / sr
-                    val s = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767).toShort()
-                    frame[2 * f] = s
-                    frame[2 * f + 1] = s
+                    if (lrMode) {
+                        val side = ((t * 2048 + f) / 24000) % 2
+                        phase += 2.0 * PI * 440.0 / sr
+                        val s = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767).toShort()
+                        frame[2 * f] = if (side == 0) s else 0
+                        frame[2 * f + 1] = if (side == 0) 0 else s
+                    } else {
+                        val tt = ((t * 2048 + f) % (sr * 24)) / (sr.toDouble() * 24.0)
+                        val freq = 30.0 * Math.pow(16000.0 / 30.0, tt)
+                        phase += 2.0 * PI * freq / sr
+                        val s = (Math.sin(phase) * 0.6 * 32767).toInt().coerceIn(-32768, 32767).toShort()
+                        frame[2 * f] = s
+                        frame[2 * f + 1] = s
+                    }
                 }
                 eq.processAndWrite(java.nio.ShortBuffer.wrap(frame), track)
                 outFrames += 2048

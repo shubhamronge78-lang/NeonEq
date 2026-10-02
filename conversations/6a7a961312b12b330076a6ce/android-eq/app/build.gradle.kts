@@ -32,7 +32,10 @@ android {
         // (Settings > Apps > Neon EQ > version) that you're actually running the
         // build you think you're running.
         versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
-        versionName = "2.1.0"
+        versionName = "2.2.0"
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -44,6 +47,14 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    // Build #116: native NeonDsp engine (playback-capture pipeline)
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     composeOptions {
