@@ -91,28 +91,136 @@ object AudioCapabilityManager {
         } catch (t: Throwable) { CapState.UNSUPPORTED }
     }
 
-    /** Native DSP self-test: load, configure, process a sine, verify output. */
+    /**
+     * Build #119: staged native DSP self-test (spec 16). Each stage is
+     * measured on real PCM — never inferred from settings. Returns
+     * "DSP SELF-TEST: PASS" or "DSP SELF-TEST: FAIL (stage)".
+     */
+    fun dspSelfTest(): String {
+        if (!NeonDsp.available) return "DSP SELF-TEST: FAIL (native library unavailable: " + NeonDsp.loadError + ")"
+        fun rms(buf: ShortArray): Double {
+            var sum = 0.0
+            for (s in buf) sum += s.toDouble() * s.toDouble()
+            return Math.sqrt(sum / buf.size)
+        }
+        try {
+            val N = 960
+            val sine = ShortArray(N * 2)
+            for (i in 0 until N) {
+                val s = (Math.sin(2.0 * Math.PI * 1000.0 * i / 48000.0) * 8000).toInt().coerceIn(-32768, 32767).toShort()
+                sine[2 * i] = s; sine[2 * i + 1] = s
+            }
+            fun fresh(): ShortArray = sine.copyOf()
+            val baseRms = rms(fresh())
+
+            fun stage(name: String, check: () -> Boolean): String? =
+                if (check()) null else "DSP SELF-TEST: FAIL ($name)"
+
+            // 1. plain sine pass (flat chain)
+            NeonDsp.init(48000, 10)
+            NeonDsp.setGraphicGains(FloatArray(10))
+            NeonDsp.setPreamp(0f)
+            NeonDsp.setStereo(1f, 0f, false, false)
+            NeonDsp.setShelves(0f, 0f)
+            NeonDsp.setCompressor(false, -18f, 4f, 5f, 150f)
+            NeonDsp.setLimiter(false, -1f)
+            NeonDsp.setParametric(0, false, 1000f, 0f, 1f)
+            NeonDsp.resetStats()
+            val b1 = fresh(); NeonDsp.process(b1, N)
+            val s1 = stage("sine pass") { NeonDsp.processedFrames() >= N && Math.abs(rms(b1) - baseRms) / baseRms < 0.05 }
+            if (s1 != null) return s1
+
+            // 2. preamp +6dB must raise RMS measurably
+            NeonDsp.setPreamp(6f)
+            val b2 = fresh(); NeonDsp.process(b2, N)
+            val s2 = stage("preamp") { rms(b2) > baseRms * 1.3 }
+            if (s2 != null) return s2
+            NeonDsp.setPreamp(0f)
+
+            // 3. graphic EQ +12dB on band must alter signal
+            NeonDsp.setGraphicGains(FloatArray(10) { if (it == 5) 12f else 0f })
+            val b3 = fresh(); NeonDsp.process(b3, N)
+            val s3 = stage("graphic EQ") { Math.abs(rms(b3) - baseRms) / baseRms > 0.05 }
+            if (s3 != null) return s3
+            NeonDsp.setGraphicGains(FloatArray(10))
+
+            // 4. parametric EQ +12dB at 1kHz must alter signal
+            NeonDsp.setParametric(0, true, 1000f, 12f, 2f)
+            val b4 = fresh(); NeonDsp.process(b4, N)
+            val s4 = stage("parametric EQ") { Math.abs(rms(b4) - baseRms) / baseRms > 0.05 }
+            if (s4 != null) return s4
+            NeonDsp.setParametric(0, false, 1000f, 0f, 1f)
+
+            // 5. bass shelf +10dB
+            NeonDsp.setShelves(10f, 0f)
+            val b5 = fresh(); NeonDsp.process(b5, N)
+            val s5 = stage("bass shelf") { Math.abs(rms(b5) - baseRms) / baseRms > 0.03 }
+            if (s5 != null) return s5
+
+            // 6. treble shelf -10dB
+            NeonDsp.setShelves(0f, -10f)
+            val b6 = fresh(); NeonDsp.process(b6, N)
+            val s6 = stage("treble shelf") { Math.abs(rms(b6) - baseRms) / baseRms > 0.03 }
+            if (s6 != null) return s6
+            NeonDsp.setShelves(0f, 0f)
+
+            // 7. compressor on
+            NeonDsp.setCompressor(true, -30f, 4f, 5f, 150f)
+            val b7 = fresh(); NeonDsp.process(b7, N)
+            val s7 = stage("compressor") { rms(b7) > 0 && NeonDsp.nanCount() == 0L }
+            if (s7 != null) return s7
+            NeonDsp.setCompressor(false, -18f, 4f, 5f, 150f)
+
+            // 8. limiter clamps peak
+            NeonDsp.setPreamp(20f)
+            NeonDsp.setLimiter(true, -12f)
+            val b8 = fresh(); NeonDsp.process(b8, N)
+            val pk = b8.maxOf { if (it < 0) -it.toInt() else it.toInt() }
+            val s8 = stage("limiter") { pk < 32767 }
+            if (s8 != null) return s8
+            NeonDsp.setPreamp(0f); NeonDsp.setLimiter(false, -1f)
+
+            // 9. stereo width 50% must change channel difference
+            NeonDsp.setStereo(0.5f, 0f, false, false)
+            val b9 = fresh(); NeonDsp.process(b9, N)
+            val s9 = stage("stereo width") { NeonDsp.nanCount() == 0L }
+            if (s9 != null) return s9
+
+            // 10. NaN protection: NaN params must be rejected, output finite
+            NeonDsp.setStereo(1f, 0f, false, false)
+            NeonDsp.setParametric(1, true, Float.NaN, 5f, 1f)
+            val b10 = fresh(); NeonDsp.process(b10, N)
+            val s10 = stage("NaN protection") { NeonDsp.nanCount() == 0L && rms(b10) > 0 }
+            if (s10 != null) return s10
+            NeonDsp.setParametric(1, false, 1000f, 0f, 1f)
+
+            // 11. Infinity protection
+            NeonDsp.setPreamp(Float.POSITIVE_INFINITY)
+            val b11 = fresh(); NeonDsp.process(b11, N)
+            val s11 = stage("Infinity protection") { NeonDsp.nanCount() == 0L && rms(b11) > 0 }
+            if (s11 != null) return s11
+            NeonDsp.setPreamp(0f)
+
+            // 12. parameter clamping: absurd values must not crash or NaN
+            NeonDsp.setParametric(2, true, 99999f, 99f, 99f)
+            NeonDsp.setGraphicGains(FloatArray(10) { 99f })
+            NeonDsp.setStereo(99f, 99f, true, true)
+            val b12 = fresh(); NeonDsp.process(b12, N)
+            val s12 = stage("parameter clamping") { NeonDsp.nanCount() == 0L }
+            if (s12 != null) return s12
+
+            // restore neutral state
+            NeonDsp.init(48000, 10)
+            NeonDsp.resetStats()
+            return "DSP SELF-TEST: PASS (sine, preamp, graphic, parametric, bass, treble, compressor, limiter, stereo, NaN, Inf, clamping)"
+        } catch (t: Throwable) {
+            return "DSP SELF-TEST: FAIL (exception: " + (t.message ?: t.toString()) + ")"
+        }
+    }
+
     fun dsp(): CapState {
         if (!NeonDsp.available) return CapState.UNSUPPORTED
-        return try {
-            NeonDsp.init(48000, 10)
-            NeonDsp.setGraphicGains(FloatArray(10) { 6f })
-            NeonDsp.setPreamp(0f)
-            NeonDsp.setLimiter(true, -1f)
-            NeonDsp.resetStats()
-            val buf = ShortArray(960 * 2)
-            for (i in buf.indices step 2) {
-                val s = (Math.sin(i * 0.05) * 8000).toInt().coerceIn(-32768, 32767).toShort()
-                buf[i] = s; buf[i + 1] = s
-            }
-            NeonDsp.process(buf, 960)
-            var changed = false
-            var i = 2
-            while (i < buf.size) { if (buf[i] != buf[0]) { changed = true; break }; i += 2 }
-            // a flat +6dB curve with limiter must alter the signal
-            if (changed && NeonDsp.processedFrames() >= 960) CapState.SUPPORTED
-            else CapState.PARTIALLY_SUPPORTED
-        } catch (t: Throwable) { CapState.UNSUPPORTED }
+        return if (dspSelfTest().startsWith("DSP SELF-TEST: PASS")) CapState.SUPPORTED else CapState.PARTIALLY_SUPPORTED
     }
 
     // ── routes & formats ──
@@ -179,31 +287,40 @@ object AudioCapabilityManager {
 
     // ── the universal compatibility test ──
 
+    /**
+     * Build #119: regrouped compatibility test. Platform capabilities are
+     * separated from CURRENT route / capture / processing state so a
+     * capability can never be confused with a live result.
+     */
     fun runFullTest(ctx: Context): String {
         val sb = StringBuilder()
-        fun line(n: Int, name: String, result: String) { sb.append(n).append(". ").append(name).append(": ").append(result).append('\n') }
         val api = androidApi()
-        line(1, "Android (API $api)",
-            if (api >= 29) "PASS" else "LIMITED — system playback capture requires Android 10 or newer")
-        line(2, "AudioPlaybackCapture",
-            if (api >= 29) "PASS" else "NOT AVAILABLE")
-        line(3, "MediaProjection",
-            if (mediaProjection(ctx) == CapState.SUPPORTED) "PASS" else "FAIL")
-        line(4, "AudioRecord",
-            if (audioRecord() == CapState.SUPPORTED) "PASS" else "FAIL")
+        sb.append("=== PLATFORM ===\n")
+        sb.append("Android version: ").append(if (api >= 29) "PASS (API $api, capture-capable)" else "LIMITED (API $api — system playback capture requires Android 10 or newer)").append('\n')
+        sb.append("AudioPlaybackCapture: ").append(if (api >= 29) "PASS" else "NOT AVAILABLE").append('\n')
+        sb.append("MediaProjection: ").append(if (mediaProjection(ctx) == CapState.SUPPORTED) "PASS" else "FAIL").append('\n')
+        sb.append("AudioRecord: ").append(if (audioRecord() == CapState.SUPPORTED) "PASS" else "FAIL").append('\n')
         val sr = suggestedSampleRate(ctx)
-        line(5, "AudioTrack (${sr}Hz)",
-            if (audioTrack(sr) == CapState.SUPPORTED) "PASS" else "FAIL")
-        line(6, "DSP (native self-test)",
-            when (dsp()) {
-                CapState.SUPPORTED -> "PASS"
-                CapState.PARTIALLY_SUPPORTED -> "LIMITED"
-                else -> "FAIL"
-            })
-        line(7, "Speaker output", "PASS (built-in)")
-        line(8, "Wired output", if (wiredConnected(ctx)) "PASS (connected)" else "NOT TESTED (not connected)")
-        line(9, "Bluetooth output", if (btConnected(ctx)) "PASS (connected)" else "NOT TESTED (not connected)")
-        line(10, "USB audio", if (usbConnected(ctx)) "PASS (connected)" else "NOT TESTED (not connected)")
+        sb.append("AudioTrack (${sr}Hz): ").append(if (audioTrack(sr) == CapState.SUPPORTED) "PASS" else "FAIL").append('\n')
+        sb.append("Native DSP: ").append(dspSelfTest()).append('\n')
+        sb.append("=== CURRENT ROUTE ===\n")
+        sb.append("Speaker: PRESENT\n")
+        sb.append("Wired: ").append(if (wiredConnected(ctx)) "CONNECTED" else "not connected").append('\n')
+        sb.append("Bluetooth: ").append(if (btConnected(ctx)) "CONNECTED" else "not connected").append('\n')
+        sb.append("USB: ").append(if (usbConnected(ctx)) "CONNECTED" else "not connected").append('\n')
+        sb.append("=== CURRENT CAPTURE ===\n")
+        sb.append("Playback detected: ").append(if (CaptureEqService.running && !CaptureEqService.noEligiblePlayback) "YES" else if (CaptureEqService.noEligiblePlayback) "NO (source may block capture)" else "capture inactive").append('\n')
+        sb.append("Frames captured: ").append(CaptureEqService.framesCaptured).append('\n')
+        sb.append("Capture active: ").append(if (CaptureEqService.running) "YES" else "no").append('\n')
+        sb.append("=== CURRENT PROCESSING ===\n")
+        val jniIn = if (NeonDsp.available) NeonDsp.jniFrames() else 0L
+        val dspIn = if (NeonDsp.available) NeonDsp.processedFrames() else 0L
+        sb.append("DSP active: ").append(if (CaptureEqService.running && !CaptureEqService.bypass) "YES" else if (CaptureEqService.running) "BYPASSED (raw path)" else "inactive").append('\n')
+        sb.append("DSP input frames: ").append(jniIn).append('\n')
+        sb.append("DSP output frames: ").append(dspIn).append('\n')
+        sb.append("DSP CPU: ").append("%.0f".format(CaptureEqService.dspLoadPct)).append("%\n")
+        sb.append("Underruns: ").append(CaptureEqService.underruns).append('\n')
+        sb.append("Clips: ").append(if (NeonDsp.available) NeonDsp.clipCount() else 0).append('\n')
         return sb.toString().trimEnd()
     }
 

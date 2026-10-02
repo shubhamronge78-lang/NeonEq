@@ -35,6 +35,12 @@ object NeonDsp {
     external fun process(buffer: ShortArray, frames: Int)
     external fun clipCount(): Long
     external fun nanCount(): Long
+    // Build #119: signal-path counters + measured DSP meters (0..1000 milli-units)
+    external fun jniFrames(): Long
+    external fun inRmsMs(): Int
+    external fun inPeakMs(): Int
+    external fun outRmsMs(): Int
+    external fun outPeakMs(): Int
     external fun processedFrames(): Long
     external fun resetStats()
 }

@@ -51,6 +51,9 @@ static double limThreshDb = -1.0, limEnvDb = 0.0;
 
 static long clipCount = 0, procFrames = 0;
 static long nanEvents = 0;
+static long jniFramesIn = 0;   /* frames handed to the JNI process() entry */
+static int inRmsMs = 0, inPeakMs = 0;    /* pre-DSP meters, 0..1000 units */
+static int outRmsMs = 0, outPeakMs = 0; /* post-DSP meters, 0..1000 units */
 
 static const double F10[10] = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
 static const double F15[15] = {25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000};
@@ -319,7 +322,34 @@ JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf, jint frames) {
     jshort* p = (jshort*) env->GetPrimitiveArrayCritical(buf, NULL);
     if (p == NULL) return;
+    jniFramesIn += frames;
+    /* input meters — measured on raw captured PCM BEFORE any processing */
+    {
+        double sum = 0.0; int pk = 0;
+        for (int i = 0; i < frames * 2; i++) {
+            int s = (int) p[i];
+            int a = s < 0 ? -s : s;
+            if (a > pk) pk = a;
+            sum += (double) s * (double) s;
+        }
+        double rms = sqrt(sum / (frames * 2.0));
+        inRmsMs = (int) ((rms * 1000.0) / 32768.0);
+        inPeakMs = (pk * 1000) / 32768;
+    }
     for (int i = 0; i < frames; i++) processFrame(p + 2 * i);
+    /* output meters — measured AFTER the full DSP chain */
+    {
+        double sum = 0.0; int pk = 0;
+        for (int i = 0; i < frames * 2; i++) {
+            int s = (int) p[i];
+            int a = s < 0 ? -s : s;
+            if (a > pk) pk = a;
+            sum += (double) s * (double) s;
+        }
+        double rms = sqrt(sum / (frames * 2.0));
+        outRmsMs = (int) ((rms * 1000.0) / 32768.0);
+        outPeakMs = (pk * 1000) / 32768;
+    }
     env->ReleasePrimitiveArrayCritical(buf, p, 0);
 }
 
@@ -334,5 +364,21 @@ Java_com_neon_eq_dsp_NeonDsp_resetStats(JNIEnv* env, jobject thiz) { clipCount =
 
 JNIEXPORT jlong JNICALL
 Java_com_neon_eq_dsp_NeonDsp_nanCount(JNIEnv* env, jobject thiz) { return (jlong) nanEvents; }
+
+/* Build #119: signal-path counters and DSP meters (measured, never inferred) */
+JNIEXPORT jlong JNICALL
+Java_com_neon_eq_dsp_NeonDsp_jniFrames(JNIEnv* env, jobject thiz) { return jniFramesIn; }
+
+JNIEXPORT jint JNICALL
+Java_com_neon_eq_dsp_NeonDsp_inRmsMs(JNIEnv* env, jobject thiz) { return inRmsMs; }
+
+JNIEXPORT jint JNICALL
+Java_com_neon_eq_dsp_NeonDsp_inPeakMs(JNIEnv* env, jobject thiz) { return inPeakMs; }
+
+JNIEXPORT jint JNICALL
+Java_com_neon_eq_dsp_NeonDsp_outRmsMs(JNIEnv* env, jobject thiz) { return outRmsMs; }
+
+JNIEXPORT jint JNICALL
+Java_com_neon_eq_dsp_NeonDsp_outPeakMs(JNIEnv* env, jobject thiz) { return outPeakMs; }
 
 } /* extern "C" */

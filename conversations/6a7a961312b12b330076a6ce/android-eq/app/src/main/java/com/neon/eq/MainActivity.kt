@@ -915,7 +915,14 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             LaunchedEffect(Unit) { while (true) { delay(700); diagTick++ } }
             DisposableEffect(Unit) { onDispose { player.stop(); tone.stop() } }
             // Any change to the curve — drag, preset, startup reapply — reaches the software EQ instantly
-            LaunchedEffect(bandLevels) { dsp.setGains(bandLevels) }
+            LaunchedEffect(bandLevels) {
+                dsp.setGains(bandLevels)
+                // Build #119: immediate thread-safe native push for 15/31-band
+                // selections — the 2s service mirror is a safety net only.
+                if (com.neon.eq.dsp.NeonDsp.available && engine.bandCount > 10) {
+                    try { com.neon.eq.dsp.NeonDsp.setGraphicGains(bandLevels) } catch (_: Throwable) { }
+                }
+            }
             LaunchedEffect(loudness) { dsp.setPreamp(engine.loudnessAppliedMb(loudness) / 100f) }
             // Build #107: one-tap pipeline proof + live player status.
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1303,13 +1310,27 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             Spacer(Modifier.height(6.dp))
             // A/B controls: DSP bypass, processed output volume, buffer mode
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("A/B", fontSize = 10.sp, color = T.secondary)
+                Text("CAPTURE MODE", fontSize = 10.sp, color = T.secondary)
                 Spacer(Modifier.width(6.dp))
                 Button(
-                    onClick = { CaptureEqService.bypass = !CaptureEqService.bypass },
+                    onClick = { CaptureEqService.bypass = false },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (CaptureEqService.bypass) T.accent else T.primary)
-                ) { Text(if (CaptureEqService.bypass) "A · BYPASS" else "B · DSP ON", fontSize = 9.sp) }
+                        containerColor = if (!CaptureEqService.bypass) T.primary else T.accent)
+                ) { Text("PROCESSED", fontSize = 9.sp) }
+                Button(
+                    onClick = { CaptureEqService.bypass = true },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (CaptureEqService.bypass) T.accent else T.secondary),
+                    modifier = Modifier.padding(start = 4.dp)
+                ) { Text("RAW", fontSize = 9.sp) }
+            }
+            Text(
+                if (CaptureEqService.bypass) "RAW CAPTURE PATH — AudioPlaybackCapture → AudioRecord → AudioTrack. NeonEQ DSP bypass — Android/OEM processing is unaffected."
+                else "PROCESSED CAPTURE PATH — AudioPlaybackCapture → AudioRecord → NeonDspEngine → AudioTrack.",
+                fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("OUT VOL", fontSize = 10.sp, color = T.secondary)
                 Spacer(Modifier.width(6.dp))
                 Button(
                     onClick = {
@@ -1343,7 +1364,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     ) { Text(label, fontSize = 9.sp) }
                 }
             }
-            Text("Applies on next capture start. If LOW mode underruns persist on your device, use BALANCED or STABLE.", fontSize = 9.sp, color = T.secondary)
+            Text("Applies on next capture start. A single underrun never changes the mode — escalation uses a rolling threshold.", fontSize = 9.sp, color = T.secondary)
+            Text(
+                "buffer: " + CaptureEqService.bufferMode + " · " + "%.0f".format(CaptureEqService.captureBufferMs) + "ms · " + CaptureEqService.captureBufferFrames + " frames/chunk · underruns: " + CaptureEqService.underruns +
+                    (if (CaptureEqService.framesDone > 0 && CaptureEqService.captureSampleRate > 0) " · rate: " + "%.1f".format(CaptureEqService.underruns.toDouble() / (CaptureEqService.framesDone.toDouble() / CaptureEqService.captureSampleRate / 60.0)) + "/min" else ""),
+                fontSize = 9.sp, color = T.secondary
+            )
             Spacer(Modifier.height(6.dp))
             val mpm = remember {
                 try { capCtx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? android.media.projection.MediaProjectionManager } catch (t: Throwable) { null }
@@ -1384,6 +1410,127 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     fontSize = 9.sp, color = T.secondary
                 )
             }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #119: SIGNAL PATH — measured, stage-by-stage, never inferred ──
+        NeonCard {
+            GradientText("SIGNAL PATH", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Each stage is measured from live frame counters — a running service alone never reports ACTIVE.",
+                fontSize = 9.sp, color = T.secondary
+            )
+            Spacer(Modifier.height(6.dp))
+            var spTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); spTick++ } }
+            var snap by remember { mutableStateOf(longArrayOf(0L, 0L, 0L, 0L)) }
+            var deltas by remember { mutableStateOf(LongArray(4)) }
+            LaunchedEffect(spTick) {
+                val jni = if (NeonDsp.available) runCatching { NeonDsp.jniFrames() }.getOrDefault(0L) else 0L
+                val dsp = if (NeonDsp.available) runCatching { NeonDsp.processedFrames() }.getOrDefault(0L) else 0L
+                val cur = longArrayOf(CaptureEqService.framesCaptured, jni, dsp, CaptureEqService.framesDone)
+                val ns = LongArray(4) { i -> cur[i] - snap[i] }
+                snap = cur
+                deltas = ns
+            }
+            val dCap = deltas[0]; val dJni = deltas[1]; val dDsp = deltas[2]; val dOut = deltas[3]
+            val jniNow = snap[1]; val dspNow = snap[2]
+            val recentData = CaptureEqService.running &&
+                (android.os.SystemClock.elapsedRealtime() - CaptureEqService.lastDataAt) < 2500L
+            val srcState = when {
+                !CaptureEqService.running -> "CAPTURE STOPPED"
+                CaptureEqService.noEligiblePlayback -> "SOURCE MAY BLOCK CAPTURE"
+                recentData -> "ACTIVE"
+                else -> "NO PLAYBACK"
+            }
+            val jniState = when {
+                !CaptureEqService.running -> "—"
+                CaptureEqService.bypass -> "BYPASSED (RAW PATH)"
+                dJni > 0 -> "ACTIVE ($jniNow)"
+                dCap > 0 -> "CAPTURE → DSP CONNECTION FAILURE"
+                jniNow > 0 -> "ACTIVE ($jniNow)"
+                else -> "NO DATA"
+            }
+            val dspOutState = when {
+                !CaptureEqService.running -> "—"
+                CaptureEqService.bypass -> "BYPASSED (RAW PATH)"
+                dDsp > 0 -> "ACTIVE ($dspNow)"
+                else -> "NO DATA"
+            }
+            val trackState = when {
+                !CaptureEqService.running -> "—"
+                dOut > 0 -> "ACTIVE (" + CaptureEqService.framesDone + ")"
+                dDsp > 0 -> "DSP → OUTPUT CONNECTION FAILURE"
+                else -> "NO DATA"
+            }
+            val pathVerdict = when {
+                !CaptureEqService.running -> "CAPTURE STOPPED"
+                CaptureEqService.bypass && dOut > 0 -> "SIGNAL PATH ACTIVE (RAW — no DSP)"
+                CaptureEqService.bypass -> "NO DATA"
+                dCap > 0 && dJni == 0L -> "CAPTURE → DSP CONNECTION FAILURE"
+                dDsp > 0 && dOut == 0L -> "DSP → OUTPUT CONNECTION FAILURE"
+                dCap > 0 && dJni > 0 && dOut > 0 -> "SIGNAL PATH ACTIVE"
+                else -> "NO DATA"
+            }
+            Text(
+                "SOURCE PLAYBACK: " + srcState + "\n" +
+                "AUDIOPLAYBACKCAPTURE: " + (if (!CaptureEqService.running) "—" else if (dCap > 0 || CaptureEqService.framesCaptured > 0) "ACTIVE (" + CaptureEqService.framesCaptured + ")" else "NO DATA") + "\n" +
+                "AUDIORECORD: " + (if (!CaptureEqService.running) "—" else if (dCap > 0 || CaptureEqService.recordFrames > 0) "ACTIVE (" + CaptureEqService.recordFrames + ")" else "NO DATA") + "\n" +
+                "JNI → NATIVE DSP INPUT: " + jniState + "\n" +
+                "NATIVE DSP OUTPUT: " + dspOutState + "\n" +
+                "AUDIOTRACK OUTPUT: " + trackState + "\n" +
+                "OUTPUT DEVICE: " + AudioCapabilityManager.outputDeviceLine(LocalContext.current),
+                fontSize = 10.sp, color = T.secondary, lineHeight = 15.sp
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "VERDICT: " + pathVerdict,
+                fontSize = 11.sp, color = if (pathVerdict.startsWith("SIGNAL PATH ACTIVE")) T.primary else T.accent
+            )
+            Spacer(Modifier.height(6.dp))
+            // DSP METERS — measured inside the native engine, never from UI settings
+            val inRmsDb = if (NeonDsp.available && NeonDsp.inRmsMs() > 0) "%.1f dB".format(20 * kotlin.math.log10(NeonDsp.inRmsMs() / 1000.0)) else "-inf"
+            val inPkDb = if (NeonDsp.available && NeonDsp.inPeakMs() > 0) "%.1f dB".format(20 * kotlin.math.log10(NeonDsp.inPeakMs() / 1000.0)) else "-inf"
+            val outRmsDb = if (NeonDsp.available && NeonDsp.outRmsMs() > 0) "%.1f dB".format(20 * kotlin.math.log10(NeonDsp.outRmsMs() / 1000.0)) else "-inf"
+            val outPkDb = if (NeonDsp.available && NeonDsp.outPeakMs() > 0) "%.1f dB".format(20 * kotlin.math.log10(NeonDsp.outPeakMs() / 1000.0)) else "-inf"
+            Text(
+                "DSP METERS (measured): INPUT RMS " + inRmsDb + " · PEAK " + inPkDb + " | OUTPUT RMS " + outRmsDb + " · PEAK " + outPkDb,
+                fontSize = 10.sp, color = T.secondary
+            )
+            Spacer(Modifier.height(6.dp))
+            // DSP TEST — a clearly audible, safe test profile applied inside the native engine
+            var dspTestOn by remember { mutableStateOf(false) }
+            var savedDsp by remember { mutableStateOf<DspParams?>(null) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        if (!dspTestOn) {
+                            savedDsp = DspParams.load(engine)
+                            val t = DspParams()
+                            t.preamp = 0f; t.bass = 6f; t.treble = -6f; t.width = 0.5f
+                            t.limiterOn = true; t.limThresh = -1f
+                            t.applyTo(NeonDsp)
+                            dspTestOn = true
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (dspTestOn) T.accent else T.primary)
+                ) { Text("DSP TEST", fontSize = 9.sp) }
+                Button(
+                    onClick = {
+                        savedDsp?.let { it.applyTo(NeonDsp); it.save(engine) }
+                        dspTestOn = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary),
+                    modifier = Modifier.padding(start = 6.dp)
+                ) { Text("RESET DSP TEST", fontSize = 9.sp) }
+                if (dspTestOn) {
+                    Text("DSP TEST EFFECT ACTIVE", fontSize = 9.sp, color = T.accent, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+            Text("Test profile: preamp 0dB · bass +6dB · treble −6dB · width 50% — modifies PCM inside the native C++ engine. Player: NATIVE DSP (stereo) or KOTLIN FALLBACK (mono).", fontSize = 9.sp, color = T.secondary)
         }
 
         Spacer(Modifier.height(16.dp))
@@ -2049,7 +2196,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #118",
+                        "Neon EQ · Build #119",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),

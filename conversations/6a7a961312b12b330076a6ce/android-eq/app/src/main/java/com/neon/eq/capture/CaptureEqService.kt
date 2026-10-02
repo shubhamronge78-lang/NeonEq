@@ -52,6 +52,12 @@ class CaptureEqService : Service() {
         @Volatile var bufferMode = "balanced"
         @Volatile var framesCaptured = 0L
         @Volatile var framesDone = 0L
+        @Volatile var recordFrames = 0L          // AudioRecord read counter (independent)
+        @Volatile var lastDataAt = 0L            // elapsedRealtime of last PCM read
+        @Volatile var captureBufferMs = 0.0
+        @Volatile var captureBufferFrames = 0
+        @Volatile var oldRouteLine: String? = null
+        @Volatile var oldRateLine: String? = null
         @Volatile var underruns = 0
         @Volatile var noEligiblePlayback = false
         @Volatile var routeNote: String? = null
@@ -133,6 +139,10 @@ class CaptureEqService : Service() {
             routeNote = null
             framesCaptured = 0L
             framesDone = 0L
+            recordFrames = 0L
+            lastDataAt = 0L
+            oldRouteLine = null
+            oldRateLine = null
             underruns = 0
             noEligiblePlayback = false
             thread = Thread { captureLoop() }.apply { start() }
@@ -272,10 +282,14 @@ class CaptureEqService : Service() {
             val chunk = ShortArray(chunkFrames * 2)
             val chunkMs = chunkFrames * 1000.0 / sr
             capLatencyMs = chunkMs
+            captureBufferMs = chunkMs
+            captureBufferFrames = chunkFrames
             outLatencyMs = try { track.bufferSizeInFrames * 1000.0 / sr } catch (t: Throwable) { 0.0 }
             var pauseApplied = false
             var zeroReads = 0
             var mirrorCounter = 0
+            var underrunMark = 0
+            var underrunStreak = 0
             while (!requestStop) {
                 if (paused) {
                     if (!pauseApplied) {
@@ -302,6 +316,8 @@ class CaptureEqService : Service() {
                 zeroReads = 0
                 noEligiblePlayback = false
                 framesCaptured += n / 2
+                recordFrames += n / 2
+                lastDataAt = android.os.SystemClock.elapsedRealtime()
 
                 if (!bypass && NeonDsp.available) {
                     val tDsp0 = System.nanoTime()
@@ -332,16 +348,23 @@ class CaptureEqService : Service() {
                         }
                         track?.setVolume(outVolume)
                     } catch (t: Throwable) { }
-                    // Build #118: adaptive buffer — never keep a size that
-                    // continuously underruns on this device.
-                    if (bufferMode == "low" && underruns > 50) {
-                        bufferMode = "balanced"
-                        eng.setCaptureBufferMode("balanced")
-                        routeNote = "Adaptive buffer: LOW to BALANCED (underruns detected)"
-                    } else if (bufferMode == "balanced" && underruns > 250) {
-                        bufferMode = "stable"
-                        eng.setCaptureBufferMode("stable")
-                        routeNote = "Adaptive buffer: BALANCED to STABLE (underruns detected)"
+                    // Build #119: rolling-threshold escalation — a single
+                    // underrun never changes the mode. Escalate only after
+                    // 3 consecutive 2s windows with >5 underruns each.
+                    val dU = underruns - underrunMark
+                    underrunMark = underruns
+                    if (dU > 5) underrunStreak++ else underrunStreak = 0
+                    if (underrunStreak >= 3) {
+                        underrunStreak = 0
+                        if (bufferMode == "low") {
+                            bufferMode = "balanced"
+                            eng.setCaptureBufferMode("balanced")
+                            routeNote = "Adaptive buffer: LOW to BALANCED (sustained underruns)"
+                        } else if (bufferMode == "balanced") {
+                            bufferMode = "stable"
+                            eng.setCaptureBufferMode("stable")
+                            routeNote = "Adaptive buffer: BALANCED to STABLE (sustained underruns)"
+                        }
                     }
                     // Build #118: output route change -> safe reconfigure
                     // (STOP -> UPDATE FORMAT -> RESTART OUTPUT -> RESUME DSP).
@@ -351,6 +374,8 @@ class CaptureEqService : Service() {
                             am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: sr
                         } catch (t: Throwable) { sr }
                         if (newSr != sr) {
+                            oldRouteLine = AudioPath.outputDevice(this)
+                            oldRateLine = sr.toString() + "Hz"
                             try {
                                 track?.pause(); track?.flush(); track?.stop(); track?.release()
                                 val minOut2 = AudioTrack.getMinBufferSize(newSr, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
@@ -377,7 +402,8 @@ class CaptureEqService : Service() {
                                     outLatencyMs = try { rebuilt.bufferSizeInFrames * 1000.0 / sr } catch (t: Throwable) { 0.0 }
                                     try { rebuilt.setVolume(outVolume) } catch (t: Throwable) { }
                                     rebuilt.play()
-                                    routeNote = AudioErrors.OUTPUT_ROUTE_CHANGED + ": output rebuilt at " + newSr + "Hz"
+                                    routeNote = "ROUTE CHANGED: " + (oldRouteLine ?: "?") + " to " + AudioPath.outputDevice(this) +
+                                        " | " + (oldRateLine ?: "?") + " to " + newSr + "Hz — output rebuilt, DSP state preserved"
                                 } else {
                                     lastError = AudioErrors.AUDIO_TRACK_INITIALIZATION_FAILED + ": rebuild after route change failed"
                                     try { rebuilt.release() } catch (t: Throwable) { }
