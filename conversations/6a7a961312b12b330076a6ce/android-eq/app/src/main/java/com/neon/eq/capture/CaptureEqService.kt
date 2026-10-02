@@ -58,6 +58,11 @@ class CaptureEqService : Service() {
         @Volatile var captureBufferFrames = 0
         @Volatile var oldRouteLine: String? = null
         @Volatile var oldRateLine: String? = null
+        @Volatile var lastBufferChange: String? = null
+        @Volatile var loopMs = 0.0
+        @Volatile var sessionStartedAt = 0L
+        @Volatile var sessionRouteChanges = 0
+        @Volatile var sessionBufferChanges = 0
         @Volatile var underruns = 0
         @Volatile var noEligiblePlayback = false
         @Volatile var routeNote: String? = null
@@ -143,6 +148,11 @@ class CaptureEqService : Service() {
             lastDataAt = 0L
             oldRouteLine = null
             oldRateLine = null
+            lastBufferChange = null
+            loopMs = 0.0
+            sessionStartedAt = android.os.SystemClock.elapsedRealtime()
+            sessionRouteChanges = 0
+            sessionBufferChanges = 0
             underruns = 0
             noEligiblePlayback = false
             thread = Thread { captureLoop() }.apply { start() }
@@ -315,9 +325,11 @@ class CaptureEqService : Service() {
                 }
                 zeroReads = 0
                 noEligiblePlayback = false
+                val tLoop0 = System.nanoTime()
                 framesCaptured += n / 2
                 recordFrames += n / 2
                 lastDataAt = android.os.SystemClock.elapsedRealtime()
+                try { loopMs = loopMs * 0.9 + (System.nanoTime() - tLoop0) / 1e6 * 0.1 } catch (_: Throwable) { }
 
                 if (!bypass && NeonDsp.available) {
                     val tDsp0 = System.nanoTime()
@@ -359,11 +371,15 @@ class CaptureEqService : Service() {
                         if (bufferMode == "low") {
                             bufferMode = "balanced"
                             eng.setCaptureBufferMode("balanced")
-                            routeNote = "Adaptive buffer: LOW to BALANCED (sustained underruns)"
+                            routeNote = "Buffer automatically changed: LOW → BALANCED (sustained underruns)"
+                            lastBufferChange = "LOW → BALANCED"
+                            sessionBufferChanges++
                         } else if (bufferMode == "balanced") {
                             bufferMode = "stable"
                             eng.setCaptureBufferMode("stable")
-                            routeNote = "Adaptive buffer: BALANCED to STABLE (sustained underruns)"
+                            routeNote = "Buffer automatically changed: BALANCED → STABLE (sustained underruns)"
+                            lastBufferChange = "BALANCED → STABLE"
+                            sessionBufferChanges++
                         }
                     }
                     // Build #118: output route change -> safe reconfigure
@@ -374,6 +390,7 @@ class CaptureEqService : Service() {
                             am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: sr
                         } catch (t: Throwable) { sr }
                         if (newSr != sr) {
+                            sessionRouteChanges++
                             oldRouteLine = AudioPath.outputDevice(this)
                             oldRateLine = sr.toString() + "Hz"
                             try {
@@ -433,6 +450,31 @@ class CaptureEqService : Service() {
             try {
                 val result = if (framesCaptured > 0) "CAPTURE_OK" else if (noEligiblePlayback) "NO_ELIGIBLE_PLAYBACK" else "ERROR"
                 AudioCapabilityManager.appendCapabilityLog(this, result, framesCaptured, underruns, NeonDsp.available)
+            } catch (t: Throwable) { }
+            // Build #120: signal-path session record (spec 1) — counters only,
+            // no audio, no personal information.
+            try {
+                val sess = org.json.JSONObject()
+                sess.put("start_ms", sessionStartedAt)
+                sess.put("dur_ms", android.os.SystemClock.elapsedRealtime() - sessionStartedAt)
+                sess.put("frames_cap", framesCaptured)
+                sess.put("frames_rec", recordFrames)
+                sess.put("frames_jni", if (NeonDsp.available) NeonDsp.jniFrames() else 0L)
+                sess.put("frames_dsp", if (NeonDsp.available) NeonDsp.processedFrames() else 0L)
+                sess.put("frames_out", framesDone)
+                sess.put("underruns", underruns)
+                sess.put("clips", if (NeonDsp.available) NeonDsp.clipCount() else 0L)
+                sess.put("nan", if (NeonDsp.available) NeonDsp.nanCount() else 0L)
+                sess.put("dsp_cpu", (dspLoadPct * 10).toInt())
+                sess.put("buffer_ms", (captureBufferMs * 10).toInt())
+                sess.put("buffer_mode", bufferMode)
+                sess.put("sr", captureSampleRate)
+                sess.put("route", AudioPath.outputDevice(this))
+                sess.put("route_changes", sessionRouteChanges)
+                sess.put("buffer_changes", sessionBufferChanges)
+                sess.put("bypass", bypass)
+                sess.put("error", lastError ?: "none")
+                AudioCapabilityManager.appendSessionRecord(this, sess)
             } catch (t: Throwable) { }
             stopSelf()
         }

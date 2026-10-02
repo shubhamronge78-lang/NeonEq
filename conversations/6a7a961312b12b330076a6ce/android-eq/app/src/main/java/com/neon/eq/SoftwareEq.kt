@@ -78,6 +78,10 @@ class SoftwareEq {
         // Build #118: shared native engine marker — set after the native path
         // has been used at least once (diagnostics display).
         @Volatile var nativePathUsed: Boolean = false
+        // Build #120: current player engine label for diagnostics — never a
+        // silent switch: NATIVE DSP, KOTLIN FALLBACK — MONO, or
+        // KOTLIN FALLBACK (native lib unavailable).
+        @Volatile var lastEngineLabel: String? = null
 
         // Build #110: waveform capture from the software pipeline so the
         // main-screen visualizer can dance even on devices where the system
@@ -144,7 +148,10 @@ class SoftwareEq {
                 NeonDsp.setConvolverEnabled(false)
                 NeonDsp.resetStats()
                 nativePathUsed = true
+                lastEngineLabel = "NATIVE DSP"
             } catch (_: Throwable) { }
+        } else {
+            lastEngineLabel = if (channels == 1) "KOTLIN FALLBACK — MONO" else "KOTLIN FALLBACK (native unavailable)"
         }
         reconfigure()
     }

@@ -35,6 +35,8 @@ object AudioErrors {
     const val CAPTURE_READ_FAILED = "CAPTURE_READ_FAILED"
 }
 
+private val NL_Q = System.lineSeparator()
+
 object AudioCapabilityManager {
 
     fun androidApi(): Int = Build.VERSION.SDK_INT
@@ -303,6 +305,11 @@ object AudioCapabilityManager {
         val sr = suggestedSampleRate(ctx)
         sb.append("AudioTrack (${sr}Hz): ").append(if (audioTrack(sr) == CapState.SUPPORTED) "PASS" else "FAIL").append('\n')
         sb.append("Native DSP: ").append(dspSelfTest()).append('\n')
+        for (rate in intArrayOf(44100, 48000, 96000)) {
+            sb.append("Output @ ").append(rate).append("Hz: ")
+                .append(if (audioTrack(rate) == CapState.SUPPORTED) "SUPPORTED" else "UNSUPPORTED by this device/route").append(''\n'')
+        }
+        sb.append("(Pitch/latency at each rate needs an on-device listening check — no public API measures end-to-end audio path.)").append(''\n'')
         sb.append("=== CURRENT ROUTE ===\n")
         sb.append("Speaker: PRESENT\n")
         sb.append("Wired: ").append(if (wiredConnected(ctx)) "CONNECTED" else "not connected").append('\n')
@@ -360,5 +367,57 @@ object AudioCapabilityManager {
             if (!f.exists()) return "(no sessions logged yet)"
             f.readLines().takeLast(n).joinToString("\n")
         } catch (t: Throwable) { "(log unavailable)" }
+    }
+
+    // ── Build #120: signal-path session records (spec 1) — technical facts
+    // only: counters, timing, route. No audio, no personal information. ──
+
+    fun appendSessionRecord(ctx: Context, o: JSONObject) {
+        try { File(ctx.filesDir, "sessions.jsonl").appendText(o.toString() + "\n") } catch (t: Throwable) { }
+    }
+
+    fun exportSessions(ctx: Context, n: Int = 10): String {
+        return try {
+            val f = File(ctx.filesDir, "sessions.jsonl")
+            if (!f.exists()) return "(no capture sessions recorded yet)"
+            val sb = StringBuilder()
+            sb.append("NeonEQ Session Diagnostics — last sessions").append(NL_Q)
+            f.readLines().takeLast(n).forEach { line ->
+                try {
+                    val o = JSONObject(line)
+                    sb.append("— session ")
+                        .append(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date()))
+                    sb.append(" · ").append(o.optLong("dur_ms") / 1000).append("s")
+                        .append(" · verdict ").append(
+                            when {
+                                o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 && !o.optBoolean("bypass") -> "SIGNAL PATH ACTIVE"
+                                o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 -> "SIGNAL PATH ACTIVE (RAW)"
+                                o.optLong("frames_cap") > 0 -> "CAPTURE → DSP CONNECTION FAILURE"
+                                else -> "NO ELIGIBLE PLAYBACK"
+                            })
+                        .append(NL_Q)
+                        .append("  cap ").append(o.optLong("frames_cap"))
+                        .append(" · rec ").append(o.optLong("frames_rec"))
+                        .append(" · jni ").append(o.optLong("frames_jni"))
+                        .append(" · dsp ").append(o.optLong("frames_dsp"))
+                        .append(" · out ").append(o.optLong("frames_out"))
+                        .append(NL_Q)
+                        .append("  underruns ").append(o.optLong("underruns"))
+                        .append(" · clips ").append(o.optLong("clips"))
+                        .append(" · nan ").append(o.optLong("nan"))
+                        .append(" · dsp cpu ").append(o.optInt("dsp_cpu") / 10.0).append("%")
+                        .append(" · buffer ").append(o.optString("buffer_mode")).append(" ").append(o.optInt("buffer_ms") / 10.0).append("ms")
+                        .append(NL_Q)
+                        .append("  sr ").append(o.optInt("sr")).append("Hz")
+                        .append(" · route ").append(o.optString("route"))
+                        .append(" · route changes ").append(o.optInt("route_changes"))
+                        .append(" · buffer changes ").append(o.optInt("buffer_changes"))
+                        .append(NL_Q)
+                        .append("  error: ").append(o.optString("error", "none"))
+                        .append(NL_Q)
+                } catch (t: Throwable) { }
+            }
+            sb.toString()
+        } catch (t: Throwable) { "(session log unavailable)" }
     }
 }

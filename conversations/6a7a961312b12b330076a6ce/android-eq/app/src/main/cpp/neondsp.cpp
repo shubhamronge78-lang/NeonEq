@@ -59,6 +59,18 @@ static const double F10[10] = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16
 static const double F15[15] = {25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000};
 static const double F31[31] = {20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000};
 
+/* ── Build #120: parameter atomicity (spec 6) ─────────────────────────────
+   The UI thread writes parameter TARGETS under a seqlock; the audio thread
+   applies them at BLOCK BOUNDARIES (process() entry), so the audio thread
+   never observes a half-updated configuration (e.g. new gain with old Q).
+   Single UI-thread writer, bounded-retry reader, fully lock-free. */
+typedef struct { int on; double f, g, q; } PeqParam;
+static PeqParam peqTarget[MAXPEQ];
+static double grafTarget[MAXBANDS];
+static double grafApplied[MAXBANDS];
+static volatile int peqSeq = 0;   /* seqlock: even = stable */
+static volatile int grafSeq = 0;
+
 static double bandFreq(int i) {
     if (nbands >= 31) return F31[i];
     if (nbands >= 15) return F15[i];
@@ -112,6 +124,44 @@ static inline double runB(Biquad* f, double x) {
     double y = f->b0 * x + f->b1 * f->x1 + f->b2 * f->x2 - f->a1 * f->y1 - f->a2 * f->y2;
     f->x2 = f->x1; f->x1 = x; f->y2 = f->y1; f->y1 = y;
     return y;
+}
+
+static void applyPendingParams() {
+    int tries, i;
+    for (tries = 0; tries < 4; tries++) {
+        int s1 = peqSeq;
+        __sync_synchronize();
+        if (s1 & 1) continue;
+        PeqParam snap[MAXPEQ];
+        for (i = 0; i < MAXPEQ; i++) snap[i] = peqTarget[i];
+        __sync_synchronize();
+        if (peqSeq != s1) continue;
+        for (i = 0; i < MAXPEQ; i++) {
+            peqOn[i] = snap[i].on;
+            if (snap[i].on) {
+                setPeak(&peq[i][0], snap[i].f, snap[i].g, snap[i].q);
+                setPeak(&peq[i][1], snap[i].f, snap[i].g, snap[i].q);
+            }
+        }
+        break;
+    }
+    for (tries = 0; tries < 4; tries++) {
+        int s1 = grafSeq;
+        __sync_synchronize();
+        if (s1 & 1) continue;
+        double snap[MAXBANDS];
+        for (i = 0; i < MAXBANDS; i++) snap[i] = grafTarget[i];
+        __sync_synchronize();
+        if (grafSeq != s1) continue;
+        for (i = 0; i < nbands; i++) {
+            if (snap[i] != grafApplied[i]) {
+                setPeak(&graphic[i][0], bandFreq(i), snap[i], 1.0);
+                setPeak(&graphic[i][1], bandFreq(i), snap[i], 1.0);
+                grafApplied[i] = snap[i];
+            }
+        }
+        break;
+    }
 }
 
 static inline void processFrame(jshort* p) {
@@ -216,6 +266,12 @@ Java_com_neon_eq_dsp_NeonDsp_init(JNIEnv* env, jobject thiz, jint rate, jint ban
     clipCount = 0; procFrames = 0; histIdx = 0;
     compEnvDb = 0.0; limEnvDb = 0.0;
     memset(histL, 0, sizeof(histL)); memset(histR, 0, sizeof(histR));
+    /* Build #120: reset parameter targets + applied snapshot so a mode
+       switch starts from a clean, fully-committed configuration. */
+    __sync_synchronize();
+    for (int i = 0; i < MAXPEQ; i++) { peqTarget[i].on = 0; peqTarget[i].f = 1000.0; peqTarget[i].g = 0.0; peqTarget[i].q = 1.0; }
+    for (int i = 0; i < MAXBANDS; i++) { grafTarget[i] = 0.0; grafApplied[i] = 0.0; }
+    __sync_synchronize();
 }
 
 JNIEXPORT void JNICALL
@@ -229,13 +285,18 @@ JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setGraphicGains(JNIEnv* env, jobject thiz, jfloatArray gains) {
     jfloat* g = env->GetFloatArrayElements(gains, NULL);
     jsize n = env->GetArrayLength(gains);
-    for (int i = 0; i < nbands && i < n; i++) {
-        double gd = (double) g[i];
+    int s = grafSeq;
+    grafSeq = s + 1;                 /* odd: write in progress */
+    __sync_synchronize();
+    int i;
+    for (i = 0; i < MAXBANDS; i++) {
+        double gd = (i < n) ? (double) g[i] : 0.0;
         if (!isfinite(gd)) gd = 0.0;
         if (gd < -30.0) gd = -30.0; else if (gd > 30.0) gd = 30.0;
-        setPeak(&graphic[i][0], bandFreq(i), gd, 1.0);
-        setPeak(&graphic[i][1], bandFreq(i), gd, 1.0);
+        grafTarget[i] = gd;
     }
+    __sync_synchronize();
+    grafSeq = s + 2;                 /* even: committed, applied at block entry */
     env->ReleaseFloatArrayElements(gains, g, JNI_ABORT);
 }
 
@@ -243,16 +304,20 @@ JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setParametric(JNIEnv* env, jobject thiz, jint slot, jboolean on,
                                            jfloat freq, jfloat gainDb, jfloat q) {
     if (slot < 0 || slot >= MAXPEQ) return;
-    peqOn[slot] = on ? 1 : 0;
-    if (on) {
-        double f = (double) freq, g = (double) gainDb, qq = (double) q;
-        if (!isfinite(f) || !isfinite(g) || !isfinite(qq)) return;
-        if (f < 10.0) f = 10.0; else if (f > 20000.0) f = 20000.0;
-        if (g < -30.0) g = -30.0; else if (g > 30.0) g = 30.0;
-        if (qq < 0.1) qq = 0.1; else if (qq > 10.0) qq = 10.0;
-        setPeak(&peq[slot][0], f, g, qq);
-        setPeak(&peq[slot][1], f, g, qq);
-    }
+    double f = (double) freq, g = (double) gainDb, qq = (double) q;
+    if (!isfinite(f) || !isfinite(g) || !isfinite(qq)) return;
+    if (f < 10.0) f = 10.0; else if (f > 20000.0) f = 20000.0;
+    if (g < -30.0) g = -30.0; else if (g > 30.0) g = 30.0;
+    if (qq < 0.1) qq = 0.1; else if (qq > 10.0) qq = 10.0;
+    int s = peqSeq;
+    peqSeq = s + 1;                  /* odd: slot update in progress */
+    __sync_synchronize();
+    peqTarget[slot].on = on ? 1 : 0;
+    peqTarget[slot].f = f;
+    peqTarget[slot].g = g;
+    peqTarget[slot].q = qq;
+    __sync_synchronize();
+    peqSeq = s + 2;                  /* even: whole slot committed atomically */
 }
 
 JNIEXPORT void JNICALL
@@ -323,6 +388,7 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
     jshort* p = (jshort*) env->GetPrimitiveArrayCritical(buf, NULL);
     if (p == NULL) return;
     jniFramesIn += frames;
+    applyPendingParams();   /* whole-block commit: audio never sees partial configs */
     /* input meters — measured on raw captured PCM BEFORE any processing */
     {
         double sum = 0.0; int pk = 0;

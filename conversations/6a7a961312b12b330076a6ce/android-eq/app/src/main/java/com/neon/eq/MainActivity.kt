@@ -91,6 +91,7 @@ import com.neon.eq.capture.AudioPath
 import com.neon.eq.capture.CaptureEqService
 import com.neon.eq.dsp.NeonDsp
 import com.neon.eq.dsp.DspParams
+import com.neon.eq.dsp.PeqSlot
 
 private const val UI_PREFS = "ui_prefs"
 
@@ -1316,13 +1317,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     onClick = { CaptureEqService.bypass = false },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (!CaptureEqService.bypass) T.primary else T.accent)
-                ) { Text("PROCESSED", fontSize = 9.sp) }
+                ) { Text("B · DSP ACTIVE", fontSize = 9.sp) }
                 Button(
                     onClick = { CaptureEqService.bypass = true },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (CaptureEqService.bypass) T.accent else T.secondary),
                     modifier = Modifier.padding(start = 4.dp)
-                ) { Text("RAW", fontSize = 9.sp) }
+                ) { Text("A · BYPASS", fontSize = 9.sp) }
             }
             Text(
                 if (CaptureEqService.bypass) "RAW CAPTURE PATH — AudioPlaybackCapture → AudioRecord → AudioTrack. NeonEQ DSP bypass — Android/OEM processing is unaffected."
@@ -1467,12 +1468,25 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
             val pathVerdict = when {
                 !CaptureEqService.running -> "CAPTURE STOPPED"
+                CaptureEqService.noEligiblePlayback -> "NO ELIGIBLE PLAYBACK"
+                !recentData -> "UNKNOWN"
                 CaptureEqService.bypass && dOut > 0 -> "SIGNAL PATH ACTIVE (RAW — no DSP)"
-                CaptureEqService.bypass -> "NO DATA"
+                CaptureEqService.bypass -> "UNKNOWN"
                 dCap > 0 && dJni == 0L -> "CAPTURE → DSP CONNECTION FAILURE"
                 dDsp > 0 && dOut == 0L -> "DSP → OUTPUT CONNECTION FAILURE"
                 dCap > 0 && dJni > 0 && dOut > 0 -> "SIGNAL PATH ACTIVE"
-                else -> "NO DATA"
+                else -> "UNKNOWN"
+            }
+            // Build #120: simple dashboard status (spec 20) — plain words here,
+            // technical detail stays in AUDIO PATH below.
+            val simpleStatus = when {
+                !CaptureEqService.running && CaptureEqService.lastError != null -> "ERROR"
+                !CaptureEqService.running -> "READY"
+                CaptureEqService.noEligiblePlayback -> "SOURCE BLOCKED"
+                !recentData -> "CAPTURE WAITING"
+                CaptureEqService.bypass -> "CAPTURE ACTIVE"
+                dDsp > 0 && dOut > 0 -> "CAPTURE ACTIVE · DSP ACTIVE · OUTPUT ACTIVE"
+                else -> "CAPTURE ACTIVE"
             }
             Text(
                 "SOURCE PLAYBACK: " + srcState + "\n" +
@@ -1486,8 +1500,27 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
+                "STATUS: " + simpleStatus,
+                fontSize = 12.sp, color = T.primary
+            )
+            Text(
                 "VERDICT: " + pathVerdict,
                 fontSize = 11.sp, color = if (pathVerdict.startsWith("SIGNAL PATH ACTIVE")) T.primary else T.accent
+            )
+            Spacer(Modifier.height(4.dp))
+            // Build #120: output confidence (spec 3) — three separate claims,
+            // honestly separated. Processed-PCM delivery is verifiable; what
+            // the user physically hears is not, when Android also plays the
+            // original signal simultaneously.
+            Text(
+                "PROCESSING PATH: " + (if (pathVerdict == "SIGNAL PATH ACTIVE") "VERIFIED" else "not verified yet") +
+                    " · OUTPUT DELIVERY: " + (if (dOut > 0) "VERIFIED" else "not verified yet") +
+                    " · AUDIBLE RESULT: NOT DIRECTLY VERIFIABLE",
+                fontSize = 10.sp, color = T.accent
+            )
+            Text(
+                "NeonEQ verified that processed PCM reached its AudioTrack. Android may also continue playing the original source application's output.",
+                fontSize = 9.sp, color = T.secondary
             )
             Spacer(Modifier.height(6.dp))
             // DSP METERS — measured inside the native engine, never from UI settings
@@ -1496,41 +1529,91 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             val outRmsDb = if (NeonDsp.available && NeonDsp.outRmsMs() > 0) "%.1f dB".format(20 * kotlin.math.log10(NeonDsp.outRmsMs() / 1000.0)) else "-inf"
             val outPkDb = if (NeonDsp.available && NeonDsp.outPeakMs() > 0) "%.1f dB".format(20 * kotlin.math.log10(NeonDsp.outPeakMs() / 1000.0)) else "-inf"
             Text(
-                "DSP METERS (measured): INPUT RMS " + inRmsDb + " · PEAK " + inPkDb + " | OUTPUT RMS " + outRmsDb + " · PEAK " + outPkDb,
+                "A/B METERS (measured, same captured input): A · BYPASS output RMS " + outRmsDb + " (in RAW mode) | B · DSP ACTIVE output RMS " + outRmsDb + " (in PROCESSED mode)" +
+                    " | INPUT RMS " + inRmsDb + " · PEAK " + inPkDb + " | OUTPUT PEAK " + outPkDb,
                 fontSize = 10.sp, color = T.secondary
             )
+            Text("Switch A/B mid-capture — the input is the same captured stream; safe maximum output gain 150% + limiter enforced.", fontSize = 9.sp, color = T.secondary)
             Spacer(Modifier.height(6.dp))
-            // DSP TEST — a clearly audible, safe test profile applied inside the native engine
-            var dspTestOn by remember { mutableStateOf(false) }
+            // Build #120: effect verification (spec 5) — safe per-stage test
+            // profiles applied inside the native engine, RESET restores the
+            // user's previous settings exactly.
+            var testStage by remember { mutableStateOf<String?>(null) }
             var savedDsp by remember { mutableStateOf<DspParams?>(null) }
+            fun runTest(name: String, p: DspParams) {
+                if (savedDsp == null) savedDsp = DspParams.load(engine)
+                p.limiterOn = true; p.limThresh = -1f
+                p.applyTo(NeonDsp)
+                testStage = name
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = {
-                        if (!dspTestOn) {
-                            savedDsp = DspParams.load(engine)
-                            val t = DspParams()
-                            t.preamp = 0f; t.bass = 6f; t.treble = -6f; t.width = 0.5f
-                            t.limiterOn = true; t.limThresh = -1f
-                            t.applyTo(NeonDsp)
-                            dspTestOn = true
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (dspTestOn) T.accent else T.primary)
-                ) { Text("DSP TEST", fontSize = 9.sp) }
+                Button(onClick = { runTest("DSP TEST (preamp + bass + treble + width)", DspParams().apply { preamp = 0f; bass = 6f; treble = -6f; width = 0.5f }) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.primary)) { Text("DSP TEST", fontSize = 8.sp) }
+                Button(onClick = { runTest("BASS TEST (bass shelf +8dB)", DspParams().apply { bass = 8f }) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.primary), modifier = Modifier.padding(start = 4.dp)) { Text("BASS", fontSize = 8.sp) }
+                Button(onClick = { runTest("TREBLE TEST (treble shelf +8dB)", DspParams().apply { treble = 8f }) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.primary), modifier = Modifier.padding(start = 4.dp)) { Text("TREBLE", fontSize = 8.sp) }
+                Button(onClick = { runTest("STEREO TEST (width 40%)", DspParams().apply { width = 0.4f }) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.primary), modifier = Modifier.padding(start = 4.dp)) { Text("STEREO", fontSize = 8.sp) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { runTest("EQ TEST (parametric 1kHz +10dB)", DspParams().apply { slots = List(8) { if (it == 0) PeqSlot(true, 1000f, 10f, 2f) else PeqSlot() } }) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)) { Text("EQ", fontSize = 8.sp) }
+                Button(onClick = { runTest("LIMITER TEST (preamp +12dB, limiter -6dB)", DspParams().apply { preamp = 12f; limThresh = -6f }) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary), modifier = Modifier.padding(start = 4.dp)) { Text("LIMITER", fontSize = 8.sp) }
                 Button(
                     onClick = {
                         savedDsp?.let { it.applyTo(NeonDsp); it.save(engine) }
-                        dspTestOn = false
+                        savedDsp = null
+                        testStage = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary),
-                    modifier = Modifier.padding(start = 6.dp)
-                ) { Text("RESET DSP TEST", fontSize = 9.sp) }
-                if (dspTestOn) {
-                    Text("DSP TEST EFFECT ACTIVE", fontSize = 9.sp, color = T.accent, modifier = Modifier.padding(start = 8.dp))
-                }
+                    colors = ButtonDefaults.buttonColors(containerColor = T.accent),
+                    modifier = Modifier.padding(start = 4.dp)
+                ) { Text("RESET DSP TEST", fontSize = 8.sp) }
             }
-            Text("Test profile: preamp 0dB · bass +6dB · treble −6dB · width 50% — modifies PCM inside the native C++ engine. Player: NATIVE DSP (stereo) or KOTLIN FALLBACK (mono).", fontSize = 9.sp, color = T.secondary)
+            if (testStage != null) {
+                Text("DSP TEST EFFECT ACTIVE — stage: " + testStage, fontSize = 9.sp, color = T.accent)
+            } else {
+                Text("Tests modify PCM inside the native C++ engine. RESET restores your previous settings.", fontSize = 9.sp, color = T.secondary)
+            }
+            Text("PLAYER ENGINE: " + (SoftwareEq.lastEngineLabel ?: "idle"), fontSize = 9.sp, color = T.secondary)
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Build #120: DSP failure recovery (spec 7) — restart after a
+                // NaN/Inf bypass, re-applies the user's chain from persisted state.
+                Button(
+                    onClick = {
+                        try {
+                            val srNow = if (CaptureEqService.captureSampleRate > 0) CaptureEqService.captureSampleRate else 48000
+                            NeonDsp.init(srNow, engine.bandCount)
+                            DspParams.load(engine).applyTo(NeonDsp)
+                            val snap = engine.bandLevelsSnapshot()
+                            NeonDsp.setGraphicGains(FloatArray(engine.bandCount) { i -> (snap.getOrNull(i)?.toInt() ?: 0).toFloat() })
+                            CaptureEqService.bypass = false
+                        } catch (t: Throwable) { }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("DSP RESTART", fontSize = 9.sp) }
+                // Build #120: session diagnostics export (spec 1)
+                val sessCtx = LocalContext.current
+                Button(
+                    onClick = {
+                        try {
+                            val file = File(sessCtx.cacheDir, "neoneq_sessions.txt")
+                            file.writeText(AudioCapabilityManager.exportSessions(sessCtx))
+                            val uri = FileProvider.getUriForFile(sessCtx, sessCtx.packageName + ".fileprovider", file)
+                            sessCtx.startActivity(Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }, "Share session diagnostics"))
+                        } catch (t: Throwable) { }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.primary),
+                    modifier = Modifier.padding(start = 4.dp)
+                ) { Text("EXPORT SESSION DIAGNOSTICS", fontSize = 8.sp) }
+            }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -2196,7 +2279,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #119",
+                        "Neon EQ · Build #120",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
