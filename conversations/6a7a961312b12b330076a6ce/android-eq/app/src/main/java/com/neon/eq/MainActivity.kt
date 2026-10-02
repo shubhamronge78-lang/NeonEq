@@ -1191,7 +1191,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(name, fontSize = 10.sp, color = T.secondary, modifier = Modifier.width(64.dp))
                     miniBtn("−", onMinus)
-                    Text(value, fontSize = 10.sp, color = T.text, modifier = Modifier.width(70.dp))
+                    Text(value, fontSize = 10.sp, color = T.secondary, modifier = Modifier.width(70.dp))
                     miniBtn("+", onPlus)
                 }
             }
@@ -1241,10 +1241,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         val i2 = (peqFreqs.indexOfFirst { it >= fq } + 1).coerceAtMost(peqFreqs.size - 1)
                         setSlot(slot.copy(freq = peqFreqs[i2]))
                     })
-                    Text((if (fq >= 1000) (fq / 1000).toInt().toString() + "k" else fq.toInt().toString()) + "Hz", fontSize = 9.sp, color = T.text, modifier = Modifier.width(44.dp))
+                    Text((if (fq >= 1000) (fq / 1000).toInt().toString() + "k" else fq.toInt().toString()) + "Hz", fontSize = 9.sp, color = T.secondary, modifier = Modifier.width(44.dp))
                     miniBtn("G−", { setSlot(slot.copy(gain = (slot.gain - 3f).coerceIn(-30f, 30f))) })
                     miniBtn("G+", { setSlot(slot.copy(gain = (slot.gain + 3f).coerceIn(-30f, 30f))) })
-                    Text((if (slot.gain >= 0) "+" else "") + slot.gain.toInt() + "dB", fontSize = 9.sp, color = T.text, modifier = Modifier.width(44.dp))
+                    Text((if (slot.gain >= 0) "+" else "") + slot.gain.toInt() + "dB", fontSize = 9.sp, color = T.secondary, modifier = Modifier.width(44.dp))
                     miniBtn("Q−", { setSlot(slot.copy(q = (slot.q / 2f).coerceAtLeast(0.25f))) })
                     miniBtn("Q+", { setSlot(slot.copy(q = (slot.q * 2f).coerceAtMost(10f))) })
                 }
