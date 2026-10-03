@@ -1282,6 +1282,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         var editBand by remember { mutableStateOf(-1) }
         var selBand by remember { mutableStateOf(-1) }
         var eqScaleMode by remember { mutableStateOf(0) } // 0 AUTO · 6 · 12 · 18
+        var eqPrecision by remember { mutableStateOf(false) }
+        var autoScale by remember { mutableStateOf(6f) }
+        var gainEditBand by remember { mutableStateOf(-1) }
+        var gainEditInput by remember { mutableStateOf("") }
+        var showResetEqDialog by remember { mutableStateOf(false) }
+        var previewPresetName by remember { mutableStateOf<String?>(null) }
         // ── Build #123: UNDO / REDO — complete-configuration history ──
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("↶ UNDO " + if (undoStack.isEmpty()) "" else "(" + undoStack.size + ")", fontSize = 10.sp,
@@ -1294,6 +1300,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.12f))
                     .clickable { redoDsp() }.padding(horizontal = 12.dp, vertical = 6.dp)
                     .semantics { contentDescription = "Redo DSP change" })
+            Text("RESET EQ", fontSize = 10.sp, color = T.accent,
+                modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.12f))
+                    .clickable { showResetEqDialog = true }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .semantics { contentDescription = "Reset only the EQ section" })
             Text(
                 (undoStack.lastOrNull()?.label ?: "no changes yet") + " · complete configurations through the atomic parameter system",
                 fontSize = 8.sp, color = T.secondary, modifier = Modifier.padding(start = 8.dp)
@@ -1470,21 +1481,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     PresetChip(
                     preset = preset,
                     selected = selectedPreset == preset.name,
-                    onClick = {
-                        pushUndo(true, "Preset: " + preset.name)
-                        markRecent(preset.name)
-                        selectedPreset = preset.name
-                        engine.setSelectedPresetName(preset.name)
-                        val levels = Presets.levelsForCount(preset, bandCount)
-                        val newLevels = FloatArray(31) { 0f }
-                        levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
-                        animateLevelsTo(newLevels)
-                        // Build #89: ONE coordinated hardware transition; built-ins
-                        // leave the effect sliders at their current values.
-                        engine.applyFullState(
-                            ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
-                            bassBoost, virtualizer, loudness, smooth = true)
-                    }
+                    // Build #126: lightweight preview before applying
+                    onClick = { previewPresetName = preset.name }
                 )
                 }
             }
@@ -1501,27 +1499,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     CustomPresetChip(
                     preset = preset,
                     selected = selectedPreset == preset.name,
-                    onClick = {
-                        pushUndo(true, "Preset: " + preset.name)
-                        markRecent(preset.name)
-                        selectedPreset = preset.name
-                        engine.setSelectedPresetName(preset.name)
-                        val levels = Presets.levelsForCount(preset, bandCount)
-                        val newLevels = FloatArray(31) { 0f }
-                        levels.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
-                        animateLevelsTo(newLevels)
-                        // Build #89: presets saved before #63 (when the effects
-                        // sliders were silent no-ops) carry 0s that were never
-                        // intentional — applying them yanked loudness/bass down
-                        // and made every preset quieter than flat. A stored 0 now
-                        // means "not set": keep the live slider value instead.
-                        bassBoost = if (preset.bassBoost > 0) preset.bassBoost else bassBoost
-                        virtualizer = if (preset.virtualizer > 0) preset.virtualizer else virtualizer
-                        loudness = if (preset.loudness > 0) preset.loudness else loudness
-                        engine.applyFullState(
-                            ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
-                            bassBoost, virtualizer, loudness, smooth = true)
-                    },
+                    onClick = { previewPresetName = preset.name },
                     onLongPress = { menuPreset = preset },
                     onDelete = {
                         engine.deleteCustomPreset(preset.name)
@@ -1600,13 +1578,16 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // portrait keeps the stacked layout. The y-mapping logic is identical
         // in both: AUTO/±6/±12/±18 only changes visualization, DSP stays -15..+20.
         val eqLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val eqScale = when (eqScaleMode) {
-            6 -> 6f; 12 -> 12f; 18 -> 18f
-            else -> {
-                val m = bandLevels.take(bandCount).maxOfOrNull { kotlin.math.abs(it) } ?: 0f
-                when { m <= 5.5f -> 6f; m <= 11.5f -> 12f; else -> 18f }
-            }
-        }
+        // Build #126: AUTO inspects configured gains, adds headroom, picks the
+        // closest supported range. Hysteresis: expands immediately, shrinks
+        // only well clear of the boundary — the graph never jumps mid-drag.
+        val eqScale = if (eqScaleMode == 0) {
+            val need = (bandLevels.take(bandCount).maxOfOrNull { kotlin.math.abs(it) } ?: 0f) * 1.15f + 0.5f
+            val target = when { need <= 6f -> 6f; need <= 12f -> 12f; else -> 18f }
+            if (target > autoScale) autoScale = target
+            else if (need < autoScale * 0.55f) autoScale = target
+            autoScale
+        } else eqScaleMode.toFloat()
         if (eqLandscape) {
             Row(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -1615,7 +1596,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         bands = bandList,
                         levels = bandLevels,
                         onLevelChange = { band, level ->
-                            pushUndo(label = "EQ band " + (band + 1))
                             val newLevels = bandLevels.copyOf()
                             newLevels[band] = level
                             bandLevels = newLevels
@@ -1634,7 +1614,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         onBandTap = { band -> editBand = band },
                         scaleDb = eqScale,
                         selectedBand = selBand,
-                        onBandSelect = { band -> selBand = if (selBand == band) -1 else band }
+                        onBandSelect = { band -> selBand = if (selBand == band) -1 else band },
+                        precisionMode = eqPrecision,
+                        onGestureStart = { band -> pushUndo(true, "EQ band " + (band + 1)) }
                     )
                 }
                 Column(
@@ -1654,13 +1636,41 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 .semantics { contentDescription = "Graph range " + sl }
                         )
                     }
+                    // Build #126: PRECISION — drag becomes relative movement at
+                    // 0.25x rate. A visible toggle, not an unstable multi-touch.
+                    Text("PRECISION " + (if (eqPrecision) "ON" else "OFF"), fontSize = 10.sp,
+                        color = if (eqPrecision) T.accent else T.secondary,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background((if (eqPrecision) T.accent else T.secondary).copy(alpha = 0.12f))
+                            .clickable { eqPrecision = !eqPrecision }
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .semantics { contentDescription = if (eqPrecision) "Disable precision dragging" else "Enable precision dragging" })
+                    // Build #126: selected-band panel — only real engine values
                     if (selBand >= 0 && selBand < bandCount) {
                         val f = (bandList.getOrNull(selBand)?.freq ?: 1000) / 1000.0
+                        val fq = if (f >= 1.0) "%.2f kHz".format(f) else "%.0f Hz".format(f * 1000)
+                        Text("BAND " + (selBand + 1), fontSize = 12.sp, color = T.primary, fontWeight = FontWeight.Bold)
+                        Text("FREQUENCY\n" + fq, fontSize = 11.sp, color = T.primary, lineHeight = 15.sp)
                         Text(
-                            "Band " + (selBand + 1) + "\n" + (if (f >= 1.0) "%.2f kHz".format(f) else "%.0f Hz".format(f * 1000)) +
-                                "\n" + "%+.1f dB".format(bandLevels.getOrElse(selBand) { 0f }) + " · Q 1.00",
-                            fontSize = 11.sp, color = T.primary, lineHeight = 15.sp
+                            "GAIN\n" + "%+.1f dB".format(bandLevels.getOrElse(selBand) { 0f }),
+                            fontSize = 11.sp, color = T.primary, lineHeight = 15.sp,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                gainEditBand = selBand
+                                gainEditInput = "%.2f".format(bandLevels.getOrElse(selBand) { 0f })
+                            }.semantics { contentDescription = "Band " + (selBand + 1) + " gain, tap to enter an exact value" }
                         )
+                        Text("TYPE\nPeaking (graphic band)", fontSize = 11.sp, color = T.secondary, lineHeight = 15.sp)
+                        Row {
+                            TextButton(onClick = {
+                                pushUndo(true, "Reset band " + (selBand + 1))
+                                val newLevels = bandLevels.copyOf()
+                                newLevels[selBand] = 0f
+                                bandLevels = newLevels
+                                engine.setBandLevel(selBand, 0)
+                                selectedPreset = "Custom"
+                                engine.setSelectedPresetName("Custom")
+                            }) { Text("RESET BAND", color = T.accent) }
+                            TextButton(onClick = { selBand = -1 }) { Text("DONE", color = T.secondary) }
+                        }
                     }
                     Text("double-tap resets a band\nlong-press opens the editor\nDSP range stays -15..+20 dB", fontSize = 8.sp, color = T.secondary, lineHeight = 11.sp)
                 }
@@ -1671,7 +1681,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 bands = bandList,
                 levels = bandLevels,
                 onLevelChange = { band, level ->
-                    pushUndo(label = "EQ band " + (band + 1))
                     val newLevels = bandLevels.copyOf()
                     newLevels[band] = level
                     bandLevels = newLevels
@@ -1690,7 +1699,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 onBandTap = { band -> editBand = band },
                 scaleDb = eqScale,
                 selectedBand = selBand,
-                onBandSelect = { band -> selBand = if (selBand == band) -1 else band }
+                onBandSelect = { band -> selBand = if (selBand == band) -1 else band },
+                precisionMode = eqPrecision,
+                onGestureStart = { band -> pushUndo(true, "EQ band " + (band + 1)) }
             )
             // Build #124: visual scale selector — visualization only, never alters DSP gains
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1709,16 +1720,198 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             .semantics { contentDescription = "Graph range " + sl }
                     )
                 }
+                Text("PRECISION " + (if (eqPrecision) "ON" else "OFF"), fontSize = 9.sp,
+                    color = if (eqPrecision) T.accent else T.secondary,
+                    modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background((if (eqPrecision) T.accent else T.secondary).copy(alpha = 0.12f))
+                        .clickable { eqPrecision = !eqPrecision }
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                        .semantics { contentDescription = if (eqPrecision) "Disable precision dragging" else "Enable precision dragging" })
             }
+            // Build #126: compact portrait band editor — real values only
             if (selBand >= 0 && selBand < bandCount) {
                 val f = (bandList.getOrNull(selBand)?.freq ?: 1000) / 1000.0
-                Text(
-                    "Band " + (selBand + 1) + " · " + (if (f >= 1.0) "%.2f kHz".format(f) else "%.0f Hz".format(f * 1000)) +
-                        " · " + "%+.1f dB".format(bandLevels.getOrElse(selBand) { 0f }) + " · Q 1.00 · double-tap resets, long-press opens editor",
-                    fontSize = 9.sp, color = T.primary
+                val fq = if (f >= 1.0) "%.2f kHz".format(f) else "%.0f Hz".format(f * 1000)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "B" + (selBand + 1) + " " + fq + "  GAIN " + "%+.1f dB".format(bandLevels.getOrElse(selBand) { 0f }),
+                        fontSize = 11.sp, color = T.primary,
+                        modifier = Modifier.weight(1f).clickable {
+                            gainEditBand = selBand
+                            gainEditInput = "%.2f".format(bandLevels.getOrElse(selBand) { 0f })
+                        }.semantics { contentDescription = "Band " + (selBand + 1) + " gain, tap to enter an exact value" }
+                    )
+                    Text("RESET", fontSize = 9.sp, color = T.accent,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.12f))
+                            .clickable {
+                                pushUndo(true, "Reset band " + (selBand + 1))
+                                val newLevels = bandLevels.copyOf()
+                                newLevels[selBand] = 0f
+                                bandLevels = newLevels
+                                engine.setBandLevel(selBand, 0)
+                                selectedPreset = "Custom"
+                                engine.setSelectedPresetName("Custom")
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .semantics { contentDescription = "Reset band " + (selBand + 1) + " only" })
+                    Text("DONE", fontSize = 9.sp, color = T.secondary,
+                        modifier = Modifier.padding(start = 6.dp).clickable { selBand = -1 }
+                            .padding(horizontal = 4.dp, vertical = 4.dp)
+                            .semantics { contentDescription = "Close band editor" })
+                }
+                Text("double-tap resets a band · long-press opens the full editor · tap the gain value to type an exact number", fontSize = 8.sp, color = T.secondary)
+            }
+        }
+        // ── Build #126: numeric gain entry — validated + clamped, never invalid to DSP ──
+        if (gainEditBand >= 0 && gainEditBand < bandCount) {
+            AlertDialog(
+                containerColor = S.card,
+                shape = RoundedCornerShape(24.dp),
+                onDismissRequest = { gainEditBand = -1 },
+                title = { Text("BAND " + (gainEditBand + 1) + " GAIN", color = T.primary, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        OutlinedTextField(
+                            value = gainEditInput,
+                            onValueChange = { gainEditInput = it },
+                            label = { Text("Exact gain (-15.0 .. +20.0)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("Validated and clamped to the engine's real limits before any parameter is sent.", fontSize = 8.sp, color = T.secondary)
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        val parsed = gainEditInput.trim().replace("+", "").toFloatOrNull()
+                        if (parsed != null) {
+                            val clamped = parsed.coerceIn(-15f, 20f)
+                            pushUndo(true, "Band " + (gainEditBand + 1) + " gain " + (if (clamped >= 0) "+" else "") + "%.1f dB".format(clamped))
+                            val newLevels = bandLevels.copyOf()
+                            newLevels[gainEditBand] = clamped
+                            bandLevels = newLevels
+                            engine.setBandLevel(gainEditBand, round(clamped).toInt().toShort())
+                            selectedPreset = "Custom"
+                            engine.setSelectedPresetName("Custom")
+                            scope2.launch {
+                                if (parsed < -15f || parsed > 20f) snackbarHost.showSnackbar("Clamped to " + (if (clamped >= 0) "+" else "") + "%.1f dB".format(clamped))
+                                else snackbarHost.showSnackbar("Band " + (gainEditBand + 1) + " = " + (if (clamped >= 0) "+" else "") + "%.1f dB".format(clamped))
+                            }
+                        } else {
+                            scope2.launch { snackbarHost.showSnackbar("Not a valid number — nothing changed") }
+                        }
+                        gainEditBand = -1
+                    }, colors = ButtonDefaults.buttonColors(containerColor = T.primary)) { Text("APPLY") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { gainEditBand = -1 }) { Text("CANCEL", color = T.secondary) }
+                }
+            )
+        }
+
+        // ── Build #126: RESET ALL EQ — EQ section only, one undo entry ──
+        if (showResetEqDialog) {
+            AlertDialog(
+                containerColor = S.card,
+                shape = RoundedCornerShape(24.dp),
+                onDismissRequest = { showResetEqDialog = false },
+                title = { Text("RESET EQ?", color = T.primary, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text("Graphic EQ → Flat\nParametric EQ → Neutral", fontSize = 11.sp, color = T.secondary, lineHeight = 16.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Preamp, shelves, compressor, stereo, limiter and effects are NOT changed. This is separate from the global RESET DSP.", fontSize = 9.sp, color = T.secondary)
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        pushUndo(true, "Reset EQ")
+                        try {
+                            val newLevels = FloatArray(31) { 0f }
+                            bandLevels = newLevels
+                            animateLevelsTo(newLevels)
+                            engine.applyFullState(ShortArray(31) { 0 }, bassBoost, virtualizer, loudness, smooth = true)
+                            val p = DspParams.load(engine)
+                            p.slots = List(8) { PeqSlot() }
+                            p.applyTo(NeonDsp)
+                            p.save(engine)
+                            selectedPreset = "Flat"
+                            engine.setSelectedPresetName("Flat")
+                        } catch (_: Throwable) { }
+                        showResetEqDialog = false
+                    }, colors = ButtonDefaults.buttonColors(containerColor = T.accent)) { Text("RESET EQ") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showResetEqDialog = false }) { Text("CANCEL", color = T.secondary) }
+                }
+            )
+        }
+
+        // ── Build #126: PRESET PREVIEW — actual preset data only ──
+        if (previewPresetName != null) {
+            val pname = previewPresetName!!
+            val pbuiltin = Presets.presets.firstOrNull { it.name == pname }
+            val pcustom = customPresets.firstOrNull { it.name == pname }
+            val plv = when {
+                pbuiltin != null -> Presets.levelsForCount(pbuiltin, bandCount)
+                pcustom != null -> Presets.levelsForCount(pcustom, bandCount)
+                else -> null
+            }
+            if (plv != null) {
+                val cur = (0 until bandCount).map { round(bandLevels.getOrElse(it) { 0f }).toInt() }
+                val tgt = (0 until bandCount).map { plv.getOrNull(it)?.toInt() ?: 0 }
+                val changedBands = (0 until bandCount).count { cur[it] != tgt[it] }
+                val nz = tgt.filter { it != 0 }
+                AlertDialog(
+                    containerColor = S.card,
+                    shape = RoundedCornerShape(24.dp),
+                    onDismissRequest = { previewPresetName = null },
+                    title = { Text(pname, color = T.primary, fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column {
+                            Text("Graphic EQ: " + bandCount + " bands · " + changedBands + " differ from current", fontSize = 11.sp, color = T.secondary)
+                            Text(
+                                "Gain range: " + (if (nz.isEmpty()) "flat" else "%+.1f".format(nz.min().toFloat()) + " to " + "%+.1f".format(nz.max().toFloat()) + " dB"),
+                                fontSize = 11.sp, color = T.secondary
+                            )
+                            if (pcustom != null) {
+                                Text(
+                                    "Effects: bass " + (if (pcustom.bassBoost > 0) pcustom.bassBoost else "kept") +
+                                        " · virt " + (if (pcustom.virtualizer > 0) pcustom.virtualizer else "kept") +
+                                        " · loud " + (if (pcustom.loudness > 0) pcustom.loudness else "kept"),
+                                    fontSize = 10.sp, color = T.secondary
+                                )
+                                Text("Stored 0 means 'not set' — live values are kept.", fontSize = 8.sp, color = T.secondary)
+                            }
+                            Text("Parametric EQ: not part of presets — unchanged.", fontSize = 9.sp, color = T.secondary)
+                        }
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            pushUndo(true, "Preset: " + pname)
+                            markRecent(pname)
+                            selectedPreset = pname
+                            engine.setSelectedPresetName(pname)
+                            val newLevels = FloatArray(31) { 0f }
+                            plv.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
+                            animateLevelsTo(newLevels)
+                            if (pcustom != null) {
+                                bassBoost = if (pcustom.bassBoost > 0) pcustom.bassBoost else bassBoost
+                                virtualizer = if (pcustom.virtualizer > 0) pcustom.virtualizer else virtualizer
+                                loudness = if (pcustom.loudness > 0) pcustom.loudness else loudness
+                            }
+                            engine.applyFullState(
+                                ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
+                                bassBoost, virtualizer, loudness, smooth = true)
+                            previewPresetName = null
+                        }, colors = ButtonDefaults.buttonColors(containerColor = T.primary)) { Text("APPLY") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { previewPresetName = null }) { Text("CANCEL", color = T.secondary) }
+                    }
                 )
             }
         }
+
         // ── Build #123: BAND EDITOR — tap a band point for details ──
         if (editBand >= 0 && editBand < bandCount) {
             val info = bandList.getOrNull(editBand)
@@ -3852,7 +4045,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #125",
+                        "Neon EQ · Build #126",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
@@ -4279,17 +4472,19 @@ fun CanvasEQ(
     onBandTap: (Int) -> Unit = {},
     scaleDb: Float = 18f,
     selectedBand: Int = -1,
-    onBandSelect: (Int) -> Unit = {}
+    onBandSelect: (Int) -> Unit = {},
+    precisionMode: Boolean = false,
+    onGestureStart: (Int) -> Unit = {}
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // ---- Build #91: dot-on-curve markers, big power button, FxSound-style side panel
-    // (originally Build #89: allocation-free hot path) ----
-    // The previous version created a new android.graphics.Paint for EVERY band
-    // on EVERY frame (up to 31/frame at 60fps in 31-band mode) plus a fresh
-    // gradient brush per band. Everything below is hoisted and reused, so the
-    // steady-state draw allocates nothing measurable.
+    // ---- Build #126: professional log-frequency EQ graph ----
+    // 20 Hz -> 20 kHz spans the track logarithmically (decade grid), band
+    // points sit at their true log positions, touch selects the NEAREST
+    // band within a generous radius, and PRECISION mode switches dragging
+    // to relative movement at 0.25x rate. All hoisted paints are reused —
+    // the steady-state draw allocates nothing measurable.
     val labelPaint = remember {
         android.graphics.Paint().apply {
             isAntiAlias = true
@@ -4297,169 +4492,183 @@ fun CanvasEQ(
         }
     }
     val curvePath = remember { Path() }
-    val centerLinePath = remember { Path() }
-    val centerDash = remember(density) { with(density) { PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 5.dp.toPx())) } }
-    val curveColors = remember { listOf(T.primary, T.secondary) }
+    val gridPath = remember { Path() }
     val curveBrush = remember(appThemeState.value) { Brush.horizontalGradient(listOf(T.primary, T.secondary)) }
     val curveGlow = T.primary.copy(alpha = 0.20f)
-    val centerColor = T.primary.copy(alpha = 0.16f)
+    val gridColor = T.secondary.copy(alpha = 0.14f)
+    val centerColor = T.primary.copy(alpha = 0.30f)
     val bubbleBg = T.primary.copy(alpha = 0.16f)
     val bubbleBorder = T.primary.copy(alpha = 0.55f)
     val bubbleText = android.graphics.Color.rgb(220, 248, 255)
     val grayLabel = android.graphics.Color.rgb(140, 140, 158)
-    val grayDim = android.graphics.Color.rgb(88, 88, 102)
     val topsX = remember { FloatArray(31) }
     val topsY = remember { FloatArray(31) }
+    val bandX = remember(bands, bandCount) { FloatArray(bandCount.coerceAtMost(31)) { i ->
+        // log position: 20 Hz at x=0, 20 kHz at x=1
+        val f = (bands.getOrNull(i)?.freq ?: 1000).coerceAtLeast(20)
+        (kotlin.math.log10(f.toFloat() / 20f) / 3f).coerceIn(0f, 1f)
+    } }
     var activeBand by remember { mutableIntStateOf(-1) }
 
-    // Frequency labels are static per band set — cache the strings once instead
-    // of building them for every band on every frame.
-    val freqLabels = remember(bands, bandCount) {
-        Array(bandCount) { i ->
-            val f = bands.getOrNull(i)?.freq
-            when {
-                f == null -> ""
-                f >= 1000 -> "${f / 1000}k"
-                else -> "$f"
-            }
-        }
-    }
-
-    val barWidthPx = with(density) { 10.dp.toPx() }
-    val minHeightPx = with(density) { 3.dp.toPx() }
     val labelAreaPx = with(density) { 46.dp.toPx() }
-    val freqSizePx = with(density) { 11.sp.toPx() }
+    val freqSizePx = with(density) { 10.sp.toPx() }
     val lvlSizePx = with(density) { 10.sp.toPx() }
+    val dbLabelPx = with(density) { 8.sp.toPx() }
     val curveGlowPx = with(density) { 6.dp.toPx() }
     val curvePx = with(density) { 2.dp.toPx() }
-    val centerPx = with(density) { 1.dp.toPx() }
+    val gridPx = 1f
     val handlePx = with(density) { 4.dp.toPx() }
+    val touchRadiusPx = with(density) { 28.dp.toPx() }
 
-    // Build #93: raised upper limit — the track spans -15dB..+20dB (was
-    // symmetric ±15). Anything past the device's hardware band level range is
-    // clamped by the engine on apply, so +20 is safe everywhere and gives
-    // headroom on hardware that supports it.
-    // Build #124: visual auto-scaling — the graph's y-mapping follows
-    // scaleDb (±6/±12/±18); DSP values keep the full -15..+20 range.
+    // Visual y-mapping follows scaleDb (±6/±12/±18); the DSP keeps -15..+20.
     fun levelFromY(y: Float, trackHeight: Float): Float {
         val clampedY = y.coerceIn(0f, trackHeight)
         val normY = 1f - (clampedY / trackHeight)
         return (normY * (scaleDb * 2f) - scaleDb).coerceIn(-15f, 20f)
+    }
+    fun nearestBand(x: Float): Int {
+        var best = 0
+        var bestD = Float.MAX_VALUE
+        for (i in 0 until bandCount) {
+            val d = kotlin.math.abs(x - bandX[i])
+            if (d < bestD) { bestD = d; best = i }
+        }
+        return best
     }
 
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(280.dp)
-            .pointerInput(bandCount) {
-                val trackHeight = size.height.toFloat() - labelAreaPx
-                var lastTick = Int.MIN_VALUE
+            .pointerInput(bandCount, precisionMode, scaleDb) {
+                var lastY = 0f
+                var dragLvl = 0f
                 detectDragGestures(
                     onDragStart = { offset ->
-                        val slotWidth = size.width / bandCount
-                        val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
+                        val trackHeight = size.height.toFloat() - labelAreaPx
+                        val band = nearestBand(offset.x)
                         val lvl = levelFromY(offset.y, trackHeight)
+                        onGestureStart(band)   // one undo entry for the whole gesture
                         onLevelChange(band, lvl)
                         activeBand = band
-                        lastTick = round(lvl).toInt()
+                        lastY = offset.y
+                        dragLvl = lvl
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
                     onDragEnd = { activeBand = -1 },
                     onDragCancel = { activeBand = -1 },
                     onDrag = { change, _ ->
-                        val slotWidth = size.width / bandCount
-                        val band = (change.position.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
-                        val lvl = levelFromY(change.position.y, trackHeight)
+                        val trackHeight = size.height.toFloat() - labelAreaPx
+                        val band = activeBand.coerceAtLeast(nearestBand(change.position.x))
+                        val lvl = if (precisionMode) {
+                            // PRECISION: relative movement at 0.25x rate —
+                            // continuous updates, never waiting for release.
+                            val dbPerPx = (scaleDb * 2f) / trackHeight
+                            dragLvl + (lastY - change.position.y) * dbPerPx * 0.25f
+                        } else {
+                            levelFromY(change.position.y, trackHeight)
+                        }
+                        lastY = change.position.y
+                        dragLvl = lvl
                         onLevelChange(band, lvl)
                         activeBand = band
-                        // Fine-tuning haptic: a subtle tick as the band crosses
-                        // each integer dB step — you can feel the steps without looking.
-                        val tickAt = round(lvl).toInt()
-                        if (tickAt != lastTick) {
-                            lastTick = tickAt
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        }
                         change.consume()
                     }
                 )
             }
             .pointerInput(bandCount) {
-                // Build #124: tap = select (no accidental edit), double-tap =
-                // reset band, long-press = band editor. Haptics are UI-thread only.
+                // Build #124/126: tap = select nearest band (never opens the
+                // editor), double-tap = reset that band, long-press = editor.
                 detectTapGestures(
                     onTap = { offset ->
-                        val slotWidth = size.width / bandCount
-                        val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
+                        val band = nearestBand(offset.x)
                         onBandSelect(band)
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     },
                     onDoubleTap = { offset ->
-                        val slotWidth = size.width / bandCount
-                        val band = (offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1)
+                        val band = nearestBand(offset.x)
                         onResetBand(band)
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
                     onLongPress = { offset ->
-                        val slotWidth = size.width / bandCount
-                        onBandTap((offset.x / slotWidth).toInt().coerceIn(0, bandCount - 1))
+                        onBandTap(nearestBand(offset.x))
                     }
                 )
             }
     ) {
-        val slotWidth = size.width / bandCount
         val trackHeight = size.height - labelAreaPx
 
-        // 0 dB dashed reference line — centered (visual scales are symmetric).
-        val centerY = trackHeight * 0.5f
-        centerLinePath.reset()
-        centerLinePath.moveTo(0f, centerY)
-        centerLinePath.lineTo(size.width, centerY)
-        drawPath(centerLinePath, color = centerColor, style = Stroke(width = centerPx, pathEffect = centerDash))
+        // ---- Frequency grid: log decades 20 Hz .. 20 kHz ----
+        val gridFreqs = listOf(20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
+        val gridLabels = listOf("20", "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k")
+        // adaptive density — on narrow screens show every other label
+        val labelStep = if (size.width < 420f) 2 else 1
+        gridPath.reset()
+        gridFreqs.forEachIndexed { gi, f ->
+            val x = size.width * (kotlin.math.log10(f / 20f) / 3f)
+            gridPath.moveTo(x, 0f)
+            gridPath.lineTo(x, trackHeight)
+            if (gi % labelStep == 0) {
+                drawIntoCanvas {
+                    labelPaint.textSize = freqSizePx
+                    labelPaint.color = grayLabel
+                    it.nativeCanvas.drawText(gridLabels[gi], x, trackHeight + labelAreaPx * 0.5f, labelPaint)
+                }
+            }
+        }
+        drawPath(gridPath, color = gridColor, style = Stroke(width = gridPx))
 
+        // ---- dB grid: horizontal lines + compact axis labels ----
+        val dbStep = scaleDb / 3f
+        var v = -scaleDb
+        while (v <= scaleDb + 0.01f) {
+            val y = trackHeight * 0.5f - (v / (scaleDb * 2f)) * trackHeight
+            drawLine(
+                color = if (v == 0f) centerColor else gridColor,
+                start = androidx.compose.ui.geometry.Offset(0f, y),
+                end = androidx.compose.ui.geometry.Offset(size.width, y),
+                strokeWidth = if (v == 0f) gridPx * 1.5f else gridPx
+            )
+            v += dbStep
+        }
+        drawIntoCanvas {
+            labelPaint.textSize = dbLabelPx
+            labelPaint.color = grayLabel
+            labelPaint.textAlign = android.graphics.Paint.Align.RIGHT
+            it.nativeCanvas.drawText("+" + scaleDb.toInt(), size.width - 2f, freqSizePx, labelPaint)
+            it.nativeCanvas.drawText("-" + scaleDb.toInt(), size.width - 2f, trackHeight - 2f, labelPaint)
+            labelPaint.textAlign = android.graphics.Paint.Align.CENTER
+        }
+
+        // ---- Band points at their true log positions ----
         for (i in 0 until bandCount) {
             val level = levels.getOrElse(i) { 0f }
-            // visual clamp only — values beyond the view stay intact in the DSP
+            // visual clamp only — out-of-view values stay intact in the DSP
             val normLevel = ((level + scaleDb) / (scaleDb * 2f)).coerceIn(0f, 1f)
-            val x = i * slotWidth + (slotWidth - barWidthPx) / 2f
-            val barH = (trackHeight * normLevel).coerceAtLeast(minHeightPx)
-            val y = trackHeight - barH
-
-            topsX[i] = x + barWidthPx / 2f
+            val x = bandX[i] * size.width
+            val y = trackHeight - trackHeight * normLevel
+            topsX[i] = x
             topsY[i] = y
 
-            val dimmed = activeBand >= 0 && i != activeBand
-            val dotCx = x + barWidthPx / 2f
-            val isActiveBand = i == activeBand
-
-            // Build #91: FxSound-style marker — a small dot sitting ON the
-            // curve at this band's level, no vertical bar filling the track.
-            // The active band's larger glowing dot + value bubble is drawn
-            // separately below, after the curve, so it renders on top.
-            if (!isActiveBand) {
+            val isSel = i == activeBand || i == selectedBand
+            val dimmed = (activeBand >= 0 || selectedBand >= 0) && !isSel
+            if (!isSel) {
                 drawCircle(
                     color = if (dimmed) T.primary.copy(alpha = 0.25f) else T.primary.copy(alpha = 0.65f),
                     radius = handlePx * 0.85f,
-                    center = Offset(dotCx, y)
+                    center = androidx.compose.ui.geometry.Offset(x, y)
                 )
             }
-
-            // Frequency label only — the numeric gain now lives in the
-            // floating bubble while dragging, so idle bands aren't cluttered
-            // with two overlapping numbers.
-            drawIntoCanvas {
-                labelPaint.textSize = freqSizePx
-                labelPaint.color = if (dimmed) grayDim else grayLabel
-                it.nativeCanvas.drawText(
-                    freqLabels.getOrElse(i) { "" },
-                    dotCx,
-                    trackHeight + labelAreaPx * 0.6f,
-                    labelPaint
-                )
+            // visual clipping: value beyond the selected range is pinned to the
+            // edge and marked in accent — the DSP value itself is unchanged.
+            if (kotlin.math.abs(level) > scaleDb) {
+                drawCircle(color = T.accent, radius = handlePx * 0.5f,
+                    center = androidx.compose.ui.geometry.Offset(x, if (level > 0) 2f else trackHeight - 2f))
             }
         }
 
-        // Smooth neon curve traced through the band tops — quadratic beziers with
-        // band peaks as control points, glowing wide underlay + crisp gradient on top.
+        // ---- Smooth response curve through the points (log-x interpolation;
+        // visualization only — the DSP is the engine, never this curve) ----
         if (bandCount > 1) {
             curvePath.reset()
             curvePath.moveTo(topsX[0], topsY[0])
@@ -4473,25 +4682,26 @@ fun CanvasEQ(
             drawPath(curvePath, brush = curveBrush, style = Stroke(width = curvePx, cap = StrokeCap.Round))
         }
 
-        // Active/selected-band emphasis: glow halo + handle dot + value bubble.
+        // ---- Active/selected band emphasis: halo + dot + value bubble ----
         val emphBand = if (activeBand in 0 until bandCount) activeBand else selectedBand
         if (emphBand in 0 until bandCount) {
             val cx = topsX[emphBand]
             val topY = topsY[emphBand]
-            val glowR = barWidthPx * 2.2f
+            val glowR = handlePx * 5f
             drawCircle(
                 brush = Brush.radialGradient(
                     listOf(T.primary.copy(alpha = 0.35f), T.primary.copy(alpha = 0f)),
-                    center = Offset(cx, topY),
+                    center = androidx.compose.ui.geometry.Offset(cx, topY),
                     radius = glowR
                 ),
                 radius = glowR,
-                center = Offset(cx, topY)
+                center = androidx.compose.ui.geometry.Offset(cx, topY)
             )
-            drawCircle(color = T.primary, radius = handlePx, center = Offset(cx, topY))
+            drawCircle(color = T.primary, radius = handlePx, center = androidx.compose.ui.geometry.Offset(cx, topY))
+            drawCircle(color = T.secondary, radius = handlePx * 0.45f, center = androidx.compose.ui.geometry.Offset(cx, topY))
 
-            val lvl = round(levels.getOrElse(emphBand) { 0f }).toInt()
-            val text = "B" + (emphBand + 1) + " " + (if (lvl > 0) "+$lvl" else "$lvl") + " dB"
+            val lvl = levels.getOrElse(emphBand) { 0f }
+            val text = "B" + (emphBand + 1) + " " + (if (lvl > 0) "+" else "") + "%.1f".format(lvl) + " dB"
             labelPaint.textSize = lvlSizePx
             labelPaint.color = bubbleText
             val textW = labelPaint.measureText(text)
@@ -4501,14 +4711,14 @@ fun CanvasEQ(
             val by = (topY - bubbleH - handlePx - 6f).coerceAtLeast(0f)
             drawRoundRect(
                 color = bubbleBg,
-                topLeft = Offset(bx, by),
-                size = Size(bubbleW, bubbleH),
+                topLeft = androidx.compose.ui.geometry.Offset(bx, by),
+                size = androidx.compose.ui.geometry.Size(bubbleW, bubbleH),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(bubbleH / 2f, bubbleH / 2f)
             )
             drawRoundRect(
                 color = bubbleBorder,
-                topLeft = Offset(bx, by),
-                size = Size(bubbleW, bubbleH),
+                topLeft = androidx.compose.ui.geometry.Offset(bx, by),
+                size = androidx.compose.ui.geometry.Size(bubbleW, bubbleH),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(bubbleH / 2f, bubbleH / 2f),
                 style = Stroke(width = 1f)
             )
