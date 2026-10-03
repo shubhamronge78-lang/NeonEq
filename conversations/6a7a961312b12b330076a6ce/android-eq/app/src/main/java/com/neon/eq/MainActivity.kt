@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.platform.LocalDensity
@@ -532,6 +533,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     // ── Build #123: preset import/export + compare states ──
     var showCompareDialog by remember { mutableStateOf(false) }
+    var showSessionCompare by remember { mutableStateOf(false) }
     var showImportPreset by remember { mutableStateOf(false) }
     var importPresetInput by remember { mutableStateOf("") }
     var showGuide by remember { mutableStateOf(false) }
@@ -951,7 +953,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
                         )
                     }
-                    if (spPeakHold && spHold[i] > 0.02f) {
+                    if (spHoldMode > 0 && spHold[i] > 0.02f) {
                         val y = h - (h - topPad) * spHold[i]
                         drawLine(color = T.accent, start = androidx.compose.ui.geometry.Offset(i * barW + 1f, y), end = androidx.compose.ui.geometry.Offset((i + 1) * barW - 1f, y), strokeWidth = 1.5f)
                     }
@@ -1190,7 +1192,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         NeonCard {
             GradientText("SESSIONS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
             Spacer(Modifier.height(4.dp))
-            var showSessionCompare by remember { mutableStateOf(false) }
             Text("⇄ COMPARE TWO SESSIONS", fontSize = 9.sp, color = T.accent,
                 modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
                     .clickable { showSessionCompare = true }.padding(horizontal = 10.dp, vertical = 5.dp)
@@ -2108,7 +2109,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 Spacer(Modifier.weight(1f))
                 Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
                     Text(if (NeonDsp.available) "Native DSP" else if (SoftwareEq.lastEngineLabel != null) "Kotlin" else "unavailable", fontSize = 11.sp, color = if (NeonDsp.available) T.primary else T.accent)
-                    Text(CaptureEqService.captureSampleRate / 1000 + " kHz · Stereo", fontSize = 9.sp, color = T.secondary)
+                    Text(CaptureEqService.captureSampleRate.toString() + " Hz · Stereo", fontSize = 9.sp, color = T.secondary)
                 }
             }
             // Build #124: live activity — measured from actual frame deltas,
