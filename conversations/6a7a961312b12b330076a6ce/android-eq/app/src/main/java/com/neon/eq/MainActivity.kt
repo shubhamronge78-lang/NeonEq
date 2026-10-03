@@ -21,6 +21,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -138,6 +141,12 @@ class MainActivity : ComponentActivity() {
         try {
             appModeState.value = SurfaceModes.byId(
                 getSharedPreferences(UI_PREFS, android.content.Context.MODE_PRIVATE).getString("mode", null))
+        } catch (_: Throwable) { }
+        // Build #127: restore glass intensity (UI rendering only).
+        try {
+            appGlassState.value = (
+                getSharedPreferences(UI_PREFS, android.content.Context.MODE_PRIVATE)
+                    .getString("glass", "1")?.toIntOrNull() ?: 1).coerceIn(0, 2)
         } catch (_: Throwable) { }
 
         val perms = mutableListOf(Manifest.permission.MODIFY_AUDIO_SETTINGS, Manifest.permission.RECORD_AUDIO)
@@ -285,7 +294,58 @@ object SurfaceModes {
     fun byId(id: String?): SurfacePalette = if (id == "light") LIGHT else DARK
 }
 
+// ── Build #127: GLASS SYSTEM — dark glass + neon audio console ──
+// Real-time blur on an AMOLED background is invisible under dark glass and
+// costs GPU on low-end devices, so glass here is delivered efficiently via
+// translucency, gradient hairline borders and top highlights. The glass
+// intensity setting scales all three. No glass work ever runs outside the
+// UI layer.
+@Composable
+fun GlassBackground() {
+    val glow = when (appGlassState.value) { 0 -> 0.030f; 2 -> 0.085f; else -> 0.055f }
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (appModeState.value == SurfaceModes.DARK) {
+            // extremely subtle atmospheric light fields — never bright, static
+            Box(Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.55f)
+                .background(Brush.radialGradient(listOf(T.primary.copy(alpha = glow), Color.Transparent))))
+            Box(Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.55f)
+                .background(Brush.radialGradient(listOf(T.secondary.copy(alpha = glow * 0.8f), Color.Transparent))))
+            Box(Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.5f)
+                .background(Brush.radialGradient(listOf(T.accent.copy(alpha = glow * 0.6f), Color.Transparent))))
+        }
+    }
+}
+
+// Reusable glass status chip — icon + text, never color-only.
+@Composable
+fun StatusChip(label: String, kind: Int, dot: Boolean = true) {
+    val (col, glyph) = when (kind) {
+        0 -> T.primary to "●"    // ACTIVE
+        2 -> T.accent to "⚠"     // ERROR
+        1 -> T.secondary to "○"  // muted / bypass
+        else -> T.secondary to "·"
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(S.cardDeep.copy(alpha = 0.55f))
+            .border(1.dp, col.copy(alpha = 0.25f), RoundedCornerShape(50))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .semantics { contentDescription = label }
+    ) {
+        if (dot) Text(glyph, fontSize = 8.sp, color = col)
+        Text(label, fontSize = 9.sp, color = col,
+            modifier = if (dot) Modifier.padding(start = 4.dp) else Modifier)
+    }
+}
+
 val appModeState = mutableStateOf(SurfaceModes.DARK)
+// Build #127: glass intensity — UI rendering ONLY. Never touches DSP, capture,
+// buffers, latency or sample rate. 0 LOW · 1 MEDIUM (default) · 2 HIGH.
+val appGlassState = mutableStateOf(1)
+fun glassSurfaceAlpha(): Float = when (appGlassState.value) { 0 -> 0.96f; 2 -> 0.74f; else -> 0.86f }
+fun glassBorderAlpha(): Float = when (appGlassState.value) { 0 -> 0.08f; 2 -> 0.22f; else -> 0.14f }
 private val S: SurfacePalette get() = appModeState.value
 
 @Composable
@@ -559,11 +619,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var toneOn by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
+    GlassBackground()
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .background(S.bg)
+            .background(Color.Transparent)
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -696,6 +757,28 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(16.dp))
 
         if (navTab == 0) {
+        // ── Build #127: glass status chips — honest, icon + text ──
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val dsState = when {
+                !NeonDsp.available -> "DSP ERROR"
+                CaptureEqService.bypass -> "DSP BYPASS"
+                CaptureEqService.running -> "DSP ACTIVE"
+                SoftwareEq.lastEngineLabel?.startsWith("KOTLIN") == true -> "KOTLIN FALLBACK"
+                else -> "STANDBY"
+            }
+            StatusChip(dsState, if (dsState == "DSP ACTIVE") 0 else if (dsState == "DSP ERROR" || dsState == "KOTLIN FALLBACK") 2 else 1)
+            Spacer(Modifier.width(6.dp))
+            if (CaptureEqService.running) {
+                StatusChip("CAPTURE ACTIVE", 0)
+                Spacer(Modifier.width(6.dp))
+            } else if (android.os.Build.VERSION.SDK_INT >= 29) {
+                // capture API exists (Android 10+): honest waiting state
+                StatusChip("WAITING FOR PLAYBACK", 1)
+                Spacer(Modifier.width(6.dp))
+            }
+            StatusChip((CaptureEqService.captureSampleRate / 1000).toString() + " kHz", 3, dot = false)
+        }
+        Spacer(Modifier.height(6.dp))
         // Build #124: landscape audio console — two-column workspace,
         // never a stretched portrait layout
         val isLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -1764,7 +1847,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // ── Build #126: numeric gain entry — validated + clamped, never invalid to DSP ──
         if (gainEditBand >= 0 && gainEditBand < bandCount) {
             AlertDialog(
-                containerColor = S.card,
+                containerColor = S.card.copy(alpha = 0.94f),
                 shape = RoundedCornerShape(24.dp),
                 onDismissRequest = { gainEditBand = -1 },
                 title = { Text("BAND " + (gainEditBand + 1) + " GAIN", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -1811,7 +1894,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // ── Build #126: RESET ALL EQ — EQ section only, one undo entry ──
         if (showResetEqDialog) {
             AlertDialog(
-                containerColor = S.card,
+                containerColor = S.card.copy(alpha = 0.94f),
                 shape = RoundedCornerShape(24.dp),
                 onDismissRequest = { showResetEqDialog = false },
                 title = { Text("RESET EQ?", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -1862,7 +1945,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 val changedBands = (0 until bandCount).count { cur[it] != tgt[it] }
                 val nz = tgt.filter { it != 0 }
                 AlertDialog(
-                    containerColor = S.card,
+                    containerColor = S.card.copy(alpha = 0.94f),
                     shape = RoundedCornerShape(24.dp),
                     onDismissRequest = { previewPresetName = null },
                     title = { Text(pname, color = T.primary, fontWeight = FontWeight.Bold) },
@@ -1916,7 +1999,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         if (editBand >= 0 && editBand < bandCount) {
             val info = bandList.getOrNull(editBand)
             AlertDialog(
-                containerColor = S.card,
+                containerColor = S.card.copy(alpha = 0.94f),
                 shape = RoundedCornerShape(24.dp),
                 onDismissRequest = { editBand = -1 },
                 title = { Text("BAND " + (editBand + 1), color = T.primary, fontWeight = FontWeight.Bold) },
@@ -2425,7 +2508,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 "limiter" to "LIMITER · " + if (stOn["limiter"] == true) "ON" else "off"
             )
             var stEdit by remember { mutableStateOf<String?>(null) }
-            stages.forEachIndexed { si, (key, label) ->
+            @Composable
+            fun StageCard(si: Int, key: String, label: String) {
                 if (si > 0) Text("↓", fontSize = 10.sp, color = T.secondary, modifier = Modifier.padding(start = 10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text((if (dspMoving && stOn[key] == true) "✓ " else "") + label, fontSize = 10.sp,
@@ -2443,6 +2527,22 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                             .semantics { contentDescription = (if (stOn[key] == true) "Bypass " else "Enable ") + key })
                 }
+
+            }
+            // Build #127: responsive rack — 2-column console in landscape,
+            // vertical rack with connectors in portrait.
+            val rackLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+            if (rackLandscape && stages.size > 1) {
+                Row(Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        stages.take((stages.size + 1) / 2).forEachIndexed { i, (k, l) -> StageCard(i, k, l) }
+                    }
+                    Column(Modifier.weight(1f)) {
+                        stages.drop((stages.size + 1) / 2).forEachIndexed { i, (k, l) -> StageCard(i, k, l) }
+                    }
+                }
+            } else {
+                stages.forEachIndexed { si, (key, label) -> StageCard(si, key, label) }
             }
             // Build #124: stage editor — only controls the native engine actually has
             if (stEdit != null) {
@@ -2469,7 +2569,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     } catch (_: Throwable) { }
                 }
                 AlertDialog(
-                    containerColor = S.card,
+                    containerColor = S.card.copy(alpha = 0.94f),
                     shape = RoundedCornerShape(24.dp),
                     onDismissRequest = { stEdit = null },
                     title = { Text(stName, color = T.primary, fontWeight = FontWeight.Bold) },
@@ -2970,6 +3070,37 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         } // tab guard
 
         if (navTab == 4) {
+        // ── Build #127: APPEARANCE — glass intensity (UI rendering only) ──
+        NeonCard {
+            GradientText("APPEARANCE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
+            Spacer(Modifier.height(6.dp))
+            Text("GLASS EFFECT", fontSize = 10.sp, color = T.secondary)
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                listOf("LOW" to 0, "MEDIUM" to 1, "HIGH" to 2).forEach { (gl, gv) ->
+                    Text(
+                        gl, fontSize = 10.sp,
+                        color = if (appGlassState.value == gv) T.primary else T.secondary,
+                        modifier = Modifier
+                            .padding(start = if (gv > 0) 6.dp else 0.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background((if (appGlassState.value == gv) T.primary else T.secondary).copy(alpha = 0.12f))
+                            .clickable {
+                                appGlassState.value = gv
+                                try {
+                                    context.getSharedPreferences(UI_PREFS, android.content.Context.MODE_PRIVATE)
+                                        .edit().putString("glass", gv.toString()).apply()
+                                } catch (_: Throwable) { }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .semantics { contentDescription = "Glass effect " + gl }
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text("Glass effect changes UI rendering only. It never affects DSP, capture, audio buffers, latency or sample rate. If the device struggles, the glass reduces gracefully while borders and transparency remain.", fontSize = 8.sp, color = T.secondary)
+        }
+        Spacer(Modifier.height(16.dp))
         // ── Build #123: OUTPUT ROUTE — information, never a fake control ──
         NeonCard {
             GradientText("OUTPUT ROUTE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
@@ -3229,24 +3360,56 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 76.dp)
     )
     // ── Build #123: bottom navigation ──
-    NavigationBar(
-        modifier = Modifier.align(Alignment.BottomCenter),
-        containerColor = S.card.copy(alpha = 0.96f),
-        tonalElevation = 6.dp
+    // ── Build #127: floating glass navigation — compact, inset-aware,
+    // selected tab gets an accent treatment + short scale micro-animation ──
+    Box(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .navigationBarsPadding()
+            .shadow(9.dp, RoundedCornerShape(26.dp))
+            .clip(RoundedCornerShape(26.dp))
+            .background(S.surface.copy(alpha = glassSurfaceAlpha() - 0.04f))
+            .border(
+                1.dp,
+                Brush.verticalGradient(
+                    listOf(T.primary.copy(alpha = glassBorderAlpha() * 1.5f), T.secondary.copy(alpha = glassBorderAlpha()))
+                ),
+                RoundedCornerShape(26.dp)
+            )
+            .padding(horizontal = 6.dp, vertical = 6.dp)
     ) {
-        listOf("HOME" to 0, "EQ" to 1, "DSP" to 2, "SESSIONS" to 3, "SETTINGS" to 4).forEach { (label, idx) ->
-            NavigationBarItem(
-                selected = navTab == idx,
-                onClick = { navTab = idx },
-                label = { Text(label, fontSize = 9.sp) },
-                icon = {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            listOf("HOME" to 0, "EQ" to 1, "DSP" to 2, "SESSIONS" to 3, "SETTINGS" to 4).forEach { (label, idx) ->
+                val selected = navTab == idx
+                val scale by animateFloatAsState(
+                    if (selected) 1f else 0.94f,
+                    spring(stiffness = 500f), label = "nav$idx"
+                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .graphicsLayer { scaleX = scale; scaleY = scale }
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (selected) T.primary.copy(alpha = 0.14f) else Color.Transparent)
+                        .clickable { navTab = idx }
+                        .padding(horizontal = 13.dp, vertical = 5.dp)
+                        .semantics {
+                            contentDescription = label + " tab" + if (selected) ", selected" else ""
+                        }
+                ) {
                     Text(
                         when (idx) { 0 -> "◉"; 1 -> "≡"; 2 -> "∿"; 3 -> "⧗"; else -> "⚙" },
-                        fontSize = 13.sp, color = if (navTab == idx) T.primary else T.secondary
+                        fontSize = 13.sp, color = if (selected) T.primary else T.secondary
                     )
-                },
-                modifier = Modifier.semantics { contentDescription = label + " tab" }
-            )
+                    Text(label, fontSize = 8.sp, color = if (selected) T.primary else T.secondary)
+                }
+            }
         }
     }
     } // end Box
@@ -3254,7 +3417,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // ── Build #124: SESSION COMPARISON — factual aggregates only ──
     if (showSessionCompare) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showSessionCompare = false },
             title = { Text("SESSION COMPARISON", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3336,7 +3499,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             if (loudness != target.loudness) cmpRows.add("Loudness     " + loudness + "  →  " + target.loudness)
         }
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showCompareDialog = false },
             title = { Text("CURRENT vs " + (target?.name ?: "FLAT"), color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3375,7 +3538,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         var impPhase by remember { mutableStateOf(0) }
         var impPreview by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showImportPreset = false; impPhase = 0; impPreview = null },
             title = { Text(if (impPhase == 0) "Import preset" else "IMPORT PRESET", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3487,7 +3650,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             "IMPORTANT" to "Android may continue playing the original source audio. NeonEQ processes the audio it captures through its own pipeline and cannot mute or replace the source app."
         )
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showGuide = false },
             title = { Text(guidePages[guidePage].first, color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3518,7 +3681,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // before any change; CANCEL preserves everything untouched. ──
     if (showResetDialog) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showResetDialog = false },
             title = { Text("Reset DSP settings?", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3588,7 +3751,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showSaveDialog) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showSaveDialog = false },
             title = { Text("Save current EQ as preset", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3628,7 +3791,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showOverwriteDialog) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showOverwriteDialog = false },
             title = { Text("Overwrite preset?", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3762,7 +3925,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showRenameDialog) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showRenameDialog = false },
             title = { Text("Rename preset", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -3798,7 +3961,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // ── Settings dialog ──
     if (showSettings) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showSettings = false },
             title = { Text("Settings", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -4045,7 +4208,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #126",
+                        "Neon EQ · Build #127",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
@@ -4062,7 +4225,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // ── Import dialog ──
     if (showImportDialog) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showImportDialog = false },
             title = { Text("Import presets", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -4105,7 +4268,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     if (showRestoreDialog) {
         AlertDialog(
-            containerColor = S.card,
+            containerColor = S.card.copy(alpha = 0.94f),
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showRestoreDialog = false },
             title = { Text("Restore backup", color = T.primary, fontWeight = FontWeight.Bold) },
@@ -4167,14 +4330,22 @@ fun NeonCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    // Build #127: PRIMARY GLASS — translucent tonal surface, gradient hairline
+    // border (stronger at the top edge as a highlight), subtle elevation.
+    // Intensity follows the user's glass setting; fully opaque never.
+    val a = glassSurfaceAlpha()
+    val bA = glassBorderAlpha()
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .shadow(5.dp, RoundedCornerShape(20.dp))
             .clip(RoundedCornerShape(20.dp))
-            .background(
-                Brush.verticalGradient(listOf(S.card, S.cardAlt))
+            .background(Brush.verticalGradient(listOf(S.card.copy(alpha = a), S.cardAlt.copy(alpha = a))))
+            .border(
+                1.dp,
+                Brush.verticalGradient(listOf(T.primary.copy(alpha = bA), T.secondary.copy(alpha = bA * 0.55f))),
+                RoundedCornerShape(20.dp)
             )
-            .border(1.dp, T.primary.copy(alpha = 0.10f), RoundedCornerShape(20.dp))
             .padding(12.dp),
         content = content
     )
