@@ -594,6 +594,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
     // ── Build #123: preset import/export + compare states ──
     var showCompareDialog by remember { mutableStateOf(false) }
+    // Build #129: preset-manager state is shared between the EQ tab (preview
+    // dialogs) and the SETTINGS & PRESETS tab — declared once, at top level.
+    var previewPresetName by remember { mutableStateOf<String?>(null) }
     var showSessionCompare by remember { mutableStateOf(false) }
     var showImportPreset by remember { mutableStateOf(false) }
     var importPresetInput by remember { mutableStateOf("") }
@@ -1373,7 +1376,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         var gainEditBand by remember { mutableStateOf(-1) }
         var gainEditInput by remember { mutableStateOf("") }
         var showResetEqDialog by remember { mutableStateOf(false) }
-        var previewPresetName by remember { mutableStateOf<String?>(null) }
         // ── Build #123: UNDO / REDO — complete-configuration history ──
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("↶ UNDO " + if (undoStack.isEmpty()) "" else "(" + undoStack.size + ")", fontSize = 10.sp,
@@ -1398,209 +1400,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
         Spacer(Modifier.height(8.dp))
 
-        // ── Presets ──
         NeonCard {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            GradientText("PRESETS", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
-            Spacer(Modifier.height(4.dp))
-            // Build #124: search + filter — UI-only, never affects audio
-            OutlinedTextField(
-                value = presetSearch,
-                onValueChange = { presetSearch = it },
-                label = { Text("🔍 Search presets...") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                listOf("ALL" to 0, "FAVORITES" to 1, "RECENT" to 2, "CUSTOM" to 3).forEach { (fl, fi) ->
-                    Text(
-                        fl, fontSize = 9.sp,
-                        color = if (presetFilter == fi) T.primary else T.secondary,
-                        modifier = Modifier
-                            .padding(start = if (fi > 0) 6.dp else 0.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background((if (presetFilter == fi) T.primary else T.secondary).copy(alpha = 0.12f))
-                            .clickable { presetFilter = fi }
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                            .semantics { contentDescription = "Filter presets: " + fl }
-                    )
-                }
-            }
-            Row {
-                Text(
-                    "↺ Reset All",
-                    fontSize = 11.sp,
-                    color = T.accent,
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(T.accent.copy(alpha = 0.10f))
-                        .clickable { showResetDialog = true }
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    "+ Save",
-                    fontSize = 11.sp,
-                    color = T.primary,
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(T.primary.copy(alpha = 0.10f))
-                        .clickable {
-                        presetNameInput = ""
-                        showSaveDialog = true
-                    }
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "⇄ Compare",
-                    fontSize = 11.sp,
-                    color = T.primary,
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(T.primary.copy(alpha = 0.10f))
-                        .clickable { showCompareDialog = true }
-                        .semantics { contentDescription = "Compare current settings with a preset" }
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "↥ Export",
-                    fontSize = 11.sp,
-                    color = T.secondary,
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(T.secondary.copy(alpha = 0.10f))
-                        .clickable {
-                            try {
-                                context.startActivity(Intent.createChooser(
-                                    Intent(Intent.ACTION_SEND).apply {
-                                        type = "application/json"
-                                        putExtra(Intent.EXTRA_TEXT, buildPresetJson())
-                                        putExtra(Intent.EXTRA_SUBJECT, "SonicCore preset — DSP configuration only")
-                                    }, "Share preset"))
-                            } catch (t: Throwable) { }
-                        }
-                        .semantics { contentDescription = "Export current preset as JSON" }
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "↧ Import",
-                    fontSize = 11.sp,
-                    color = T.secondary,
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(T.secondary.copy(alpha = 0.10f))
-                        .clickable {
-                            importPresetInput = ""
-                            showImportPreset = true
-                        }
-                        .semantics { contentDescription = "Import a preset from JSON" }
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "↥ Share",
-                    fontSize = 11.sp,
-                    color = T.primary,
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(T.primary.copy(alpha = 0.10f))
-                        .clickable {
-                        val json = engine.exportCustomPresets()
-                        if (customPresets.isEmpty()) {
-                            scope2.launch { snackbarHost.showSnackbar("No custom presets to share") }
-                        } else {
-                            try {
-                                val file = File(context.cacheDir, "neoneq_presets.json")
-                                file.writeText(json)
-                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                                val share = Intent(Intent.ACTION_SEND).apply {
-                                    type = "application/json"
-                                    putExtra(Intent.EXTRA_STREAM, uri)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                context.startActivity(Intent.createChooser(share, "Share presets"))
-                            } catch (_: Throwable) {
-                                scope2.launch { snackbarHost.showSnackbar("Share failed") }
-                            }
-                        }
-                    }
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "↧ Import",
-                    fontSize = 11.sp,
-                    color = T.primary,
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(T.primary.copy(alpha = 0.10f))
-                        .clickable {
-                        importJsonInput = ""
-                        importResultMsg = ""
-                        showImportDialog = true
-                    }
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        // Build #124: filtered views — favorites get a star; built-ins are never deletable
-        val filteredBuiltins = Presets.presets.filter { p ->
-            (presetSearch.isBlank() || p.name.contains(presetSearch, ignoreCase = true)) &&
-            (presetFilter == 0 || presetFilter == 3 ||
-                (presetFilter == 1 && p.name in presetFavs) ||
-                (presetFilter == 2 && p.name in presetRecent))
-        }.let { if (presetFilter == 1) it.sortedByDescending { p -> p.name in presetFavs } else it }
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(filteredBuiltins, key = { "b_" + it.name }) { preset ->
-                androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(if (preset.name in presetFavs) "★" else " ", fontSize = 8.sp, color = T.accent,
-                        modifier = Modifier.clickable { toggleFav(preset.name) }.semantics { contentDescription = (if (preset.name in presetFavs) "Unfavorite " else "Favorite ") + preset.name })
-                    PresetChip(
-                    preset = preset,
-                    selected = selectedPreset == preset.name,
-                    // Build #126: lightweight preview before applying
-                    onClick = { previewPresetName = preset.name }
-                )
-                }
-            }
-            val filteredCustom = customPresets.filter { p ->
-                (presetSearch.isBlank() || p.name.contains(presetSearch, ignoreCase = true)) &&
-                (presetFilter == 0 || presetFilter == 3 ||
-                    (presetFilter == 1 && p.name in presetFavs) ||
-                    (presetFilter == 2 && p.name in presetRecent))
-            }
-            items(filteredCustom, key = { "c_" + it.name }) { preset ->
-                androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(if (preset.name in presetFavs) "★" else " ", fontSize = 8.sp, color = T.accent,
-                        modifier = Modifier.clickable { toggleFav(preset.name) }.semantics { contentDescription = (if (preset.name in presetFavs) "Unfavorite " else "Favorite ") + preset.name })
-                    CustomPresetChip(
-                    preset = preset,
-                    selected = selectedPreset == preset.name,
-                    onClick = { previewPresetName = preset.name },
-                    onLongPress = { menuPreset = preset },
-                    onDelete = {
-                        engine.deleteCustomPreset(preset.name)
-                        customPresets = engine.listCustomPresets()
-                        if (selectedPreset == preset.name) {
-                            selectedPreset = "Flat"
-                            engine.setSelectedPresetName("Flat")
-                        }
-                        scope2.launch { snackbarHost.showSnackbar("Deleted '${'$'}{preset.name}'") }
-                    }
-                    )
-                }
-            }
-        }
-        }
 
         Spacer(Modifier.height(16.dp))
 
@@ -1930,72 +1730,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     TextButton(onClick = { showResetEqDialog = false }) { Text("CANCEL", color = T.secondary) }
                 }
             )
-        }
-
-        // ── Build #126: PRESET PREVIEW — actual preset data only ──
-        if (previewPresetName != null) {
-            val pname = previewPresetName!!
-            val pbuiltin = Presets.presets.firstOrNull { it.name == pname }
-            val pcustom = customPresets.firstOrNull { it.name == pname }
-            val plv = when {
-                pbuiltin != null -> Presets.levelsForCount(pbuiltin, bandCount)
-                pcustom != null -> Presets.levelsForCount(pcustom, bandCount)
-                else -> null
-            }
-            if (plv != null) {
-                val cur = (0 until bandCount).map { round(bandLevels.getOrElse(it) { 0f }).toInt() }
-                val tgt = (0 until bandCount).map { plv.getOrNull(it)?.toInt() ?: 0 }
-                val changedBands = (0 until bandCount).count { cur[it] != tgt[it] }
-                val nz = tgt.filter { it != 0 }
-                AlertDialog(
-                    containerColor = S.card.copy(alpha = 0.94f),
-                    shape = RoundedCornerShape(24.dp),
-                    onDismissRequest = { previewPresetName = null },
-                    title = { Text(pname, color = T.primary, fontWeight = FontWeight.Bold) },
-                    text = {
-                        Column {
-                            Text("Graphic EQ: " + bandCount + " bands · " + changedBands + " differ from current", fontSize = 11.sp, color = T.secondary)
-                            Text(
-                                "Gain range: " + (if (nz.isEmpty()) "flat" else "%+.1f".format(nz.min().toFloat()) + " to " + "%+.1f".format(nz.max().toFloat()) + " dB"),
-                                fontSize = 11.sp, color = T.secondary
-                            )
-                            if (pcustom != null) {
-                                Text(
-                                    "Effects: bass " + (if (pcustom.bassBoost > 0) pcustom.bassBoost else "kept") +
-                                        " · virt " + (if (pcustom.virtualizer > 0) pcustom.virtualizer else "kept") +
-                                        " · loud " + (if (pcustom.loudness > 0) pcustom.loudness else "kept"),
-                                    fontSize = 10.sp, color = T.secondary
-                                )
-                                Text("Stored 0 means 'not set' — live values are kept.", fontSize = 8.sp, color = T.secondary)
-                            }
-                            Text("Parametric EQ: not part of presets — unchanged.", fontSize = 9.sp, color = T.secondary)
-                        }
-                    },
-                    confirmButton = {
-                        Button(onClick = {
-                            pushUndo(true, "Preset: " + pname)
-                            markRecent(pname)
-                            selectedPreset = pname
-                            engine.setSelectedPresetName(pname)
-                            val newLevels = FloatArray(31) { 0f }
-                            plv.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
-                            animateLevelsTo(newLevels)
-                            if (pcustom != null) {
-                                bassBoost = if (pcustom.bassBoost > 0) pcustom.bassBoost else bassBoost
-                                virtualizer = if (pcustom.virtualizer > 0) pcustom.virtualizer else virtualizer
-                                loudness = if (pcustom.loudness > 0) pcustom.loudness else loudness
-                            }
-                            engine.applyFullState(
-                                ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
-                                bassBoost, virtualizer, loudness, smooth = true)
-                            previewPresetName = null
-                        }, colors = ButtonDefaults.buttonColors(containerColor = T.primary)) { Text("APPLY") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { previewPresetName = null }) { Text("CANCEL", color = T.secondary) }
-                    }
-                )
-            }
         }
 
         // ── Build #123: BAND EDITOR — tap a band point for details ──
@@ -3072,6 +2806,214 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // tab guard
 
+        // ── EQ PRESETS — the single canonical preset manager ──
+        // Consolidated in Build #129: exactly one preset section exists — here.
+        // State lives at top level; storage is unchanged (same prefs, same
+        // JSON) — existing presets, favorites and recents keep working.
+        NeonCard {
+            GradientText("EQ PRESETS", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+            Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Build #124: search + filter — UI-only, never affects audio
+            OutlinedTextField(
+                value = presetSearch,
+                onValueChange = { presetSearch = it },
+                label = { Text("🔍 Search presets...") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                listOf("ALL" to 0, "FAVORITES" to 1, "RECENT" to 2, "CUSTOM" to 3).forEach { (fl, fi) ->
+                    Text(
+                        fl, fontSize = 9.sp,
+                        color = if (presetFilter == fi) T.primary else T.secondary,
+                        modifier = Modifier
+                            .padding(start = if (fi > 0) 6.dp else 0.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background((if (presetFilter == fi) T.primary else T.secondary).copy(alpha = 0.12f))
+                            .clickable { presetFilter = fi }
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                            .semantics { contentDescription = "Filter presets: " + fl }
+                    )
+                }
+            }
+            Row {
+                Text(
+                    "↺ Reset All",
+                    fontSize = 11.sp,
+                    color = T.accent,
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(T.accent.copy(alpha = 0.10f))
+                        .clickable { showResetDialog = true }
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "+ Save",
+                    fontSize = 11.sp,
+                    color = T.primary,
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(T.primary.copy(alpha = 0.10f))
+                        .clickable {
+                        presetNameInput = ""
+                        showSaveDialog = true
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "⇄ Compare",
+                    fontSize = 11.sp,
+                    color = T.primary,
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(T.primary.copy(alpha = 0.10f))
+                        .clickable { showCompareDialog = true }
+                        .semantics { contentDescription = "Compare current settings with a preset" }
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "↥ Export",
+                    fontSize = 11.sp,
+                    color = T.secondary,
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(T.secondary.copy(alpha = 0.10f))
+                        .clickable {
+                            try {
+                                context.startActivity(Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "application/json"
+                                        putExtra(Intent.EXTRA_TEXT, buildPresetJson())
+                                        putExtra(Intent.EXTRA_SUBJECT, "SonicCore preset — DSP configuration only")
+                                    }, "Share preset"))
+                            } catch (t: Throwable) { }
+                        }
+                        .semantics { contentDescription = "Export current preset as JSON" }
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "↧ Import",
+                    fontSize = 11.sp,
+                    color = T.secondary,
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(T.secondary.copy(alpha = 0.10f))
+                        .clickable {
+                            importPresetInput = ""
+                            showImportPreset = true
+                        }
+                        .semantics { contentDescription = "Import a preset from JSON" }
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "↥ Share",
+                    fontSize = 11.sp,
+                    color = T.primary,
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(T.primary.copy(alpha = 0.10f))
+                        .clickable {
+                        val json = engine.exportCustomPresets()
+                        if (customPresets.isEmpty()) {
+                            scope2.launch { snackbarHost.showSnackbar("No custom presets to share") }
+                        } else {
+                            try {
+                                val file = File(context.cacheDir, "neoneq_presets.json")
+                                file.writeText(json)
+                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                val share = Intent(Intent.ACTION_SEND).apply {
+                                    type = "application/json"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(share, "Share presets"))
+                            } catch (_: Throwable) {
+                                scope2.launch { snackbarHost.showSnackbar("Share failed") }
+                            }
+                        }
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "↧ Import",
+                    fontSize = 11.sp,
+                    color = T.primary,
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(T.primary.copy(alpha = 0.10f))
+                        .clickable {
+                        importJsonInput = ""
+                        importResultMsg = ""
+                        showImportDialog = true
+                    }
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        // Build #124: filtered views — favorites get a star; built-ins are never deletable
+        val filteredBuiltins = Presets.presets.filter { p ->
+            (presetSearch.isBlank() || p.name.contains(presetSearch, ignoreCase = true)) &&
+            (presetFilter == 0 || presetFilter == 3 ||
+                (presetFilter == 1 && p.name in presetFavs) ||
+                (presetFilter == 2 && p.name in presetRecent))
+        }.let { if (presetFilter == 1) it.sortedByDescending { p -> p.name in presetFavs } else it }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(filteredBuiltins, key = { "b_" + it.name }) { preset ->
+                androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(if (preset.name in presetFavs) "★" else " ", fontSize = 8.sp, color = T.accent,
+                        modifier = Modifier.clickable { toggleFav(preset.name) }.semantics { contentDescription = (if (preset.name in presetFavs) "Unfavorite " else "Favorite ") + preset.name })
+                    PresetChip(
+                    preset = preset,
+                    selected = selectedPreset == preset.name,
+                    // Build #126: lightweight preview before applying
+                    onClick = { previewPresetName = preset.name }
+                )
+                }
+            }
+            val filteredCustom = customPresets.filter { p ->
+                (presetSearch.isBlank() || p.name.contains(presetSearch, ignoreCase = true)) &&
+                (presetFilter == 0 || presetFilter == 3 ||
+                    (presetFilter == 1 && p.name in presetFavs) ||
+                    (presetFilter == 2 && p.name in presetRecent))
+            }
+            items(filteredCustom, key = { "c_" + it.name }) { preset ->
+                androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(if (preset.name in presetFavs) "★" else " ", fontSize = 8.sp, color = T.accent,
+                        modifier = Modifier.clickable { toggleFav(preset.name) }.semantics { contentDescription = (if (preset.name in presetFavs) "Unfavorite " else "Favorite ") + preset.name })
+                    CustomPresetChip(
+                    preset = preset,
+                    selected = selectedPreset == preset.name,
+                    onClick = { previewPresetName = preset.name },
+                    onLongPress = { menuPreset = preset },
+                    onDelete = {
+                        engine.deleteCustomPreset(preset.name)
+                        customPresets = engine.listCustomPresets()
+                        if (selectedPreset == preset.name) {
+                            selectedPreset = "Flat"
+                            engine.setSelectedPresetName("Flat")
+                        }
+                        scope2.launch { snackbarHost.showSnackbar("Deleted '${'$'}{preset.name}'") }
+                    }
+                    )
+                }
+            }
+        }
+        }
+        }
+        Spacer(Modifier.height(16.dp))
         if (navTab == 4) {
         // ── Build #127: APPEARANCE — glass intensity (UI rendering only) ──
         NeonCard {
@@ -3390,7 +3332,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf("HOME" to 0, "EQ" to 1, "DSP" to 2, "SESSIONS" to 3, "SETTINGS" to 4).forEach { (label, idx) ->
+            listOf("HOME" to 0, "EQ" to 1, "DSP" to 2, "SESSIONS" to 3, "SETTINGS & PRESETS" to 4).forEach { (label, idx) ->
                 val selected = navTab == idx
                 val scale by animateFloatAsState(
                     if (selected) 1f else 0.94f,
@@ -3477,6 +3419,72 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
         )
     }
+
+        // ── Build #126: PRESET PREVIEW — actual preset data only ──
+        if (previewPresetName != null) {
+            val pname = previewPresetName!!
+            val pbuiltin = Presets.presets.firstOrNull { it.name == pname }
+            val pcustom = customPresets.firstOrNull { it.name == pname }
+            val plv = when {
+                pbuiltin != null -> Presets.levelsForCount(pbuiltin, bandCount)
+                pcustom != null -> Presets.levelsForCount(pcustom, bandCount)
+                else -> null
+            }
+            if (plv != null) {
+                val cur = (0 until bandCount).map { round(bandLevels.getOrElse(it) { 0f }).toInt() }
+                val tgt = (0 until bandCount).map { plv.getOrNull(it)?.toInt() ?: 0 }
+                val changedBands = (0 until bandCount).count { cur[it] != tgt[it] }
+                val nz = tgt.filter { it != 0 }
+                AlertDialog(
+                    containerColor = S.card.copy(alpha = 0.94f),
+                    shape = RoundedCornerShape(24.dp),
+                    onDismissRequest = { previewPresetName = null },
+                    title = { Text(pname, color = T.primary, fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column {
+                            Text("Graphic EQ: " + bandCount + " bands · " + changedBands + " differ from current", fontSize = 11.sp, color = T.secondary)
+                            Text(
+                                "Gain range: " + (if (nz.isEmpty()) "flat" else "%+.1f".format(nz.min().toFloat()) + " to " + "%+.1f".format(nz.max().toFloat()) + " dB"),
+                                fontSize = 11.sp, color = T.secondary
+                            )
+                            if (pcustom != null) {
+                                Text(
+                                    "Effects: bass " + (if (pcustom.bassBoost > 0) pcustom.bassBoost else "kept") +
+                                        " · virt " + (if (pcustom.virtualizer > 0) pcustom.virtualizer else "kept") +
+                                        " · loud " + (if (pcustom.loudness > 0) pcustom.loudness else "kept"),
+                                    fontSize = 10.sp, color = T.secondary
+                                )
+                                Text("Stored 0 means 'not set' — live values are kept.", fontSize = 8.sp, color = T.secondary)
+                            }
+                            Text("Parametric EQ: not part of presets — unchanged.", fontSize = 9.sp, color = T.secondary)
+                        }
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            pushUndo(true, "Preset: " + pname)
+                            markRecent(pname)
+                            selectedPreset = pname
+                            engine.setSelectedPresetName(pname)
+                            val newLevels = FloatArray(31) { 0f }
+                            plv.forEachIndexed { i, lvl -> newLevels[i] = lvl.toFloat() }
+                            animateLevelsTo(newLevels)
+                            if (pcustom != null) {
+                                bassBoost = if (pcustom.bassBoost > 0) pcustom.bassBoost else bassBoost
+                                virtualizer = if (pcustom.virtualizer > 0) pcustom.virtualizer else virtualizer
+                                loudness = if (pcustom.loudness > 0) pcustom.loudness else loudness
+                            }
+                            engine.applyFullState(
+                                ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
+                                bassBoost, virtualizer, loudness, smooth = true)
+                            previewPresetName = null
+                        }, colors = ButtonDefaults.buttonColors(containerColor = T.primary)) { Text("APPLY") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { previewPresetName = null }) { Text("CANCEL", color = T.secondary) }
+                    }
+                )
+            }
+        }
 
     // ── Build #123: PRESET COMPARE — current vs saved preset (or Flat) ──
     if (showCompareDialog) {
@@ -4213,7 +4221,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "SonicCore · Build #128",
+                        "SonicCore · Build #129",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
