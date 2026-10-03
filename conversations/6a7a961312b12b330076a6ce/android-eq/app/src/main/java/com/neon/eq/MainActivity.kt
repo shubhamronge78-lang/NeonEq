@@ -80,6 +80,7 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -868,7 +869,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("SPECTRUM", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
             Spacer(Modifier.height(4.dp))
             var spTick by remember { mutableStateOf(0) }
-            LaunchedEffect(spFps) { while (true) { kotlinx.coroutines.delay(1000L / spFps.coerceAtLeast(5)); spTick++ } }
             var spBars by remember { mutableStateOf(FloatArray(48)) }
             var spHold by remember { mutableStateOf(FloatArray(48)) }
             var spSmooth by remember { mutableStateOf(true) }
@@ -876,6 +876,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             var spPost by remember { mutableStateOf(false) }
             var spChan by remember { mutableStateOf(0) }
             var spFps by remember { mutableStateOf(30) }
+            LaunchedEffect(spFps) { while (true) { kotlinx.coroutines.delay(1000L / spFps.coerceAtLeast(5)); spTick++ } }
             val spActive = NeonDsp.available && runCatching { NeonDsp.inRmsMs() > 0 || NeonDsp.outRmsMs() > 0 }.getOrDefault(false)
             LaunchedEffect(spTick) {
                 if (spTick > 0 && NeonDsp.available && spActive) {
