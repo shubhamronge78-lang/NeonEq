@@ -491,7 +491,7 @@ class CaptureEqService : Service() {
             (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
                 .notify(NOTIF_ID, NotificationCompat.Builder(this, CHANNEL_ID)
                     .setSmallIcon(R.mipmap.ic_launcher)
-                    .setContentTitle("NeonEQ")
+                    .setContentTitle("SonicCore")
                     .setContentText("Audio buffer adjusted: " + change)
                     .setStyle(NotificationCompat.BigTextStyle().bigText("Audio buffer adjusted: " + change))
                     .setOngoing(true)
@@ -520,22 +520,22 @@ class CaptureEqService : Service() {
         val title: String
         val body: String
         if (lastError != null) {
-            title = "NeonEQ · AUDIO ERROR"
+            title = "SonicCore · AUDIO ERROR"
             body = simpleErrorText(lastError!!) + "\nTap to view diagnostics."
         } else if (noEligiblePlayback) {
-            title = "NeonEQ · CAPTURE BLOCKED"
+            title = "SonicCore · CAPTURE BLOCKED"
             body = "Source app does not permit playback capture"
         } else if (!recentData && framesCaptured == 0L) {
-            title = "NeonEQ · WAITING"
+            title = "SonicCore · WAITING"
             body = "Waiting for eligible playback"
         } else if (bypass) {
-            title = "NeonEQ · DSP BYPASS"
+            title = "SonicCore · DSP BYPASS"
             body = "Capture active · DSP bypassed"
         } else if (!NeonDsp.available) {
-            title = "NeonEQ · DSP ERROR"
+            title = "SonicCore · DSP ERROR"
             body = "Native DSP unavailable — tap to view diagnostics"
         } else {
-            title = "NeonEQ · DSP ACTIVE"
+            title = "SonicCore · DSP ACTIVE"
             val sb = StringBuilder()
             if (captureSampleRate > 0) sb.append(captureSampleRate / 1000).append(" kHz · Stereo")
             val dev = try { AudioPath.outputDevice(this) } catch (_: Throwable) { "" }

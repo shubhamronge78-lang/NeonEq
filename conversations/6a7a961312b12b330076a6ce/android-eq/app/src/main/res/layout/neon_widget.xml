@@ -12,7 +12,7 @@
         android:id="@+id/widget_title"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="NEON EQ"
+        android:text="SONICCORE"
         android:textSize="10sp"
         android:textStyle="bold"
         android:letterSpacing="0.2"

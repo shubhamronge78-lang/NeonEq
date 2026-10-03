@@ -678,13 +678,15 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     Text(
                         buildAnnotatedString {
                             withStyle(SpanStyle(brush = Brush.horizontalGradient(listOf(T.primary, T.secondary)))) {
-                                append("NEON EQ")
+                                append("SONICCORE")
                             }
                         },
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 2.sp
                     )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Professional\nAudio Processing", fontSize = 8.sp, color = T.secondary, lineHeight = 10.sp, letterSpacing = 1.sp)
                     Spacer(Modifier.width(10.dp))
                     Box(
                         modifier = Modifier
@@ -870,7 +872,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     " · Input " + dbS(nowIn) + " · Output " + dbS(nowOut),
                 fontSize = 11.sp, color = T.primary, lineHeight = 15.sp
             )
-            Text("Technical status of NeonEQ's own pipeline. NeonEQ does not read or control another app's media session.", fontSize = 8.sp, color = T.secondary)
+            Text("Technical status of SonicCore's own pipeline. SonicCore does not read or control another app's media session.", fontSize = 8.sp, color = T.secondary)
         }
         Spacer(Modifier.height(8.dp))
         // Build #124: honest, expandable capture explanation
@@ -881,7 +883,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 .semantics { contentDescription = "Expand capture explanation" })
         if (capExpOpen) {
             Text(
-                "NeonEQ captures eligible Android playback, processes the captured PCM, and sends the processed copy to its own AudioTrack.\nAndroid may also continue playing the source application's original output.",
+                "SonicCore captures eligible Android playback, processes the captured PCM, and sends the processed copy to its own AudioTrack.\nAndroid may also continue playing the source application's original output.",
                 fontSize = 9.sp, color = T.secondary, lineHeight = 13.sp
             )
         }
@@ -1481,7 +1483,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                     Intent(Intent.ACTION_SEND).apply {
                                         type = "application/json"
                                         putExtra(Intent.EXTRA_TEXT, buildPresetJson())
-                                        putExtra(Intent.EXTRA_SUBJECT, "NeonEQ preset — DSP configuration only")
+                                        putExtra(Intent.EXTRA_SUBJECT, "SonicCore preset — DSP configuration only")
                                     }, "Share preset"))
                             } catch (t: Throwable) { }
                         }
@@ -2140,7 +2142,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── Build #105: PLAYER — the one audio path no OEM can block ──
         NeonCard {
-            GradientText("PLAYER — EQ INSIDE NEONEQ", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+            GradientText("PLAYER — EQ INSIDE SONICCORE", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
             var whyOpen by remember { mutableStateOf(false) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("ENGINE: " + (SoftwareEq.lastEngineLabel ?: "—"), fontSize = 9.sp, color = T.secondary)
@@ -2153,7 +2155,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             if (whyOpen) {
                 Text(
                     if (SoftwareEq.lastEngineLabel?.startsWith("KOTLIN") == true)
-                        "«Native stereo DSP is unavailable for this path, so NeonEQ is using the Kotlin fallback.»"
+                        "«Native stereo DSP is unavailable for this path, so SonicCore is using the Kotlin fallback.»"
                     else "«The native C++ engine is processing the player path in stereo.»",
                     fontSize = 9.sp, color = T.secondary
                 )
@@ -2720,12 +2722,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             Text("CAPTURE MODE", fontSize = 10.sp, color = T.accent)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Android 10+ public API: NeonEQ captures other apps' playback with your consent (MediaProjection), processes it through the shared native DSP, and plays the result. This is the legitimate Android capture path, available identically on every brand — Samsung, Xiaomi, OnePlus, OPPO, Motorola, Pixel and all others.",
+                "Android 10+ public API: SonicCore captures other apps' playback with your consent (MediaProjection), processes it through the shared native DSP, and plays the result. This is the legitimate Android capture path, available identically on every brand — Samsung, Xiaomi, OnePlus, OPPO, Motorola, Pixel and all others.",
                 fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "Android may continue playing the original signal while NeonEQ outputs the processed signal. No public API can silence or replace another app's audio — if you hear both, lower the source app's volume. DRM content, calls, and apps that opt out of capture are excluded by Android itself.",
+                "Android may continue playing the original signal while SonicCore outputs the processed signal. No public API can silence or replace another app's audio — if you hear both, lower the source app's volume. DRM content, calls, and apps that opt out of capture are excluded by Android itself.",
                 fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
             )
             Spacer(Modifier.height(8.dp))
@@ -2773,7 +2775,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 ) { Text("A · BYPASS", fontSize = 9.sp) }
             }
             Text(
-                if (CaptureEqService.bypass) "RAW CAPTURE PATH — AudioPlaybackCapture → AudioRecord → AudioTrack. NeonEQ DSP bypass — Android/OEM processing is unaffected."
+                if (CaptureEqService.bypass) "RAW CAPTURE PATH — AudioPlaybackCapture → AudioRecord → AudioTrack. SonicCore DSP bypass — Android/OEM processing is unaffected."
                 else "PROCESSED CAPTURE PATH — AudioPlaybackCapture → AudioRecord → NeonDspEngine → AudioTrack.",
                 fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
             )
@@ -2853,7 +2855,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 ) { Text(if (CaptureEqService.running) "STOP CAPTURE" else "START CAPTURE", fontSize = 10.sp) }
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (CaptureEqService.running) "NeonEQ Audio Engine Active — notification has Pause/Stop/Open"
+                    if (CaptureEqService.running) "SonicCore Audio Engine Active — notification has Pause/Stop/Open"
                     else "Asks for screen-record consent (only audio is captured)",
                     fontSize = 9.sp, color = T.secondary
                 )
@@ -2969,7 +2971,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 fontSize = 10.sp, color = T.accent
             )
             Text(
-                "NeonEQ verified that processed PCM reached its AudioTrack. Android may also continue playing the original source application's output.",
+                "SonicCore verified that processed PCM reached its AudioTrack. Android may also continue playing the original source application's output.",
                 fontSize = 9.sp, color = T.secondary
             )
             Spacer(Modifier.height(6.dp))
@@ -3113,7 +3115,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             if (rWired) Text("○ Wired headset connected", fontSize = 10.sp, color = T.secondary)
             if (rBt) Text("○ Bluetooth connected", fontSize = 10.sp, color = T.secondary)
             if (rUsb) Text("○ USB audio connected", fontSize = 10.sp, color = T.secondary)
-            Text("System-controlled route — Android owns route selection. NeonEQ reports the active route and rebuilds its own output when it changes; it cannot force a different system route.", fontSize = 8.sp, color = T.secondary)
+            Text("System-controlled route — Android owns route selection. SonicCore reports the active route and rebuilds its own output when it changes; it cannot force a different system route.", fontSize = 8.sp, color = T.secondary)
         }
         Spacer(Modifier.height(16.dp))
 
@@ -3122,9 +3124,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("ABOUT", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
             Spacer(Modifier.height(4.dp))
             Text(
-                "NeonEQ v2.8.0 · Build #123\n" +
-                "Engine: native C++ NeonDspEngine (10/15/31-band RBJ biquads, seqlock atomic params, lock-free real-time audio)\n" +
-                "Audio path: AudioPlaybackCapture → AudioRecord → JNI → native DSP → AudioTrack (public Android APIs only — no root, no private APIs, no OEM-specific code)\n" +
+                "SonicCore — Professional Audio Processing\n" +
+                "Real-time Android DSP and audio enhancement\n" +
+                "Engine: native C++ DSP (10/15/31-band RBJ biquads, seqlock atomic params, lock-free real-time audio)\n" +
+                "Audio path: AudioPlaybackCapture → AudioRecord → JNI → native DSP → AudioTrack (public Android APIs only — no root, no OEM-specific code)\n" +
+                "Limitation: Android playback capture depends on source-app policy and platform restrictions. Some apps or protected content may not be capturable, and Android public APIs cannot forcibly mute another app's original playback.\n" +
                 "Honesty model: PROCESSING PATH and OUTPUT DELIVERY are verified from measured frame counters; the audible result is explicitly NOT directly verifiable while Android may also play the source app's original audio.",
                 fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp
             )
@@ -3204,7 +3208,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     .clickable {
                         try {
                             val diag = buildString {
-                                appendLine("NeonEQ Audio Diagnostics — " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.ROOT).format(java.util.Date()))
+                                appendLine("SonicCore Audio Diagnostics — " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.ROOT).format(java.util.Date()))
                                 appendLine("Device: " + AudioCapabilityManager.osLine())
                                 appendLine("Android: " + AudioCapabilityManager.androidLine())
                                 appendLine("Capture API: " + (if (AudioCapabilityManager.playbackCapture().toString() == "SUPPORTED") "SUPPORTED" else "UNSUPPORTED"))
@@ -3571,7 +3575,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     Button(onClick = {
                         try {
                             val o = JSONObject(importPresetInput.trim())
-                            require(o.optInt("neoneq_preset", 0) == 1) { "not a NeonEQ preset" }
+                            require(o.optInt("neoneq_preset", 0) == 1) { "not a SonicCore preset" }
                             val arr = o.getJSONArray("levels")
                             require(arr.length() in 10..31) { "bad band count" }
                             var clampedCount = 0
@@ -3644,11 +3648,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     if (showGuide) {
         var guidePage by remember { mutableStateOf(0) }
         val guidePages = listOf(
-            "WELCOME TO NEONEQ" to "Professional Android audio DSP.\n\nCapture, process, and verify — with honest measurements at every stage.",
+            "WELCOME TO SONICCORE" to "Professional Audio Processing.\n\nReal-time Android DSP. Capture, process, and verify — with honest measurements at every stage.",
             "CHOOSE YOUR SOUND" to "Pick a preset (★ star your favorites) or drag the EQ bands on the EQ tab. Undo always brings you back.",
             "WATCH THE SIGNAL" to "The SIGNAL PATH panel shows capture → DSP → output from measured frame counters — never inferred.",
             "VERIFY PROCESSING" to "Processing and output delivery are measured facts. The audible result is honestly marked as not directly verifiable.",
-            "IMPORTANT" to "Android may continue playing the original source audio. NeonEQ processes the audio it captures through its own pipeline and cannot mute or replace the source app."
+            "IMPORTANT" to "Android may continue playing the original source audio. SonicCore processes the audio it captures through its own pipeline and cannot mute or replace the source app."
         )
         AlertDialog(
             containerColor = S.card.copy(alpha = 0.94f),
@@ -3866,7 +3870,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             Intent(Intent.ACTION_SEND).apply {
                                 type = "application/json"
                                 putExtra(Intent.EXTRA_TEXT, buildPresetJson())
-                                putExtra(Intent.EXTRA_SUBJECT, "NeonEQ preset — DSP configuration only")
+                                putExtra(Intent.EXTRA_SUBJECT, "SonicCore preset — DSP configuration only")
                             }, "Share preset"))
                     } catch (t: Throwable) { }
                     menuPreset = null
@@ -4143,7 +4147,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                         putExtra(Intent.EXTRA_STREAM, uri)
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
-                                    context.startActivity(Intent.createChooser(share, "Backup Neon EQ"))
+                                    context.startActivity(Intent.createChooser(share, "Backup SonicCore"))
                                 } catch (_: Throwable) {
                                     scope2.launch { snackbarHost.showSnackbar("Backup failed") }
                                 }
@@ -4209,7 +4213,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #127",
+                        "SonicCore · Build #128",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
@@ -4275,7 +4279,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             title = { Text("Restore backup", color = T.primary, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Paste a Neon EQ backup JSON to restore all settings. This replaces current bands, effects, presets and toggles.", fontSize = 11.sp, color = Color.Gray)
+                    Text("Paste a SonicCore backup JSON to restore all settings. This replaces current bands, effects, presets and toggles.", fontSize = 11.sp, color = Color.Gray)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = restoreJsonInput,
@@ -5169,7 +5173,7 @@ fun CrashScreen(trace: String, onDismiss: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        Text("NEON EQ CRASHED", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = T.accent)
+        Text("SONICCORE CRASHED", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = T.accent)
         Spacer(Modifier.height(8.dp))
         Text(
             "Screenshot this and send it back — this is the real error, not a guess.",
@@ -5195,7 +5199,7 @@ fun CrashScreen(trace: String, onDismiss: () -> Unit) {
             Button(onClick = onDismiss) { Text("Dismiss & Retry") }
             OutlinedButton(onClick = {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("NeonEQ crash log", trace))
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("SonicCore crash log", trace))
                 Toast.makeText(context, "Crash log copied", Toast.LENGTH_SHORT).show()
             }) { Text("Copy") }
         }

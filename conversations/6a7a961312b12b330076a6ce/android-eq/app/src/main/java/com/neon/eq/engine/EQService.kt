@@ -64,7 +64,7 @@ class EQService : Service() {
         )
 
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Neon EQ Active")
+            .setContentTitle("SonicCore Active")
             .setContentText("System-wide equalizer running in the background")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
@@ -96,7 +96,7 @@ class EQService : Service() {
         val text = if (profile != null) "Preset: $preset (profile: $profile)"
                    else "Preset: $preset"
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Neon EQ Active")
+            .setContentTitle("SonicCore Active")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
@@ -115,7 +115,7 @@ class EQService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "Neon EQ",
+                CHANNEL_ID, "SonicCore",
                 NotificationManager.IMPORTANCE_LOW
             ).apply { description = "Equalizer active notification" }
             val nm = getSystemService(NotificationManager::class.java)

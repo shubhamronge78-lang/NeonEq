@@ -132,7 +132,7 @@ object Presets {
             arr.put(obj)
         }
         val meta = org.json.JSONObject()
-        meta.put("app", "NeonEQ")
+        meta.put("app", "SonicCore")
         meta.put("version", 1)
         meta.put("presets", arr)
         return meta.toString(2)

@@ -42,7 +42,7 @@ class EQTileService : TileService() {
     private fun updateTile() {
         val tile = qsTile ?: return
         try {
-            tile.label = "Neon EQ"
+            tile.label = "SonicCore"
             tile.state = if (readEnabled()) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             tile.updateTile()
         } catch (_: Throwable) {}

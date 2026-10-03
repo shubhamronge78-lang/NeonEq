@@ -334,7 +334,7 @@ class EqualizerEngine private constructor(context: Context) {
             // matched against release history by hand.
             try {
                 val pi = context.packageManager.getPackageInfo(context.packageName, 0)
-                sb.append("NeonEQ v").append(pi.versionName ?: "?").append(" (build ")
+                sb.append("SonicCore v").append(pi.versionName ?: "?").append(" (build ")
                     .append(if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode
                             else @Suppress("DEPRECATION") pi.versionCode.toLong())
                     .append(") · ").append(Build.MODEL).append(" · Android ").append(Build.VERSION.RELEASE).append("\n")

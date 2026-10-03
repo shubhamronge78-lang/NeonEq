@@ -381,7 +381,7 @@ object AudioCapabilityManager {
             val f = File(ctx.filesDir, "sessions.jsonl")
             if (!f.exists()) return "(no capture sessions recorded yet)"
             val sb = StringBuilder()
-            sb.append("NeonEQ Session Diagnostics — last sessions").append(NL_Q)
+            sb.append("SonicCore Session Diagnostics — last sessions").append(NL_Q)
             f.readLines().takeLast(n).forEach { line ->
                 try {
                     val o = JSONObject(line)
