@@ -908,7 +908,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     .semantics { contentDescription = "Open EQ tab" })
             Text("DIAG", fontSize = 10.sp, color = T.secondary,
                 modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.secondary.copy(alpha = 0.12f))
-                    .clickable { navTab = 4 }
+                    .clickable { navTab = 1 }
                     .padding(horizontal = 10.dp, vertical = 5.dp)
                     .semantics { contentDescription = "Open diagnostics tab" })
         }
@@ -1324,96 +1324,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             } // landscape row
         } // landscape
 
-        if (navTab == 3) {
-        // ── Build #121: SESSIONS — local history from the recorded session log ──
-        NeonCard {
-            GradientText("SESSIONS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
-            Spacer(Modifier.height(4.dp))
-            Text("⇄ COMPARE TWO SESSIONS", fontSize = 9.sp, color = T.accent,
-                modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
-                    .clickable { showSessionCompare = true }.padding(horizontal = 10.dp, vertical = 5.dp)
-                    .semantics { contentDescription = "Compare two sessions" })
-            Spacer(Modifier.height(4.dp))
-            var sessTick by remember { mutableStateOf(0) }
-            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(3000); sessTick++ } }
-            var sessSel by remember { mutableStateOf(-1) }
-            val sessCtx = LocalContext.current
-            // parse first (plain code), render second — composables never inside try/catch
-            val sessRows: List<Triple<String, Int, String>> = try {
-                val f = File(sessCtx.filesDir, "sessions.jsonl")
-                if (f.exists()) f.readLines().takeLast(4).reversed().mapNotNull { line ->
-                    try {
-                        val o = JSONObject(line)
-                        val verdict = when {
-                            o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 && !o.optBoolean("bypass") -> 1
-                            o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 -> 2
-                            o.optLong("frames_cap") > 0 -> 3
-                            else -> 4
-                        }
-                        val tMs = System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - o.optLong("start_ms", 0L))
-                        val head = java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(tMs)) +
-                            " · " + (o.optInt("sr") / 1000) + "kHz · " + o.optString("route") + " — " +
-                            when (verdict) { 1 -> "SIGNAL PATH ACTIVE"; 2 -> "SIGNAL PATH ACTIVE (RAW)"; 3 -> "CAPTURE → DSP CONNECTION FAILURE"; else -> "NO ELIGIBLE PLAYBACK" }
-                        val startAt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date(tMs))
-                        val endAt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date(tMs + o.optLong("dur_ms")))
-                        val detail = "VERDICT: " + when (verdict) { 1 -> "SIGNAL PATH ACTIVE"; 2 -> "SIGNAL PATH ACTIVE (RAW)"; 3 -> "CAPTURE → DSP CONNECTION FAILURE"; else -> "NO ELIGIBLE PLAYBACK" } + "\n" +
-                            "duration " + o.optLong("dur_ms") / 1000 + "s · route changes " + o.optInt("route_changes") + " · buffer changes " + o.optInt("buffer_changes") + "\n" +
-                            "cap " + o.optLong("frames_cap") + " · rec " + o.optLong("frames_rec") + " · jni " + o.optLong("frames_jni") + " · dsp " + o.optLong("frames_dsp") + " · out " + o.optLong("frames_out") + "\n" +
-                            "underruns " + o.optLong("underruns") + " · clips " + o.optLong("clips") + " · NaN " + o.optLong("nan") + " · dsp cpu " + (o.optInt("dsp_cpu") / 10.0) + "%" + "\n" +
-                            "error: " + o.optString("error", "none") + "\n" +
-                            "EVENTS (recorded only):\n" +
-                            startAt + "  Capture started\n" +
-                            endAt + "  Capture stopped\n" +
-                            "  " + o.optInt("route_changes") + " route change(s) · " + o.optInt("buffer_changes") + " buffer change(s) — per-event timestamps are not recorded"
-                        Triple(head, verdict, detail)
-                        Triple(head, verdict, detail)
-                    } catch (t: Throwable) { null }
-                } else emptyList()
-            } catch (t: Throwable) { emptyList() }
-            if (sessRows.isEmpty()) {
-                Text("No capture sessions recorded yet — technical counters only, never audio.", fontSize = 9.sp, color = T.secondary)
-            }
-            sessRows.forEachIndexed { li, (head, verdict, detail) ->
-                Text(
-                    head,
-                    fontSize = 10.sp,
-                    color = if (verdict == 1 || verdict == 2) T.primary else T.secondary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { sessSel = if (sessSel == li) -1 else li }
-                        .padding(vertical = 3.dp)
-                        .semantics { contentDescription = "Session, " + head }
-                )
-                if (sessSel == li) {
-                    Text(detail, fontSize = 9.sp, color = T.secondary, lineHeight = 13.sp)
-                }
-            }
-            Text(
-                "EXPORT DIAGNOSTICS",
-                fontSize = 10.sp, color = T.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(T.primary.copy(alpha = 0.10f))
-                    .clickable {
-                        try {
-                            val file = File(sessCtx.cacheDir, "neoneq_sessions.txt")
-                            file.writeText(AudioCapabilityManager.exportSessions(sessCtx))
-                            val uri = FileProvider.getUriForFile(sessCtx, sessCtx.packageName + ".fileprovider", file)
-                            sessCtx.startActivity(Intent.createChooser(
-                                Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_STREAM, uri)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }, "Share session diagnostics"))
-                        } catch (t: Throwable) { }
-                    }
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        } // tab guard
 
         if (navTab == 1) {
         var editBand by remember { mutableStateOf(-1) }
@@ -2218,7 +2128,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // tab guard
 
-        if (navTab == 2) {
+        if (navTab == 1) {
         // ── Build #123: DSP STUDIO — master control + visual processing chain ──
         NeonCard {
             GradientText("DSP ENGINE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
@@ -2665,7 +2575,98 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // tab guard
 
-        if (navTab == 2) {
+        if (navTab == 0) {  // Build #133: SESSIONS folded into HOME section
+        // ── Build #121: SESSIONS — local history from the recorded session log ──
+        NeonCard {
+            GradientText("SESSIONS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+            Spacer(Modifier.height(4.dp))
+            Text("⇄ COMPARE TWO SESSIONS", fontSize = 9.sp, color = T.accent,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
+                    .clickable { showSessionCompare = true }.padding(horizontal = 10.dp, vertical = 5.dp)
+                    .semantics { contentDescription = "Compare two sessions" })
+            Spacer(Modifier.height(4.dp))
+            var sessTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(3000); sessTick++ } }
+            var sessSel by remember { mutableStateOf(-1) }
+            val sessCtx = LocalContext.current
+            // parse first (plain code), render second — composables never inside try/catch
+            val sessRows: List<Triple<String, Int, String>> = try {
+                val f = File(sessCtx.filesDir, "sessions.jsonl")
+                if (f.exists()) f.readLines().takeLast(4).reversed().mapNotNull { line ->
+                    try {
+                        val o = JSONObject(line)
+                        val verdict = when {
+                            o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 && !o.optBoolean("bypass") -> 1
+                            o.optLong("frames_cap") > 0 && o.optLong("frames_out") > 0 -> 2
+                            o.optLong("frames_cap") > 0 -> 3
+                            else -> 4
+                        }
+                        val tMs = System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - o.optLong("start_ms", 0L))
+                        val head = java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(tMs)) +
+                            " · " + (o.optInt("sr") / 1000) + "kHz · " + o.optString("route") + " — " +
+                            when (verdict) { 1 -> "SIGNAL PATH ACTIVE"; 2 -> "SIGNAL PATH ACTIVE (RAW)"; 3 -> "CAPTURE → DSP CONNECTION FAILURE"; else -> "NO ELIGIBLE PLAYBACK" }
+                        val startAt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date(tMs))
+                        val endAt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date(tMs + o.optLong("dur_ms")))
+                        val detail = "VERDICT: " + when (verdict) { 1 -> "SIGNAL PATH ACTIVE"; 2 -> "SIGNAL PATH ACTIVE (RAW)"; 3 -> "CAPTURE → DSP CONNECTION FAILURE"; else -> "NO ELIGIBLE PLAYBACK" } + "\n" +
+                            "duration " + o.optLong("dur_ms") / 1000 + "s · route changes " + o.optInt("route_changes") + " · buffer changes " + o.optInt("buffer_changes") + "\n" +
+                            "cap " + o.optLong("frames_cap") + " · rec " + o.optLong("frames_rec") + " · jni " + o.optLong("frames_jni") + " · dsp " + o.optLong("frames_dsp") + " · out " + o.optLong("frames_out") + "\n" +
+                            "underruns " + o.optLong("underruns") + " · clips " + o.optLong("clips") + " · NaN " + o.optLong("nan") + " · dsp cpu " + (o.optInt("dsp_cpu") / 10.0) + "%" + "\n" +
+                            "error: " + o.optString("error", "none") + "\n" +
+                            "EVENTS (recorded only):\n" +
+                            startAt + "  Capture started\n" +
+                            endAt + "  Capture stopped\n" +
+                            "  " + o.optInt("route_changes") + " route change(s) · " + o.optInt("buffer_changes") + " buffer change(s) — per-event timestamps are not recorded"
+                        Triple(head, verdict, detail)
+                        Triple(head, verdict, detail)
+                    } catch (t: Throwable) { null }
+                } else emptyList()
+            } catch (t: Throwable) { emptyList() }
+            if (sessRows.isEmpty()) {
+                Text("No capture sessions recorded yet — technical counters only, never audio.", fontSize = 9.sp, color = T.secondary)
+            }
+            sessRows.forEachIndexed { li, (head, verdict, detail) ->
+                Text(
+                    head,
+                    fontSize = 10.sp,
+                    color = if (verdict == 1 || verdict == 2) T.primary else T.secondary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { sessSel = if (sessSel == li) -1 else li }
+                        .padding(vertical = 3.dp)
+                        .semantics { contentDescription = "Session, " + head }
+                )
+                if (sessSel == li) {
+                    Text(detail, fontSize = 9.sp, color = T.secondary, lineHeight = 13.sp)
+                }
+            }
+            Text(
+                "EXPORT DIAGNOSTICS",
+                fontSize = 10.sp, color = T.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(T.primary.copy(alpha = 0.10f))
+                    .clickable {
+                        try {
+                            val file = File(sessCtx.cacheDir, "neoneq_sessions.txt")
+                            file.writeText(AudioCapabilityManager.exportSessions(sessCtx))
+                            val uri = FileProvider.getUriForFile(sessCtx, sessCtx.packageName + ".fileprovider", file)
+                            sessCtx.startActivity(Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }, "Share session diagnostics"))
+                        } catch (t: Throwable) { }
+                    }
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        } // tab guard
+
+        if (navTab == 1) {
         // ── Build #119: SIGNAL PATH — measured, stage-by-stage, never inferred ──
         NeonCard {
             GradientText("SIGNAL PATH", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
@@ -3079,7 +3080,53 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
         }
         Spacer(Modifier.height(16.dp))
-        if (navTab == 4) {
+        if (navTab == 1) {  // Build #133: PRO FX folded into EQ section
+        // ── Build #89: PRO FX — noise gate + anti-clip limiter ──
+        NeonCard {
+            GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = noiseGate,
+                    onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
+                    label = { Text("NOISE GATE", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
+                        selectedLabelColor = T.primary
+                    )
+                )
+                FilterChip(
+                    selected = limiterOn,
+                    onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
+                    label = { Text("LIMITER", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = T.accent.copy(alpha = 0.2f),
+                        selectedLabelColor = T.accent
+                    )
+                )
+            }
+            Text(
+                if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
+                fontSize = 9.sp, color = Color.Gray
+            )
+            if (limiterOn) {
+                CircularDial("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
+                    limiterThr = v
+                    engine.setLimiterThreshold(v)
+                }
+                Text(
+                    "Anti-clip protection — keeps loud curves from distorting at high volume",
+                    fontSize = 9.sp, color = Color.Gray
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Per-app profiles ──
+        } // tab guard
+
+        if (navTab == 1) {
         // ── Build #127: APPEARANCE — glass intensity (UI rendering only) ──
         NeonCard {
             GradientText("APPEARANCE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
@@ -3336,53 +3383,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // tab guard
 
-        if (navTab == 2) {
-        // ── Build #89: PRO FX — noise gate + anti-clip limiter ──
-        NeonCard {
-            GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = noiseGate,
-                    onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
-                    label = { Text("NOISE GATE", fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
-                        selectedLabelColor = T.primary
-                    )
-                )
-                FilterChip(
-                    selected = limiterOn,
-                    onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
-                    label = { Text("LIMITER", fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = T.accent.copy(alpha = 0.2f),
-                        selectedLabelColor = T.accent
-                    )
-                )
-            }
-            Text(
-                if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
-                fontSize = 9.sp, color = Color.Gray
-            )
-            if (limiterOn) {
-                CircularDial("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
-                    limiterThr = v
-                    engine.setLimiterThreshold(v)
-                }
-                Text(
-                    "Anti-clip protection — keeps loud curves from distorting at high volume",
-                    fontSize = 9.sp, color = Color.Gray
-                )
-            }
-        }
 
-        Spacer(Modifier.height(16.dp))
-
-        // ── Per-app profiles ──
-        } // tab guard
-
-        if (navTab == 4) {
+        if (navTab == 1) {
         NeonCard {
             GradientText("APP PROFILES", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
             Spacer(Modifier.height(6.dp))
@@ -3492,7 +3494,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf("HOME" to 0, "EQ" to 1, "DSP" to 2, "SESSIONS" to 3, "SETTINGS & PRESETS" to 4).forEach { (label, idx) ->
+            listOf("HOME" to 0, "EQ" to 1).forEach { (label, idx) ->
                 val selected = navTab == idx
                 val scale by animateFloatAsState(
                     if (selected) 1f else 0.94f,
@@ -3511,7 +3513,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         }
                 ) {
                     Text(
-                        when (idx) { 0 -> "◉"; 1 -> "≡"; 2 -> "∿"; 3 -> "⧗"; else -> "⚙" },
+                        when (idx) { 0 -> "◉"; else -> "∿" },
                         fontSize = 13.sp, color = if (selected) T.primary else T.secondary
                     )
                     Text(label, fontSize = 8.sp, color = if (selected) T.primary else T.secondary)
@@ -3673,7 +3675,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        GlassButton("OPEN FULL PRESET MANAGER", 1) { showPresetPicker = false; navTab = 4 }
+        GlassButton("OPEN FULL PRESET MANAGER", 1) { showPresetPicker = false; navTab = 1 }
     }
 
     // ── Build #123: PRESET COMPARE — current vs saved preset (or Flat) ──
@@ -4411,7 +4413,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "SonicCore · Build #132",
+                        "SonicCore · Build #133",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
@@ -4613,7 +4615,7 @@ fun SidebarNav(navTab: Int, onSelect: (Int) -> Unit) {
     ) {
         SCMark(30.dp)
         Spacer(Modifier.height(22.dp))
-        listOf("HOME" to 0, "EQ" to 1, "DSP" to 2, "SESSIONS" to 3, "SETTINGS" to 4).forEach { (label, idx) ->
+        listOf("HOME" to 0, "EQ" to 1).forEach { (label, idx) ->
             val selected = navTab == idx
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -4626,7 +4628,7 @@ fun SidebarNav(navTab: Int, onSelect: (Int) -> Unit) {
                     .semantics { contentDescription = label + " tab" + if (selected) ", selected" else "" }
             ) {
                 Text(
-                    when (idx) { 0 -> "◉"; 1 -> "≡"; 2 -> "∿"; 3 -> "⧗"; else -> "⚙" },
+                    when (idx) { 0 -> "◉"; else -> "∿" },
                     fontSize = 15.sp, color = if (selected) T.primary else T.secondary
                 )
                 Text(label, fontSize = 7.sp, color = if (selected) T.primary else T.secondary)
