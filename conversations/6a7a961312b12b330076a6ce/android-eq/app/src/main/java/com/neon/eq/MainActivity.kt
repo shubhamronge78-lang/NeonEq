@@ -696,9 +696,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 append("SONICCORE")
                             }
                         },
-                        fontSize = 28.sp,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = 2.sp
+                        letterSpacing = 5.sp
                     )
                     Spacer(Modifier.width(8.dp))
                     // Build #130: live system state — always visible, all tabs,
@@ -784,7 +784,17 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        if (navTab == 0) {
+
+        // ══════════════════════════════════════════════════════════════════
+        // Build #131: UI REBUILT FROM SCRATCH — five screens, one clean
+        // architecture. Each tab is a single local composable that closes
+        // over the shared authoritative state (declared once, above).
+        // Audio engine, data plumbing and dialogs are unchanged; every
+        // screen is rebuilt in the glass design system.
+        // ══════════════════════════════════════════════════════════════════
+
+        @Composable
+        fun HomeTab() {
         // ── Build #127: glass status chips — honest, icon + text ──
         Row(verticalAlignment = Alignment.CenterVertically) {
             val dsState = when {
@@ -1289,13 +1299,477 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
+        // ── Build #110: VISUALIZER on the main screen — system capture when
+        // the device allows it, software-player capture when it doesn't ──
+        NeonCard {
+            var softWave by remember { mutableStateOf(ByteArray(0)) }
+            var softWaveAt by remember { mutableStateOf(0L) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    val w = SoftwareEq.sharedWaveform
+                    val at = SoftwareEq.sharedWaveformAt
+                    if (w != null && at != softWaveAt) { softWave = w; softWaveAt = at }
+                    delay(33)
+                }
+            }
+            val now = SystemClock.elapsedRealtime()
+            val sysFresh = waveformAt > 0 && now - waveformAt < 1500
+            val softFresh = softWaveAt > 0 && now - softWaveAt < 1500
+            VisualizerBars(
+                if (sysFresh) waveform else softWave,
+                if (sysFresh) waveformAt else softWaveAt,
+                active = sysFresh || softFresh,
+                style = visStyle
+            )
+        }
 
-        } // landscape columns
-            } // landscape row
-        } // landscape
+        Spacer(Modifier.height(16.dp))
 
-        if (navTab == 3) {
+        // Build #117: shared audio pipeline state — the PLAYER and CAPTURE
+        // paths converge on the same DSP backend (dsp/Pipeline.kt).
+        // hoisted: shared by PLAYER card (HOME) and TEST SIGNALS (DSP tab)
+
+        // ── Build #105: PLAYER — the one audio path no OEM can block ──
+        NeonCard {
+            GradientText("PLAYER — EQ INSIDE SONICCORE", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
+            var whyOpen by remember { mutableStateOf(false) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("ENGINE: " + (SoftwareEq.lastEngineLabel ?: "—"), fontSize = 9.sp, color = T.secondary)
+                Spacer(Modifier.width(8.dp))
+                Text("WHY?", fontSize = 9.sp, color = T.accent,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
+                        .clickable { whyOpen = !whyOpen }.padding(horizontal = 8.dp, vertical = 3.dp)
+                        .semantics { contentDescription = "Why this engine" })
+            }
+            if (whyOpen) {
+                Text(
+                    if (SoftwareEq.lastEngineLabel?.startsWith("KOTLIN") == true)
+                        "«Native stereo DSP is unavailable for this path, so SonicCore is using the Kotlin fallback.»"
+                    else "«The native C++ engine is processing the player path in stereo.»",
+                    fontSize = 9.sp, color = T.secondary
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Plays your music with the full 10-band EQ applied in software inside the app — works on every device, including ones that block system-wide EQ.",
+                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            val ctx = LocalContext.current
+            val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
+            var hasPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED) }
+            val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPerm = it }
+            var diagTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { delay(700); diagTick++ } }
+            DisposableEffect(Unit) { onDispose { player.stop(); tone.stop() } }
+            // Any change to the curve — drag, preset, startup reapply — reaches the software EQ instantly
+            LaunchedEffect(bandLevels) {
+                dsp.setGains(bandLevels)
+                // Build #119: immediate thread-safe native push for 15/31-band
+                // selections — the 2s service mirror is a safety net only.
+                if (com.neon.eq.dsp.NeonDsp.available && engine.bandCount > 10) {
+                    try { com.neon.eq.dsp.NeonDsp.setGraphicGains(bandLevels) } catch (_: Throwable) { }
+                }
+            }
+            LaunchedEffect(loudness) { dsp.setPreamp(engine.loudnessAppliedMb(loudness) / 100f) }
+            // Build #107: one-tap pipeline proof + live player status.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        if (tone.isRunning) { tone.stop(); toneOn = false } else { player.stop(); tone.mode = "sweep"; tone.play(); toneOn = true }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.primary)
+                ) { Text(if (toneOn) "STOP TEST TONE" else "PLAY TEST TONE · 30Hz-16kHz sweep", fontSize = 10.sp) }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick = {
+                        if (tone.isRunning && tone.mode == "lr") { tone.stop(); toneOn = false }
+                        else { player.stop(); tone.mode = "lr"; tone.play(); toneOn = true }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("L/R TEST · 440Hz", fontSize = 10.sp) }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "player: " + (if (player.isRunning) (if (player.isPaused()) "paused" else "playing") else "idle") +
+                    (if (player.isRunning && SoftEqPlayer.trackInfo.isNotEmpty()) " · " + SoftEqPlayer.trackInfo else "") +
+                    (SoftEqPlayer.lastError?.let { " · ERR: " + it } ?: "") + (if (diagTick < 0) "" else ""),
+                fontSize = 10.sp, color = T.secondary
+            )
+            Spacer(Modifier.height(6.dp))
+            // Build #115: OUTPUT — Poweramp's method: direct volume control on
+            // our own stream, plus explicit device routing when headphones or
+            // Bluetooth are connected.
+            var outVol by remember { mutableStateOf(engine.getPlayerVolume()) }
+            LaunchedEffect(Unit) { player.setOutVolume(outVol) }
+            val outDevices = remember {
+                try {
+                    val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                    am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS).filter { d ->
+                        d.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
+                        d.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        d.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        d.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                    }
+                } catch (t: Throwable) { emptyList() }
+            }
+            var outSel by remember { mutableStateOf(-1) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("OUTPUT", fontSize = 10.sp, color = T.secondary)
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = { outVol = (outVol - 0.1f).coerceAtLeast(0f); player.setOutVolume(outVol); engine.setPlayerVolume(outVol) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("−", fontSize = 10.sp) }
+                Text("${(outVol * 100).toInt()}%", fontSize = 10.sp, color = T.secondary, modifier = Modifier.padding(horizontal = 6.dp))
+                Button(
+                    onClick = { outVol = (outVol + 0.1f).coerceAtMost(1.5f); player.setOutVolume(outVol); engine.setPlayerVolume(outVol) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("+", fontSize = 10.sp) }
+            }
+            if (outDevices.size > 1) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = { outSel = -1; player.setPreferredOutput(null) },
+                        colors = ButtonDefaults.buttonColors(containerColor = if (outSel == -1) T.primary else T.accent)
+                    ) { Text("AUTO", fontSize = 9.sp) }
+                    outDevices.forEachIndexed { i, dev ->
+                        Spacer(Modifier.width(6.dp))
+                        Button(
+                            onClick = { outSel = i; player.setPreferredOutput(dev) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (i == outSel) T.primary else T.accent)
+                        ) { Text(when (dev.type) {
+                            android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER"
+                            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BT"
+                            else -> "PHONES"
+                        }, fontSize = 9.sp) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            if (!hasPerm) {
+                // Build #111: the permissionless path — system document picker.
+                // Works on every OEM (Funtouch included) with zero grants.
+                Text("Library permission is blocked or ungranted — pick any track directly instead, no permission needed:", fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp)
+                Spacer(Modifier.height(6.dp))
+                var pickedName by remember { mutableStateOf<String?>(null) }
+                var pickedPlaying by remember { mutableStateOf(false) }
+                val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                    if (uri != null) {
+                        // Build #112: keep read access across restarts so the
+                        // same picked track replays later without re-picking.
+                        try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
+                        tone.stop(); toneOn = false
+                        player.play(ctx, uri)
+                        pickedName = (uri.lastPathSegment ?: "picked track").substringAfterLast('/')
+                        pickedPlaying = true
+                    }
+                }
+                LaunchedEffect(pickedName) {
+                    while (player.isRunning) {
+                        pickedPlaying = !player.isPaused()
+                        delay(500)
+                    }
+                    pickedPlaying = false
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = { pickFile.launch(arrayOf("audio/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = T.primary)
+                    ) { Text("PICK A TRACK", fontSize = 10.sp) }
+                    if (pickedName != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { player.togglePause(); pickedPlaying = player.isRunning && !player.isPaused() },
+                            colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                        ) { Text(if (pickedPlaying) "PAUSE" else "RESUME", fontSize = 10.sp) }
+                    }
+                }
+                if (pickedName != null) {
+                    Text("playing: $pickedName — through the software EQ", fontSize = 10.sp, color = T.secondary)
+                }
+                Spacer(Modifier.height(6.dp))
+                // Build #114: Poweramp-style folder library — zero permission.
+                // Pick the music folder once; the tree grant persists across
+                // restarts, so the list restores on the next launch.
+                var folderTracks by remember { mutableStateOf<List<Pair<String, Uri>>>(emptyList()) }
+                var folderName by remember { mutableStateOf<String?>(null) }
+                var folderScanned by remember { mutableStateOf(false) }
+                val openTree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+                    if (uri != null) {
+                        try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
+                        engine.setMusicFolder(uri.toString())
+                        folderName = (uri.lastPathSegment ?: "folder").substringAfterLast(':')
+                        scope2.launch {
+                            folderTracks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                scanAudioFolder(ctx.contentResolver, uri)
+                            }
+                        }
+                    }
+                }
+                LaunchedEffect(folderScanned) {
+                    if (folderScanned) return@LaunchedEffect
+                    folderScanned = true
+                    val saved = engine.getMusicFolder()
+                    if (saved != null) {
+                        folderName = "saved folder"
+                        folderTracks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            try { scanAudioFolder(ctx.contentResolver, Uri.parse(saved)) } catch (t: Throwable) { emptyList() }
+                        }
+                    }
+                }
+                Button(
+                    onClick = { openTree.launch(null) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.accent)
+                ) { Text(if (folderTracks.isEmpty()) "OPEN MUSIC FOLDER" else "SWITCH MUSIC FOLDER", fontSize = 10.sp) }
+                if (folderName != null && folderTracks.isEmpty()) {
+                    Text("no audio files found in $folderName", fontSize = 10.sp, color = T.secondary)
+                }
+                if (folderTracks.isNotEmpty()) {
+                    Text("${folderTracks.size} tracks in $folderName — tap to play", fontSize = 10.sp, color = T.secondary)
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
+                        items(folderTracks) { tr ->
+                            Text(
+                                tr.first,
+                                fontSize = 10.sp, color = T.secondary,
+                                maxLines = 1,
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    tone.stop(); toneOn = false
+                                    player.play(ctx, tr.second)
+                                    pickedName = tr.first
+                                    pickedPlaying = true
+                                }.padding(vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    onClick = { permLauncher.launch(perm) },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.accent)
+                ) { Text("GRANT MUSIC ACCESS (optional)", fontSize = 11.sp) }
+            } else {
+                var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+                var nowUri by remember { mutableStateOf<String?>(null) }
+                var playing by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) {
+                    tracks = try {
+                        val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST)
+                        val list = mutableListOf<Track>()
+                        ctx.contentResolver.query(
+                            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, proj,
+                            "${MediaStore.Audio.Media.DURATION} > 30000", null,
+                            "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE"
+                        )?.use { cur ->
+                            val idI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                            val tI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+                            val aI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                            while (cur.moveToNext()) {
+                                val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cur.getLong(idI))
+                                list.add(Track(uri, cur.getString(tI) ?: "Unknown", cur.getString(aI) ?: "Unknown"))
+                            }
+                        }
+                        list
+                    } catch (_: Throwable) { emptyList() }
+                }
+                LaunchedEffect(nowUri) {
+                    while (player.isRunning) {
+                        playing = !player.isPaused()
+                        delay(500)
+                    }
+                    playing = false
+                }
+                if (tracks.isEmpty()) {
+                    Text("No music found on the device.", fontSize = 10.sp, color = T.secondary)
+                } else {
+                    Text("${tracks.size} tracks · tap to play — the curve above is live in this player", fontSize = 10.sp, color = T.secondary)
+                    Spacer(Modifier.height(6.dp))
+                    LazyColumn(Modifier.height(220.dp)) {
+                        items(tracks) { t ->
+                            val isNow = nowUri == t.uri.toString()
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    if (isNow) {
+                                        player.togglePause()
+                                        playing = player.isRunning && !player.isPaused()
+                                    } else {
+                                        tone.stop(); toneOn = false
+                                        player.play(ctx, t.uri)
+                                        nowUri = t.uri.toString()
+                                        playing = true
+                                    }
+                                }.padding(vertical = 6.dp, horizontal = 4.dp)
+                            ) {
+                                Text(
+                                    (if (isNow && playing) "▮▮ " else if (isNow) "▶ " else "") + t.title,
+                                    fontSize = 12.sp,
+                                    color = if (isNow) T.accent else T.secondary,
+                                    maxLines = 1
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(t.artist, fontSize = 10.sp, color = T.secondary, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Build #117: SYSTEM CAPTURE — CAPTURE MODE with honest A/B ──
+        NeonCard {
+            GradientText("SYSTEM CAPTURE", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.accent)))
+            Spacer(Modifier.height(2.dp))
+            Text("CAPTURE MODE", fontSize = 10.sp, color = T.accent)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Android 10+ public API: SonicCore captures other apps' playback with your consent (MediaProjection), processes it through the shared native DSP, and plays the result. This is the legitimate Android capture path, available identically on every brand — Samsung, Xiaomi, OnePlus, OPPO, Motorola, Pixel and all others.",
+                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Android may continue playing the original signal while SonicCore outputs the processed signal. No public API can silence or replace another app's audio — if you hear both, lower the source app's volume. DRM content, calls, and apps that opt out of capture are excluded by Android itself.",
+                fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            var capTick by remember { mutableStateOf(0) }
+            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(700); capTick++ } }
+            val capCtx = LocalContext.current
+            // A/B + counters
+            val clipC = if (NeonDsp.available) runCatching { NeonDsp.clipCount() }.getOrDefault(0L) else 0L
+            val nanC = if (NeonDsp.available) runCatching { NeonDsp.nanCount() }.getOrDefault(0L) else 0L
+            Text(
+                "capture: " + (if (CaptureEqService.running) (if (CaptureEqService.paused) "PAUSED" else "ACTIVE") else "off") +
+                    (if (capTick < 0) "" else "") +
+                    " | frames: in " + CaptureEqService.framesCaptured + " · out " + CaptureEqService.framesDone +
+                    " | underruns: " + CaptureEqService.underruns +
+                    " | clips: " + clipC + (if (nanC > 0) " | nan-bypass: " + nanC else "") +
+                    " | " + CaptureEqService.captureSampleRate + "Hz" +
+                    " | dsp load: " + "%.0f".format(CaptureEqService.dspLoadPct) + "%" +
+                    " | latency: ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + "ms" +
+                    " (in " + "%.0f".format(CaptureEqService.capLatencyMs) + " / dsp " + "%.1f".format(CaptureEqService.dspMs) + " / out " + "%.0f".format(CaptureEqService.outLatencyMs) + ")" +
+                    (CaptureEqService.routeNote?.let { " | " + it } ?: "") +
+                    (CaptureEqService.lastError?.let { " | ERR: " + it } ?: ""),
+                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
+            )
+            if (CaptureEqService.running && CaptureEqService.noEligiblePlayback) {
+                Text(
+                    "Capture started but no eligible playback was detected. Play media in another app — apps may prevent capture, and DRM-protected or restricted audio is not capturable by Android design.",
+                    fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            // A/B controls: DSP bypass, processed output volume, buffer mode
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("CAPTURE MODE", fontSize = 10.sp, color = T.secondary)
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick = { CaptureEqService.bypass = false },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (!CaptureEqService.bypass) T.primary else T.accent)
+                ) { Text("B · DSP ACTIVE", fontSize = 9.sp) }
+                Button(
+                    onClick = { CaptureEqService.bypass = true },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (CaptureEqService.bypass) T.accent else T.secondary),
+                    modifier = Modifier.padding(start = 4.dp)
+                ) { Text("A · BYPASS", fontSize = 9.sp) }
+            }
+            Text(
+                if (CaptureEqService.bypass) "RAW CAPTURE PATH — AudioPlaybackCapture → AudioRecord → AudioTrack. SonicCore DSP bypass — Android/OEM processing is unaffected."
+                else "PROCESSED CAPTURE PATH — AudioPlaybackCapture → AudioRecord → NeonDspEngine → AudioTrack.",
+                fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("OUT VOL", fontSize = 10.sp, color = T.secondary)
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick = {
+                        CaptureEqService.outVolume = (CaptureEqService.outVolume - 0.1f).coerceAtLeast(0f)
+                        engine.setCaptureOutVolume(CaptureEqService.outVolume)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("−", fontSize = 10.sp) }
+                Text("%.0f%%".format(CaptureEqService.outVolume * 100), fontSize = 10.sp, color = T.secondary, modifier = Modifier.padding(horizontal = 4.dp))
+                Button(
+                    onClick = {
+                        CaptureEqService.outVolume = (CaptureEqService.outVolume + 0.1f).coerceAtMost(1.5f)
+                        engine.setCaptureOutVolume(CaptureEqService.outVolume)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
+                ) { Text("+", fontSize = 10.sp) }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("BUFFER", fontSize = 10.sp, color = T.secondary)
+                Spacer(Modifier.width(6.dp))
+                listOf("low" to "LOW", "balanced" to "BALANCED", "stable" to "STABLE").forEach { (m, label) ->
+                    Button(
+                        onClick = {
+                            engine.setCaptureBufferMode(m)
+                            CaptureEqService.bufferMode = m
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (CaptureEqService.bufferMode == m) T.primary else T.accent),
+                        modifier = Modifier.padding(end = 6.dp)
+                    ) { Text(label, fontSize = 9.sp) }
+                }
+            }
+            Text("Applies on next capture start. A single underrun never changes the mode — escalation uses a rolling threshold.", fontSize = 9.sp, color = T.secondary)
+            Text(
+                "buffer: " + CaptureEqService.bufferMode + " · " + "%.0f".format(CaptureEqService.captureBufferMs) + "ms · " + CaptureEqService.captureBufferFrames + " frames/chunk · underruns: " + CaptureEqService.underruns +
+                    (if (CaptureEqService.framesDone > 0 && CaptureEqService.captureSampleRate > 0) " · rate: " + "%.1f".format(CaptureEqService.underruns.toDouble() / (CaptureEqService.framesDone.toDouble() / CaptureEqService.captureSampleRate / 60.0)) + "/min" else ""),
+                fontSize = 9.sp, color = T.secondary
+            )
+            Spacer(Modifier.height(6.dp))
+            val mpm = remember {
+                try { capCtx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? android.media.projection.MediaProjectionManager } catch (t: Throwable) { null }
+            }
+            val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+                if (res.resultCode == android.app.Activity.RESULT_OK && res.data != null) {
+                    CaptureEqService.resultCode = res.resultCode
+                    CaptureEqService.resultData = res.data
+                    try { capCtx.startForegroundService(Intent(capCtx, CaptureEqService::class.java)) }
+                    catch (t: Throwable) { Toast.makeText(capCtx, "Could not start capture: " + t.message, Toast.LENGTH_SHORT).show() }
+                } else {
+                    Toast.makeText(capCtx, "MediaProjection permission denied.", Toast.LENGTH_SHORT).show()
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        if (CaptureEqService.running) {
+                            try { capCtx.stopService(Intent(capCtx, CaptureEqService::class.java)) } catch (t: Throwable) { }
+                        } else {
+                            if (mpm == null || !AudioPath.captureSupported()) {
+                                Toast.makeText(capCtx, "System playback capture requires Android 10 or newer.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                CaptureEqService.framesCaptured = 0
+                                CaptureEqService.framesDone = 0
+                                CaptureEqService.underruns = 0
+                                captureLauncher.launch(mpm.createScreenCaptureIntent())
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (CaptureEqService.running) T.accent else T.primary)
+                ) { Text(if (CaptureEqService.running) "STOP CAPTURE" else "START CAPTURE", fontSize = 10.sp) }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (CaptureEqService.running) "SonicCore Audio Engine Active — notification has Pause/Stop/Open"
+                    else "Asks for screen-record consent (only audio is captured)",
+                    fontSize = 9.sp, color = T.secondary
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        }
+
+        @Composable
+        fun SessionsTab() {
         // ── Build #121: SESSIONS — local history from the recorded session log ──
         NeonCard {
             GradientText("SESSIONS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
@@ -1384,9 +1858,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
+        }
 
-        if (navTab == 1) {
+        @Composable
+        fun EqTab() {
         var editBand by remember { mutableStateOf(-1) }
         var selBand by remember { mutableStateOf(-1) }
         var eqScaleMode by remember { mutableStateOf(0) } // 0 AUTO · 6 · 12 · 18
@@ -1866,330 +2341,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
-
-        if (navTab == 0) {
-        // ── Build #110: VISUALIZER on the main screen — system capture when
-        // the device allows it, software-player capture when it doesn't ──
-        NeonCard {
-            var softWave by remember { mutableStateOf(ByteArray(0)) }
-            var softWaveAt by remember { mutableStateOf(0L) }
-            LaunchedEffect(Unit) {
-                while (true) {
-                    val w = SoftwareEq.sharedWaveform
-                    val at = SoftwareEq.sharedWaveformAt
-                    if (w != null && at != softWaveAt) { softWave = w; softWaveAt = at }
-                    delay(33)
-                }
-            }
-            val now = SystemClock.elapsedRealtime()
-            val sysFresh = waveformAt > 0 && now - waveformAt < 1500
-            val softFresh = softWaveAt > 0 && now - softWaveAt < 1500
-            VisualizerBars(
-                if (sysFresh) waveform else softWave,
-                if (sysFresh) waveformAt else softWaveAt,
-                active = sysFresh || softFresh,
-                style = visStyle
-            )
         }
 
-        Spacer(Modifier.height(16.dp))
-
-        // Build #117: shared audio pipeline state — the PLAYER and CAPTURE
-        // paths converge on the same DSP backend (dsp/Pipeline.kt).
-        // hoisted: shared by PLAYER card (HOME) and TEST SIGNALS (DSP tab)
-
-        // ── Build #105: PLAYER — the one audio path no OEM can block ──
-        NeonCard {
-            GradientText("PLAYER — EQ INSIDE SONICCORE", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
-            var whyOpen by remember { mutableStateOf(false) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("ENGINE: " + (SoftwareEq.lastEngineLabel ?: "—"), fontSize = 9.sp, color = T.secondary)
-                Spacer(Modifier.width(8.dp))
-                Text("WHY?", fontSize = 9.sp, color = T.accent,
-                    modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
-                        .clickable { whyOpen = !whyOpen }.padding(horizontal = 8.dp, vertical = 3.dp)
-                        .semantics { contentDescription = "Why this engine" })
-            }
-            if (whyOpen) {
-                Text(
-                    if (SoftwareEq.lastEngineLabel?.startsWith("KOTLIN") == true)
-                        "«Native stereo DSP is unavailable for this path, so SonicCore is using the Kotlin fallback.»"
-                    else "«The native C++ engine is processing the player path in stereo.»",
-                    fontSize = 9.sp, color = T.secondary
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Plays your music with the full 10-band EQ applied in software inside the app — works on every device, including ones that block system-wide EQ.",
-                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
-            )
-            Spacer(Modifier.height(8.dp))
-            val ctx = LocalContext.current
-            val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-            var hasPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED) }
-            val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPerm = it }
-            var diagTick by remember { mutableStateOf(0) }
-            LaunchedEffect(Unit) { while (true) { delay(700); diagTick++ } }
-            DisposableEffect(Unit) { onDispose { player.stop(); tone.stop() } }
-            // Any change to the curve — drag, preset, startup reapply — reaches the software EQ instantly
-            LaunchedEffect(bandLevels) {
-                dsp.setGains(bandLevels)
-                // Build #119: immediate thread-safe native push for 15/31-band
-                // selections — the 2s service mirror is a safety net only.
-                if (com.neon.eq.dsp.NeonDsp.available && engine.bandCount > 10) {
-                    try { com.neon.eq.dsp.NeonDsp.setGraphicGains(bandLevels) } catch (_: Throwable) { }
-                }
-            }
-            LaunchedEffect(loudness) { dsp.setPreamp(engine.loudnessAppliedMb(loudness) / 100f) }
-            // Build #107: one-tap pipeline proof + live player status.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = {
-                        if (tone.isRunning) { tone.stop(); toneOn = false } else { player.stop(); tone.mode = "sweep"; tone.play(); toneOn = true }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.primary)
-                ) { Text(if (toneOn) "STOP TEST TONE" else "PLAY TEST TONE · 30Hz-16kHz sweep", fontSize = 10.sp) }
-                Spacer(Modifier.width(6.dp))
-                Button(
-                    onClick = {
-                        if (tone.isRunning && tone.mode == "lr") { tone.stop(); toneOn = false }
-                        else { player.stop(); tone.mode = "lr"; tone.play(); toneOn = true }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
-                ) { Text("L/R TEST · 440Hz", fontSize = 10.sp) }
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "player: " + (if (player.isRunning) (if (player.isPaused()) "paused" else "playing") else "idle") +
-                    (if (player.isRunning && SoftEqPlayer.trackInfo.isNotEmpty()) " · " + SoftEqPlayer.trackInfo else "") +
-                    (SoftEqPlayer.lastError?.let { " · ERR: " + it } ?: "") + (if (diagTick < 0) "" else ""),
-                fontSize = 10.sp, color = T.secondary
-            )
-            Spacer(Modifier.height(6.dp))
-            // Build #115: OUTPUT — Poweramp's method: direct volume control on
-            // our own stream, plus explicit device routing when headphones or
-            // Bluetooth are connected.
-            var outVol by remember { mutableStateOf(engine.getPlayerVolume()) }
-            LaunchedEffect(Unit) { player.setOutVolume(outVol) }
-            val outDevices = remember {
-                try {
-                    val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-                    am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS).filter { d ->
-                        d.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
-                        d.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                        d.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-                        d.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-                    }
-                } catch (t: Throwable) { emptyList() }
-            }
-            var outSel by remember { mutableStateOf(-1) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("OUTPUT", fontSize = 10.sp, color = T.secondary)
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = { outVol = (outVol - 0.1f).coerceAtLeast(0f); player.setOutVolume(outVol); engine.setPlayerVolume(outVol) },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
-                ) { Text("−", fontSize = 10.sp) }
-                Text("${(outVol * 100).toInt()}%", fontSize = 10.sp, color = T.secondary, modifier = Modifier.padding(horizontal = 6.dp))
-                Button(
-                    onClick = { outVol = (outVol + 0.1f).coerceAtMost(1.5f); player.setOutVolume(outVol); engine.setPlayerVolume(outVol) },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
-                ) { Text("+", fontSize = 10.sp) }
-            }
-            if (outDevices.size > 1) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        onClick = { outSel = -1; player.setPreferredOutput(null) },
-                        colors = ButtonDefaults.buttonColors(containerColor = if (outSel == -1) T.primary else T.accent)
-                    ) { Text("AUTO", fontSize = 9.sp) }
-                    outDevices.forEachIndexed { i, dev ->
-                        Spacer(Modifier.width(6.dp))
-                        Button(
-                            onClick = { outSel = i; player.setPreferredOutput(dev) },
-                            colors = ButtonDefaults.buttonColors(containerColor = if (i == outSel) T.primary else T.accent)
-                        ) { Text(when (dev.type) {
-                            android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER"
-                            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BT"
-                            else -> "PHONES"
-                        }, fontSize = 9.sp) }
-                    }
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            if (!hasPerm) {
-                // Build #111: the permissionless path — system document picker.
-                // Works on every OEM (Funtouch included) with zero grants.
-                Text("Library permission is blocked or ungranted — pick any track directly instead, no permission needed:", fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp)
-                Spacer(Modifier.height(6.dp))
-                var pickedName by remember { mutableStateOf<String?>(null) }
-                var pickedPlaying by remember { mutableStateOf(false) }
-                val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-                    if (uri != null) {
-                        // Build #112: keep read access across restarts so the
-                        // same picked track replays later without re-picking.
-                        try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
-                        tone.stop(); toneOn = false
-                        player.play(ctx, uri)
-                        pickedName = (uri.lastPathSegment ?: "picked track").substringAfterLast('/')
-                        pickedPlaying = true
-                    }
-                }
-                LaunchedEffect(pickedName) {
-                    while (player.isRunning) {
-                        pickedPlaying = !player.isPaused()
-                        delay(500)
-                    }
-                    pickedPlaying = false
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        onClick = { pickFile.launch(arrayOf("audio/*")) },
-                        colors = ButtonDefaults.buttonColors(containerColor = T.primary)
-                    ) { Text("PICK A TRACK", fontSize = 10.sp) }
-                    if (pickedName != null) {
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = { player.togglePause(); pickedPlaying = player.isRunning && !player.isPaused() },
-                            colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
-                        ) { Text(if (pickedPlaying) "PAUSE" else "RESUME", fontSize = 10.sp) }
-                    }
-                }
-                if (pickedName != null) {
-                    Text("playing: $pickedName — through the software EQ", fontSize = 10.sp, color = T.secondary)
-                }
-                Spacer(Modifier.height(6.dp))
-                // Build #114: Poweramp-style folder library — zero permission.
-                // Pick the music folder once; the tree grant persists across
-                // restarts, so the list restores on the next launch.
-                var folderTracks by remember { mutableStateOf<List<Pair<String, Uri>>>(emptyList()) }
-                var folderName by remember { mutableStateOf<String?>(null) }
-                var folderScanned by remember { mutableStateOf(false) }
-                val openTree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-                    if (uri != null) {
-                        try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Throwable) {}
-                        engine.setMusicFolder(uri.toString())
-                        folderName = (uri.lastPathSegment ?: "folder").substringAfterLast(':')
-                        scope2.launch {
-                            folderTracks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                scanAudioFolder(ctx.contentResolver, uri)
-                            }
-                        }
-                    }
-                }
-                LaunchedEffect(folderScanned) {
-                    if (folderScanned) return@LaunchedEffect
-                    folderScanned = true
-                    val saved = engine.getMusicFolder()
-                    if (saved != null) {
-                        folderName = "saved folder"
-                        folderTracks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            try { scanAudioFolder(ctx.contentResolver, Uri.parse(saved)) } catch (t: Throwable) { emptyList() }
-                        }
-                    }
-                }
-                Button(
-                    onClick = { openTree.launch(null) },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.accent)
-                ) { Text(if (folderTracks.isEmpty()) "OPEN MUSIC FOLDER" else "SWITCH MUSIC FOLDER", fontSize = 10.sp) }
-                if (folderName != null && folderTracks.isEmpty()) {
-                    Text("no audio files found in $folderName", fontSize = 10.sp, color = T.secondary)
-                }
-                if (folderTracks.isNotEmpty()) {
-                    Text("${folderTracks.size} tracks in $folderName — tap to play", fontSize = 10.sp, color = T.secondary)
-                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
-                        items(folderTracks) { tr ->
-                            Text(
-                                tr.first,
-                                fontSize = 10.sp, color = T.secondary,
-                                maxLines = 1,
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    tone.stop(); toneOn = false
-                                    player.play(ctx, tr.second)
-                                    pickedName = tr.first
-                                    pickedPlaying = true
-                                }.padding(vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Button(
-                    onClick = { permLauncher.launch(perm) },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.accent)
-                ) { Text("GRANT MUSIC ACCESS (optional)", fontSize = 11.sp) }
-            } else {
-                var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
-                var nowUri by remember { mutableStateOf<String?>(null) }
-                var playing by remember { mutableStateOf(false) }
-                LaunchedEffect(Unit) {
-                    tracks = try {
-                        val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST)
-                        val list = mutableListOf<Track>()
-                        ctx.contentResolver.query(
-                            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, proj,
-                            "${MediaStore.Audio.Media.DURATION} > 30000", null,
-                            "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE"
-                        )?.use { cur ->
-                            val idI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                            val tI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                            val aI = cur.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                            while (cur.moveToNext()) {
-                                val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cur.getLong(idI))
-                                list.add(Track(uri, cur.getString(tI) ?: "Unknown", cur.getString(aI) ?: "Unknown"))
-                            }
-                        }
-                        list
-                    } catch (_: Throwable) { emptyList() }
-                }
-                LaunchedEffect(nowUri) {
-                    while (player.isRunning) {
-                        playing = !player.isPaused()
-                        delay(500)
-                    }
-                    playing = false
-                }
-                if (tracks.isEmpty()) {
-                    Text("No music found on the device.", fontSize = 10.sp, color = T.secondary)
-                } else {
-                    Text("${tracks.size} tracks · tap to play — the curve above is live in this player", fontSize = 10.sp, color = T.secondary)
-                    Spacer(Modifier.height(6.dp))
-                    LazyColumn(Modifier.height(220.dp)) {
-                        items(tracks) { t ->
-                            val isNow = nowUri == t.uri.toString()
-                            Row(
-                                Modifier.fillMaxWidth().clickable {
-                                    if (isNow) {
-                                        player.togglePause()
-                                        playing = player.isRunning && !player.isPaused()
-                                    } else {
-                                        tone.stop(); toneOn = false
-                                        player.play(ctx, t.uri)
-                                        nowUri = t.uri.toString()
-                                        playing = true
-                                    }
-                                }.padding(vertical = 6.dp, horizontal = 4.dp)
-                            ) {
-                                Text(
-                                    (if (isNow && playing) "▮▮ " else if (isNow) "▶ " else "") + t.title,
-                                    fontSize = 12.sp,
-                                    color = if (isNow) T.accent else T.secondary,
-                                    maxLines = 1
-                                )
-                                Spacer(Modifier.weight(1f))
-                                Text(t.artist, fontSize = 10.sp, color = T.secondary, maxLines = 1)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        } // tab guard
-
-        if (navTab == 2) {
+        @Composable
+        fun DspTab() {
         // ── Build #123: DSP STUDIO — master control + visual processing chain ──
         NeonCard {
             GradientText("DSP ENGINE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
@@ -2482,161 +2637,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
-
-        if (navTab == 0) {
-        // ── Build #117: SYSTEM CAPTURE — CAPTURE MODE with honest A/B ──
-        NeonCard {
-            GradientText("SYSTEM CAPTURE", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.accent)))
-            Spacer(Modifier.height(2.dp))
-            Text("CAPTURE MODE", fontSize = 10.sp, color = T.accent)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Android 10+ public API: SonicCore captures other apps' playback with your consent (MediaProjection), processes it through the shared native DSP, and plays the result. This is the legitimate Android capture path, available identically on every brand — Samsung, Xiaomi, OnePlus, OPPO, Motorola, Pixel and all others.",
-                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Android may continue playing the original signal while SonicCore outputs the processed signal. No public API can silence or replace another app's audio — if you hear both, lower the source app's volume. DRM content, calls, and apps that opt out of capture are excluded by Android itself.",
-                fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
-            )
-            Spacer(Modifier.height(8.dp))
-            var capTick by remember { mutableStateOf(0) }
-            LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(700); capTick++ } }
-            val capCtx = LocalContext.current
-            // A/B + counters
-            val clipC = if (NeonDsp.available) runCatching { NeonDsp.clipCount() }.getOrDefault(0L) else 0L
-            val nanC = if (NeonDsp.available) runCatching { NeonDsp.nanCount() }.getOrDefault(0L) else 0L
-            Text(
-                "capture: " + (if (CaptureEqService.running) (if (CaptureEqService.paused) "PAUSED" else "ACTIVE") else "off") +
-                    (if (capTick < 0) "" else "") +
-                    " | frames: in " + CaptureEqService.framesCaptured + " · out " + CaptureEqService.framesDone +
-                    " | underruns: " + CaptureEqService.underruns +
-                    " | clips: " + clipC + (if (nanC > 0) " | nan-bypass: " + nanC else "") +
-                    " | " + CaptureEqService.captureSampleRate + "Hz" +
-                    " | dsp load: " + "%.0f".format(CaptureEqService.dspLoadPct) + "%" +
-                    " | latency: ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + "ms" +
-                    " (in " + "%.0f".format(CaptureEqService.capLatencyMs) + " / dsp " + "%.1f".format(CaptureEqService.dspMs) + " / out " + "%.0f".format(CaptureEqService.outLatencyMs) + ")" +
-                    (CaptureEqService.routeNote?.let { " | " + it } ?: "") +
-                    (CaptureEqService.lastError?.let { " | ERR: " + it } ?: ""),
-                fontSize = 10.sp, color = T.secondary, lineHeight = 13.sp
-            )
-            if (CaptureEqService.running && CaptureEqService.noEligiblePlayback) {
-                Text(
-                    "Capture started but no eligible playback was detected. Play media in another app — apps may prevent capture, and DRM-protected or restricted audio is not capturable by Android design.",
-                    fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            // A/B controls: DSP bypass, processed output volume, buffer mode
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("CAPTURE MODE", fontSize = 10.sp, color = T.secondary)
-                Spacer(Modifier.width(6.dp))
-                Button(
-                    onClick = { CaptureEqService.bypass = false },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (!CaptureEqService.bypass) T.primary else T.accent)
-                ) { Text("B · DSP ACTIVE", fontSize = 9.sp) }
-                Button(
-                    onClick = { CaptureEqService.bypass = true },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (CaptureEqService.bypass) T.accent else T.secondary),
-                    modifier = Modifier.padding(start = 4.dp)
-                ) { Text("A · BYPASS", fontSize = 9.sp) }
-            }
-            Text(
-                if (CaptureEqService.bypass) "RAW CAPTURE PATH — AudioPlaybackCapture → AudioRecord → AudioTrack. SonicCore DSP bypass — Android/OEM processing is unaffected."
-                else "PROCESSED CAPTURE PATH — AudioPlaybackCapture → AudioRecord → NeonDspEngine → AudioTrack.",
-                fontSize = 9.sp, color = T.accent, lineHeight = 12.sp
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("OUT VOL", fontSize = 10.sp, color = T.secondary)
-                Spacer(Modifier.width(6.dp))
-                Button(
-                    onClick = {
-                        CaptureEqService.outVolume = (CaptureEqService.outVolume - 0.1f).coerceAtLeast(0f)
-                        engine.setCaptureOutVolume(CaptureEqService.outVolume)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
-                ) { Text("−", fontSize = 10.sp) }
-                Text("%.0f%%".format(CaptureEqService.outVolume * 100), fontSize = 10.sp, color = T.secondary, modifier = Modifier.padding(horizontal = 4.dp))
-                Button(
-                    onClick = {
-                        CaptureEqService.outVolume = (CaptureEqService.outVolume + 0.1f).coerceAtMost(1.5f)
-                        engine.setCaptureOutVolume(CaptureEqService.outVolume)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = T.secondary)
-                ) { Text("+", fontSize = 10.sp) }
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("BUFFER", fontSize = 10.sp, color = T.secondary)
-                Spacer(Modifier.width(6.dp))
-                listOf("low" to "LOW", "balanced" to "BALANCED", "stable" to "STABLE").forEach { (m, label) ->
-                    Button(
-                        onClick = {
-                            engine.setCaptureBufferMode(m)
-                            CaptureEqService.bufferMode = m
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (CaptureEqService.bufferMode == m) T.primary else T.accent),
-                        modifier = Modifier.padding(end = 6.dp)
-                    ) { Text(label, fontSize = 9.sp) }
-                }
-            }
-            Text("Applies on next capture start. A single underrun never changes the mode — escalation uses a rolling threshold.", fontSize = 9.sp, color = T.secondary)
-            Text(
-                "buffer: " + CaptureEqService.bufferMode + " · " + "%.0f".format(CaptureEqService.captureBufferMs) + "ms · " + CaptureEqService.captureBufferFrames + " frames/chunk · underruns: " + CaptureEqService.underruns +
-                    (if (CaptureEqService.framesDone > 0 && CaptureEqService.captureSampleRate > 0) " · rate: " + "%.1f".format(CaptureEqService.underruns.toDouble() / (CaptureEqService.framesDone.toDouble() / CaptureEqService.captureSampleRate / 60.0)) + "/min" else ""),
-                fontSize = 9.sp, color = T.secondary
-            )
-            Spacer(Modifier.height(6.dp))
-            val mpm = remember {
-                try { capCtx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? android.media.projection.MediaProjectionManager } catch (t: Throwable) { null }
-            }
-            val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-                if (res.resultCode == android.app.Activity.RESULT_OK && res.data != null) {
-                    CaptureEqService.resultCode = res.resultCode
-                    CaptureEqService.resultData = res.data
-                    try { capCtx.startForegroundService(Intent(capCtx, CaptureEqService::class.java)) }
-                    catch (t: Throwable) { Toast.makeText(capCtx, "Could not start capture: " + t.message, Toast.LENGTH_SHORT).show() }
-                } else {
-                    Toast.makeText(capCtx, "MediaProjection permission denied.", Toast.LENGTH_SHORT).show()
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = {
-                        if (CaptureEqService.running) {
-                            try { capCtx.stopService(Intent(capCtx, CaptureEqService::class.java)) } catch (t: Throwable) { }
-                        } else {
-                            if (mpm == null || !AudioPath.captureSupported()) {
-                                Toast.makeText(capCtx, "System playback capture requires Android 10 or newer.", Toast.LENGTH_SHORT).show()
-                            } else {
-                                CaptureEqService.framesCaptured = 0
-                                CaptureEqService.framesDone = 0
-                                CaptureEqService.underruns = 0
-                                captureLauncher.launch(mpm.createScreenCaptureIntent())
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (CaptureEqService.running) T.accent else T.primary)
-                ) { Text(if (CaptureEqService.running) "STOP CAPTURE" else "START CAPTURE", fontSize = 10.sp) }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (CaptureEqService.running) "SonicCore Audio Engine Active — notification has Pause/Stop/Open"
-                    else "Asks for screen-record consent (only audio is captured)",
-                    fontSize = 9.sp, color = T.secondary
-                )
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        } // tab guard
-
-        if (navTab == 2) {
         // ── Build #119: SIGNAL PATH — measured, stage-by-stage, never inferred ──
         NeonCard {
             GradientText("SIGNAL PATH", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
@@ -2840,8 +2840,53 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
+        // ── Build #89: PRO FX — noise gate + anti-clip limiter ──
+        NeonCard {
+            GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = noiseGate,
+                    onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
+                    label = { Text("NOISE GATE", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
+                        selectedLabelColor = T.primary
+                    )
+                )
+                FilterChip(
+                    selected = limiterOn,
+                    onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
+                    label = { Text("LIMITER", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = T.accent.copy(alpha = 0.2f),
+                        selectedLabelColor = T.accent
+                    )
+                )
+            }
+            Text(
+                if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
+                fontSize = 9.sp, color = Color.Gray
+            )
+            if (limiterOn) {
+                CircularDial("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
+                    limiterThr = v
+                    engine.setLimiterThreshold(v)
+                }
+                Text(
+                    "Anti-clip protection — keeps loud curves from distorting at high volume",
+                    fontSize = 9.sp, color = Color.Gray
+                )
+            }
+        }
 
+        Spacer(Modifier.height(16.dp))
+
+        // ── Per-app profiles ──
+        }
+
+        @Composable
+        fun SettingsTab() {
         // ── EQ PRESETS — the single canonical preset manager ──
         // Consolidated in Build #129: exactly one preset section exists — here.
         // State lives at top level; storage is unchanged (same prefs, same
@@ -3050,7 +3095,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
         }
         Spacer(Modifier.height(16.dp))
-        if (navTab == 4) {
+
         // ── Build #127: APPEARANCE — glass intensity (UI rendering only) ──
         NeonCard {
             GradientText("APPEARANCE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
@@ -3185,7 +3230,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("ABOUT", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
             Spacer(Modifier.height(4.dp))
             Text(
-                "SonicCore — Professional Audio Processing\n" +
+                "SonicCore · v3.1.0 — Professional Audio Processing\n" +
                 "Real-time Android DSP and audio enhancement\n" +
                 "Engine: native C++ DSP (10/15/31-band RBJ biquads, seqlock atomic params, lock-free real-time audio)\n" +
                 "Audio path: AudioPlaybackCapture → AudioRecord → JNI → native DSP → AudioTrack (public Android APIs only — no root, no OEM-specific code)\n" +
@@ -3305,55 +3350,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
-
-        if (navTab == 2) {
-        // ── Build #89: PRO FX — noise gate + anti-clip limiter ──
-        NeonCard {
-            GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = noiseGate,
-                    onClick = { noiseGate = !noiseGate; engine.setNoiseGate(noiseGate) },
-                    label = { Text("NOISE GATE", fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = T.primary.copy(alpha = 0.2f),
-                        selectedLabelColor = T.primary
-                    )
-                )
-                FilterChip(
-                    selected = limiterOn,
-                    onClick = { limiterOn = !limiterOn; engine.setLimiter(limiterOn) },
-                    label = { Text("LIMITER", fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = T.accent.copy(alpha = 0.2f),
-                        selectedLabelColor = T.accent
-                    )
-                )
-            }
-            Text(
-                if (noiseGate) "Gate active — silences background hiss during quiet passages" else "Gate off",
-                fontSize = 9.sp, color = Color.Gray
-            )
-            if (limiterOn) {
-                CircularDial("LIMIT STRENGTH", limiterThr, 0..100, valueText = "$limiterThr%") { v ->
-                    limiterThr = v
-                    engine.setLimiterThreshold(v)
-                }
-                Text(
-                    "Anti-clip protection — keeps loud curves from distorting at high volume",
-                    fontSize = 9.sp, color = Color.Gray
-                )
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // ── Per-app profiles ──
-        } // tab guard
-
-        if (navTab == 4) {
         NeonCard {
             GradientText("APP PROFILES", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
             Spacer(Modifier.height(6.dp))
@@ -3417,7 +3413,27 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
         }
 
-        } // tab guard
+        }
+
+        // ── Build #131: the single screen switch — one call per tab ──
+        when (navTab) {
+            0 -> HomeTab()
+            1 -> EqTab()
+            2 -> DspTab()
+            3 -> SessionsTab()
+            else -> SettingsTab()
+        }
+
+        } // landscape columns
+            } // landscape row
+        } // landscape
+
+
+
+
+
+
+
 
         Spacer(Modifier.height(84.dp))
     }
@@ -4369,7 +4385,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "SonicCore · Build #130",
+                        "SonicCore · Build #131",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
