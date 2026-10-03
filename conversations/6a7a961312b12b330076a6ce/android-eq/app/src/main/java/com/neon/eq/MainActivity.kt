@@ -532,6 +532,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         return o.toString()
     }
 
+    val dsp = remember { SoftwareEq() }
+    val player = remember { SoftEqPlayer(dsp) }
+    val tone = remember { TonePlayer(dsp) }
+    var toneOn by remember { mutableStateOf(false) }
+
     Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
@@ -1618,10 +1623,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // Build #117: shared audio pipeline state — the PLAYER and CAPTURE
         // paths converge on the same DSP backend (dsp/Pipeline.kt).
-        val dsp = remember { SoftwareEq() }
-        val player = remember { SoftEqPlayer(dsp) }
-        val tone = remember { TonePlayer(dsp) }
-        var toneOn by remember { mutableStateOf(false) }
+        // hoisted: shared by PLAYER card (HOME) and TEST SIGNALS (DSP tab)
 
         // ── Build #105: PLAYER — the one audio path no OEM can block ──
         NeonCard {
@@ -1912,7 +1914,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
             Text("Master bypass routes captured PCM around the native DSP (capture path only). Engine state is always read from the authoritative DSP, never assumed.", fontSize = 8.sp, color = T.secondary)
             Spacer(Modifier.height(8.dp))
-            Text("PROCESSING CHAIN", 11.sp, color = T.accent)
+            Text("PROCESSING CHAIN", fontSize = 11.sp, color = T.accent)
             Spacer(Modifier.height(2.dp))
             val stBase = remember { try { DspParams.load(engine) } catch (_: Throwable) { DspParams() } }
             var stOn by remember { mutableStateOf(mapOf(
