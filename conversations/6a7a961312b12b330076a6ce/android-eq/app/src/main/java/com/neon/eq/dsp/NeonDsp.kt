@@ -50,8 +50,9 @@ object NeonDsp {
     external fun outRRmsMs(): Int
     external fun outLPkMs(): Int
     external fun outRPkMs(): Int
-    /** Fills [bins] with normalized log-frequency magnitudes (0..1). UI thread only. */
-    external fun spectrum(bins: FloatArray)
+    /** Fills [bins] with normalized log-frequency magnitudes (0..1). UI thread only.
+     *  mode: 0 pre L+R, 1 pre L, 2 pre R, 3 post L+R, 4 post L, 5 post R. */
+    external fun spectrum(bins: FloatArray, mode: Int)
     external fun processedFrames(): Long
     external fun resetStats()
 }

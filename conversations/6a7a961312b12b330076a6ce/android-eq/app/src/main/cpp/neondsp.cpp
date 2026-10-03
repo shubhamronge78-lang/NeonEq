@@ -57,11 +57,12 @@ static int outRmsMs = 0, outPeakMs = 0; /* post-DSP meters, 0..1000 units */
 /* Build #121: per-channel meters (L/R) for the dashboard */
 static int inLRmsMs = 0, inRRmsMs = 0, inLPkMs = 0, inRPkMs = 0;
 static int outLRmsMs = 0, outRRmsMs = 0, outLPkMs = 0, outRPkMs = 0;
-/* Build #121: spectrum snapshot ring — audio thread does only a bounded
-   O(n) mono-mix store; ALL analysis (FFT, band mapping) runs on the caller
-   (UI) thread inside the spectrum() getter. Never on the audio thread. */
-static short specSnap[2048];
-static int specIdx = 0;
+/* Build #121/#123: spectrum snapshot rings, pre-DSP and post-DSP, per
+   channel. The audio thread does only bounded O(n) stores; ALL analysis
+   (FFT, band mapping) runs on the caller (UI) thread inside spectrum().
+   Never on the audio thread. */
+static short specPreL[2048], specPreR[2048], specPostL[2048], specPostR[2048];
+static int specPreIdx = 0, specPostIdx = 0;
 
 static const double F10[10] = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
 static const double F15[15] = {25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000};
@@ -447,11 +448,12 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
         inRRmsMs = (int) ((sqrt(sumR / frames) * 1000.0) / 32768.0);
         inLPkMs = (pkL * 1000) / 32768;
         inRPkMs = (pkR * 1000) / 32768;
-        /* spectrum snapshot ring: bounded O(n) mono mix, no allocation,
-           no locks — analysis happens on the UI thread in spectrum() */
+        /* spectrum snapshot rings (captured PCM, pre-DSP): bounded O(n)
+           stores, no allocation, no locks — analysis on the UI thread */
         for (int i = 0; i < frames; i++) {
-            specSnap[specIdx] = (short) (((int) p[2 * i] + (int) p[2 * i + 1]) >> 1);
-            if (++specIdx >= 2048) specIdx = 0;
+            specPreL[specPreIdx] = p[2 * i];
+            specPreR[specPreIdx] = p[2 * i + 1];
+            if (++specPreIdx >= 2048) specPreIdx = 0;
         }
     }
     for (int i = 0; i < frames; i++) processFrame(p + 2 * i);
@@ -476,6 +478,12 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
         outRRmsMs = (int) ((sqrt(sumR / frames) * 1000.0) / 32768.0);
         outLPkMs = (pkL * 1000) / 32768;
         outRPkMs = (pkR * 1000) / 32768;
+        /* processed-PCM rings (post-DSP) for the BEFORE/AFTER analyzer */
+        for (int i = 0; i < frames; i++) {
+            specPostL[specPostIdx] = p[2 * i];
+            specPostR[specPostIdx] = p[2 * i + 1];
+            if (++specPostIdx >= 2048) specPostIdx = 0;
+        }
     }
     env->ReleasePrimitiveArrayCritical(buf, p, 0);
 }
@@ -518,12 +526,14 @@ JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_outRRmsMs(JNIEnv* e, jobject
 JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_outLPkMs(JNIEnv* e, jobject t) { return outLPkMs; }
 JNIEXPORT jint JNICALL Java_com_neon_eq_dsp_NeonDsp_outRPkMs(JNIEnv* e, jobject t) { return outRPkMs; }
 
-/* Build #121: spectrum analyzer — fills `out` (n bins) with normalized
+/* Build #123: spectrum analyzer — fills `out` (n bins) with normalized
    log-frequency magnitudes (20Hz..20kHz, 0.0..1.0, -66dBFS floor).
+   mode: 0 = pre-DSP L+R, 1 = pre-DSP L, 2 = pre-DSP R,
+         3 = post-DSP L+R, 4 = post-DSP L, 5 = post-DSP R.
    Runs entirely on the CALLER's thread; the audio callback only maintains
-   the cheap snapshot ring. */
+   the cheap snapshot rings. */
 JNIEXPORT void JNICALL
-Java_com_neon_eq_dsp_NeonDsp_spectrum(JNIEnv* env, jobject thiz, jfloatArray out) {
+Java_com_neon_eq_dsp_NeonDsp_spectrum(JNIEnv* env, jobject thiz, jfloatArray out, jint mode) {
     jsize n = env->GetArrayLength(out);
     if (n < 4) return;
     jfloat* dst = env->GetFloatArrayElements(out, NULL);
@@ -531,10 +541,22 @@ Java_com_neon_eq_dsp_NeonDsp_spectrum(JNIEnv* env, jobject thiz, jfloatArray out
     static float re[1024], im[1024];
     double binHz = sr / 1024.0;
     int i;
+    const short* ringA; const short* ringB; int ringIdx;
+    switch (mode) {
+        case 1: ringA = specPreL;  ringB = NULL;     ringIdx = specPreIdx;  break;
+        case 2: ringA = specPreR;  ringB = NULL;     ringIdx = specPreIdx;  break;
+        case 4: ringA = specPostL; ringB = NULL;     ringIdx = specPostIdx; break;
+        case 5: ringA = specPostR; ringB = NULL;     ringIdx = specPostIdx; break;
+        default: if (mode >= 3) { ringA = specPostL; ringB = specPostR; ringIdx = specPostIdx; }
+                 else { ringA = specPreL; ringB = specPreR; ringIdx = specPreIdx; }
+                 break;
+    }
     /* assemble oldest-first window and apply Hann */
     for (i = 0; i < 1024; i++) {
-        int idx = (specIdx + i) & 2047;
-        float s = (float) specSnap[idx] / 32768.0f;
+        int idx = (ringIdx + i) & 2047;
+        float s = ringB != NULL
+            ? (((float) ringA[idx] + (float) ringB[idx]) * 0.5f) / 32768.0f
+            : (float) ringA[idx] / 32768.0f;
         re[i] = s * (0.5f - 0.5f * cosf(6.2831853f * (float) i / 1024.0f));
         im[i] = 0.0f;
     }
