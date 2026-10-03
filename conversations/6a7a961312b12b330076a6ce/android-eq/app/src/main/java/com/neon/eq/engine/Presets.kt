@@ -103,17 +103,14 @@ object Presets {
         return result
     }
 
-    // Overload for CustomPreset (has the same levels array)
-    fun levelsForCount(preset: CustomPreset, count: Int): ShortArray {
-        if (count >= 31) return preset.levels
-        val result = ShortArray(count)
-        val step = 31f / count
-        for (i in 0 until count) {
-            val srcIdx = (i * step).toInt().coerceAtMost(30)
-            result[i] = preset.levels[srcIdx]
-        }
-        return result
-    }
+    // Build #135: custom presets store the live UI curve in the FIRST slots
+    // (UI-band index space — slot i = UI band i; matches applyPresetByName →
+    // applyBands, which samples slots 0..bandCount-1 directly). The old
+    // 31→count log-resample read DEAD slots (zeros or stale values beyond
+    // bandCount) and corrupted preview, compare, and compare-APPLY for every
+    // 10-band save.
+    fun levelsForCount(preset: CustomPreset, count: Int): ShortArray =
+        ShortArray(count) { i -> preset.levels.getOrElse(i) { 0 } }
 
     // ── Export/import helpers ──
 
