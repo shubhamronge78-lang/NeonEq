@@ -551,8 +551,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         return
     }
 
-    // ── Build #123: bottom-navigation tab state ──
-    var navTab by remember { mutableStateOf(0) }
     // ── Build #123: lightweight undo/redo — complete validated DSP
     // configurations only, each action submitted through the existing
     // atomic parameter-target system. Never raw audio, max 30 entries. ──
@@ -658,7 +656,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // HOME) get Sidebar | Content on landscape/tablet, matching the
     // SonicCore console layout. mainContent is the exact same Column that
     // always rendered here; only its wrapper changes with orientation.
-    val isLandscapeShell = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     // movableContentOf: when the orientation flips, the whole Column MOVES
     // between the portrait and landscape parents — every remember{} inside
     // (selected band, open sheets, scroll position) survives the move.
@@ -813,7 +810,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        if (navTab == 0) {
         // ── Build #127: glass status chips — honest, icon + text ──
         Row(verticalAlignment = Alignment.CenterVertically) {
             val dsState = when {
@@ -901,16 +897,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     .clickable { showResetDialog = true }
                     .padding(horizontal = 10.dp, vertical = 5.dp)
                     .semantics { contentDescription = "Open reset confirmation" })
-            Text("EQ", fontSize = 10.sp, color = T.secondary,
-                modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.secondary.copy(alpha = 0.12f))
-                    .clickable { navTab = 1 }
-                    .padding(horizontal = 10.dp, vertical = 5.dp)
-                    .semantics { contentDescription = "Open EQ tab" })
-            Text("DIAG", fontSize = 10.sp, color = T.secondary,
-                modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.secondary.copy(alpha = 0.12f))
-                    .clickable { navTab = 1 }
-                    .padding(horizontal = 10.dp, vertical = 5.dp)
-                    .semantics { contentDescription = "Open diagnostics tab" })
         }
         Spacer(Modifier.height(16.dp))
 
@@ -1322,10 +1308,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // landscape columns
             } // landscape row
-        } // landscape
 
 
-        if (navTab == 1) {
         var editBand by remember { mutableStateOf(-1) }
         var selBand by remember { mutableStateOf(-1) }
         var eqScaleMode by remember { mutableStateOf(0) } // 0 AUTO · 6 · 12 · 18
@@ -1807,7 +1791,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // tab guard
 
-        if (navTab == 0) {
         // ── Build #110: VISUALIZER on the main screen — system capture when
         // the device allows it, software-player capture when it doesn't ──
         NeonCard {
@@ -2126,9 +2109,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
 
-        if (navTab == 1) {
         // ── Build #123: DSP STUDIO — master control + visual processing chain ──
         NeonCard {
             GradientText("DSP ENGINE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
@@ -2421,9 +2402,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
 
-        if (navTab == 0) {
         // ── Build #117: SYSTEM CAPTURE — CAPTURE MODE with honest A/B ──
         NeonCard {
             GradientText("SYSTEM CAPTURE", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.accent)))
@@ -2573,9 +2552,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
 
-        if (navTab == 0) {  // Build #133: SESSIONS folded into HOME section
         // ── Build #121: SESSIONS — local history from the recorded session log ──
         NeonCard {
             GradientText("SESSIONS", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.secondary)))
@@ -2664,9 +2641,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
 
-        if (navTab == 1) {
         // ── Build #119: SIGNAL PATH — measured, stage-by-stage, never inferred ──
         NeonCard {
             GradientText("SIGNAL PATH", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
@@ -2870,7 +2845,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
 
         // ── EQ PRESETS — the single canonical preset manager ──
         // Consolidated in Build #129: exactly one preset section exists — here.
@@ -3078,9 +3052,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
         }
         }
-        }
         Spacer(Modifier.height(16.dp))
-        if (navTab == 1) {  // Build #133: PRO FX folded into EQ section
         // ── Build #89: PRO FX — noise gate + anti-clip limiter ──
         NeonCard {
             GradientText("PRO FX", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
@@ -3124,9 +3096,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(16.dp))
 
         // ── Per-app profiles ──
-        } // tab guard
 
-        if (navTab == 1) {
         // ── Build #127: APPEARANCE — glass intensity (UI rendering only) ──
         NeonCard {
             GradientText("APPEARANCE", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
@@ -3381,10 +3351,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         Spacer(Modifier.height(16.dp))
 
-        } // tab guard
 
 
-        if (navTab == 1) {
         NeonCard {
             GradientText("APP PROFILES", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.secondary)))
             Spacer(Modifier.height(6.dp))
@@ -3448,80 +3416,17 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
         }
 
-        } // tab guard
 
-        Spacer(Modifier.height(if (isLandscapeShell) 16.dp else 84.dp))
+        Spacer(Modifier.height(24.dp))
     }
     } }
     Box(modifier = Modifier.fillMaxSize()) {
     GlassBackground()
-    if (isLandscapeShell) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            SidebarNav(navTab) { navTab = it }
-            Box(modifier = Modifier.weight(1f)) { mainContent() }
-        }
-    } else {
-        mainContent()
-    }
+    mainContent()
     SnackbarHost(
         hostState = snackbarHost,
-        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (isLandscapeShell) 12.dp else 76.dp)
+        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
     )
-    // ── Build #123: bottom navigation (portrait only — landscape uses SidebarNav) ──
-    // ── Build #127: floating glass navigation — compact, inset-aware,
-    // selected tab gets an accent treatment + short scale micro-animation ──
-    if (!isLandscapeShell) {
-    Box(
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 6.dp)
-            .navigationBarsPadding()
-            .shadow(9.dp, RoundedCornerShape(26.dp))
-            .clip(RoundedCornerShape(26.dp))
-            .background(S.surface.copy(alpha = glassSurfaceAlpha() - 0.04f))
-            .border(
-                1.dp,
-                Brush.verticalGradient(
-                    listOf(T.primary.copy(alpha = glassBorderAlpha() * 1.5f), T.secondary.copy(alpha = glassBorderAlpha()))
-                ),
-                RoundedCornerShape(26.dp)
-            )
-            .padding(horizontal = 6.dp, vertical = 6.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            listOf("HOME" to 0, "EQ" to 1).forEach { (label, idx) ->
-                val selected = navTab == idx
-                val scale by animateFloatAsState(
-                    if (selected) 1f else 0.94f,
-                    spring(stiffness = 500f), label = "nav$idx"
-                )
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .graphicsLayer { scaleX = scale; scaleY = scale }
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(if (selected) T.primary.copy(alpha = 0.14f) else Color.Transparent)
-                        .clickable { navTab = idx }
-                        .padding(horizontal = 13.dp, vertical = 5.dp)
-                        .semantics {
-                            contentDescription = label + " tab" + if (selected) ", selected" else ""
-                        }
-                ) {
-                    Text(
-                        when (idx) { 0 -> "◉"; else -> "∿" },
-                        fontSize = 13.sp, color = if (selected) T.primary else T.secondary
-                    )
-                    Text(label, fontSize = 8.sp, color = if (selected) T.primary else T.secondary)
-                }
-            }
-        }
-    }
-    } // end if !isLandscapeShell
     } // end Box
 
     // ── Build #124: SESSION COMPARISON — factual aggregates only ──
@@ -3675,7 +3580,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        GlassButton("OPEN FULL PRESET MANAGER", 1) { showPresetPicker = false; navTab = 1 }
     }
 
     // ── Build #123: PRESET COMPARE — current vs saved preset (or Flat) ──
@@ -4413,7 +4317,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "SonicCore · Build #133",
+                        "SonicCore · Build #134",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
@@ -4598,44 +4502,6 @@ fun StereoMeterBar(label: String, lMb: Int, rMb: Int, clipping: Boolean = false)
     }
 }
 
-// Left sidebar — the landscape/tablet counterpart to the floating bottom
-// nav. Same five destinations, same icons, vertical instead of horizontal.
-@Composable
-fun SidebarNav(navTab: Int, onSelect: (Int) -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxHeight()
-            .width(84.dp)
-            .background(S.surface.copy(alpha = glassSurfaceAlpha()))
-            .border(
-                androidx.compose.foundation.BorderStroke(0.dp, Color.Transparent)
-            )
-            .padding(vertical = 18.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        SCMark(30.dp)
-        Spacer(Modifier.height(22.dp))
-        listOf("HOME" to 0, "EQ" to 1).forEach { (label, idx) ->
-            val selected = navTab == idx
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .padding(vertical = 7.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (selected) T.primary.copy(alpha = 0.14f) else Color.Transparent)
-                    .clickable { onSelect(idx) }
-                    .padding(vertical = 8.dp, horizontal = 6.dp)
-                    .semantics { contentDescription = label + " tab" + if (selected) ", selected" else "" }
-            ) {
-                Text(
-                    when (idx) { 0 -> "◉"; else -> "∿" },
-                    fontSize = 15.sp, color = if (selected) T.primary else T.secondary
-                )
-                Text(label, fontSize = 7.sp, color = if (selected) T.primary else T.secondary)
-            }
-        }
-    }
-}
 
 @Composable
 fun GlassChip(label: String, state: Int, modifier: Modifier = Modifier) {
