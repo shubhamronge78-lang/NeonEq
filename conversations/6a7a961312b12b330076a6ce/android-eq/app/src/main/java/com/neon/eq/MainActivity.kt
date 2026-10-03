@@ -1596,63 +1596,128 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         // devices it drives the in-app software EQ (PLAYER card), on normal
         // devices the system engine as always.
         NeonCard {
-        CanvasEQ(
-            bandCount = bandCount,
-            bands = bandList,
-            levels = bandLevels,
-            onLevelChange = { band, level ->
-                pushUndo(label = "EQ band " + (band + 1))
-                val newLevels = bandLevels.copyOf()
-                newLevels[band] = level
-                bandLevels = newLevels
-                engine.setBandLevel(band, round(level).toInt().toShort())
-                selectedPreset = "Custom"
-                engine.setSelectedPresetName("Custom")
-            },
-            onResetBand = { band ->
-                val newLevels = bandLevels.copyOf()
-                newLevels[band] = 0f
-                bandLevels = newLevels
-                engine.setBandLevel(band, 0)
-                selectedPreset = "Custom"
-                engine.setSelectedPresetName("Custom")
-            },
-            onBandTap = { band -> editBand = band },
-            scaleDb = when (eqScaleMode) {
-                6 -> 6f; 12 -> 12f; 18 -> 18f
-                else -> {
-                    val m = bandLevels.take(bandCount).maxOfOrNull { kotlin.math.abs(it) } ?: 0f
-                    when { m <= 5.5f -> 6f; m <= 11.5f -> 12f; else -> 18f }
-                }
-            },
-            selectedBand = selBand,
-            onBandSelect = { band -> selBand = if (selBand == band) -1 else band }
-        )
-        // Build #124: visual scale selector — visualization only, never alters DSP gains
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("GRAPH RANGE", fontSize = 9.sp, color = T.secondary)
-            Spacer(Modifier.width(6.dp))
-            listOf("AUTO" to 0, "±6" to 6, "±12" to 12, "±18" to 18).forEach { (sl, sv) ->
-                Text(
-                    sl, fontSize = 9.sp,
-                    color = if (eqScaleMode == sv) T.primary else T.secondary,
-                    modifier = Modifier
-                        .padding(start = 4.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background((if (eqScaleMode == sv) T.primary else T.secondary).copy(alpha = 0.12f))
-                        .clickable { eqScaleMode = sv }
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                        .semantics { contentDescription = "Graph range " + sl }
-                )
+        // Build #125: responsive EQ — landscape uses a wide graph + side panel;
+        // portrait keeps the stacked layout. The y-mapping logic is identical
+        // in both: AUTO/±6/±12/±18 only changes visualization, DSP stays -15..+20.
+        val eqLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val eqScale = when (eqScaleMode) {
+            6 -> 6f; 12 -> 12f; 18 -> 18f
+            else -> {
+                val m = bandLevels.take(bandCount).maxOfOrNull { kotlin.math.abs(it) } ?: 0f
+                when { m <= 5.5f -> 6f; m <= 11.5f -> 12f; else -> 18f }
             }
         }
-        if (selBand >= 0 && selBand < bandCount) {
-            val f = (bandList.getOrNull(selBand)?.freq ?: 1000) / 1000.0
-            Text(
-                "Band " + (selBand + 1) + " · " + (if (f >= 1.0) "%.2f kHz".format(f) else "%.0f Hz".format(f * 1000)) +
-                    " · " + "%+.1f dB".format(bandLevels.getOrElse(selBand) { 0f }) + " · Q 1.00 · double-tap resets, long-press opens editor",
-                fontSize = 9.sp, color = T.primary
+        if (eqLandscape) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    CanvasEQ(
+                        bandCount = bandCount,
+                        bands = bandList,
+                        levels = bandLevels,
+                        onLevelChange = { band, level ->
+                            pushUndo(label = "EQ band " + (band + 1))
+                            val newLevels = bandLevels.copyOf()
+                            newLevels[band] = level
+                            bandLevels = newLevels
+                            engine.setBandLevel(band, round(level).toInt().toShort())
+                            selectedPreset = "Custom"
+                            engine.setSelectedPresetName("Custom")
+                        },
+                        onResetBand = { band ->
+                            val newLevels = bandLevels.copyOf()
+                            newLevels[band] = 0f
+                            bandLevels = newLevels
+                            engine.setBandLevel(band, 0)
+                            selectedPreset = "Custom"
+                            engine.setSelectedPresetName("Custom")
+                        },
+                        onBandTap = { band -> editBand = band },
+                        scaleDb = eqScale,
+                        selectedBand = selBand,
+                        onBandSelect = { band -> selBand = if (selBand == band) -1 else band }
+                    )
+                }
+                Column(
+                    modifier = Modifier.width(216.dp).padding(start = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("GRAPH RANGE", fontSize = 9.sp, color = T.secondary)
+                    listOf("AUTO" to 0, "±6" to 6, "±12" to 12, "±18" to 18).forEach { (sl, sv) ->
+                        Text(
+                            sl, fontSize = 10.sp,
+                            color = if (eqScaleMode == sv) T.primary else T.secondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background((if (eqScaleMode == sv) T.primary else T.secondary).copy(alpha = 0.12f))
+                                .clickable { eqScaleMode = sv }
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                                .semantics { contentDescription = "Graph range " + sl }
+                        )
+                    }
+                    if (selBand >= 0 && selBand < bandCount) {
+                        val f = (bandList.getOrNull(selBand)?.freq ?: 1000) / 1000.0
+                        Text(
+                            "Band " + (selBand + 1) + "\n" + (if (f >= 1.0) "%.2f kHz".format(f) else "%.0f Hz".format(f * 1000)) +
+                                "\n" + "%+.1f dB".format(bandLevels.getOrElse(selBand) { 0f }) + " · Q 1.00",
+                            fontSize = 11.sp, color = T.primary, lineHeight = 15.sp
+                        )
+                    }
+                    Text("double-tap resets a band\nlong-press opens the editor\nDSP range stays -15..+20 dB", fontSize = 8.sp, color = T.secondary, lineHeight = 11.sp)
+                }
+            }
+        } else {
+            CanvasEQ(
+                bandCount = bandCount,
+                bands = bandList,
+                levels = bandLevels,
+                onLevelChange = { band, level ->
+                    pushUndo(label = "EQ band " + (band + 1))
+                    val newLevels = bandLevels.copyOf()
+                    newLevels[band] = level
+                    bandLevels = newLevels
+                    engine.setBandLevel(band, round(level).toInt().toShort())
+                    selectedPreset = "Custom"
+                    engine.setSelectedPresetName("Custom")
+                },
+                onResetBand = { band ->
+                    val newLevels = bandLevels.copyOf()
+                    newLevels[band] = 0f
+                    bandLevels = newLevels
+                    engine.setBandLevel(band, 0)
+                    selectedPreset = "Custom"
+                    engine.setSelectedPresetName("Custom")
+                },
+                onBandTap = { band -> editBand = band },
+                scaleDb = eqScale,
+                selectedBand = selBand,
+                onBandSelect = { band -> selBand = if (selBand == band) -1 else band }
             )
+            // Build #124: visual scale selector — visualization only, never alters DSP gains
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("GRAPH RANGE", fontSize = 9.sp, color = T.secondary)
+                Spacer(Modifier.width(6.dp))
+                listOf("AUTO" to 0, "±6" to 6, "±12" to 12, "±18" to 18).forEach { (sl, sv) ->
+                    Text(
+                        sl, fontSize = 9.sp,
+                        color = if (eqScaleMode == sv) T.primary else T.secondary,
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background((if (eqScaleMode == sv) T.primary else T.secondary).copy(alpha = 0.12f))
+                            .clickable { eqScaleMode = sv }
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                            .semantics { contentDescription = "Graph range " + sl }
+                    )
+                }
+            }
+            if (selBand >= 0 && selBand < bandCount) {
+                val f = (bandList.getOrNull(selBand)?.freq ?: 1000) / 1000.0
+                Text(
+                    "Band " + (selBand + 1) + " · " + (if (f >= 1.0) "%.2f kHz".format(f) else "%.0f Hz".format(f * 1000)) +
+                        " · " + "%+.1f dB".format(bandLevels.getOrElse(selBand) { 0f }) + " · Q 1.00 · double-tap resets, long-press opens editor",
+                    fontSize = 9.sp, color = T.primary
+                )
+            }
         }
         // ── Build #123: BAND EDITOR — tap a band point for details ──
         if (editBand >= 0 && editBand < bandCount) {
@@ -3787,7 +3852,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Neon EQ · Build #124",
+                        "Neon EQ · Build #125",
                         fontSize = 10.sp,
                         color = T.secondary,
                         modifier = Modifier.fillMaxWidth(),
