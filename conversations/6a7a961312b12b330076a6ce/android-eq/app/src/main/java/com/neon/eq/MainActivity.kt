@@ -3715,7 +3715,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         try {
                             val o = JSONObject(importPresetInput.trim())
                             val arr = o.getJSONArray("levels")
-                            val lv = ShortArray(31) { i -> arr.optInt(minOf(i, arr.length() - 1)).coerceIn(-15, 20).toShort() }
+                            val lv = ShortArray(31) { i -> (if (i < arr.length()) arr.optInt(i) else 0).coerceIn(-15, 20).toShort() }
                             val bb = o.optInt("bassBoost", 0).coerceIn(0, 300)
                             val vv = o.optInt("virtualizer", 0).coerceIn(0, 300)
                             val ll = o.optInt("loudness", 0).coerceIn(0, 300)
@@ -3881,7 +3881,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             showSaveDialog = false
                             showOverwriteDialog = true
                         } else {
-                            val levels = ShortArray(31) { i -> round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() }
+                            val levels = ShortArray(31) { i -> if (i < bandCount) round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() else 0 }
                             engine.saveCustomPreset(name, levels, bassBoost, virtualizer, loudness)
                             customPresets = engine.listCustomPresets()
                             selectedPreset = name
@@ -3908,7 +3908,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             confirmButton = {
                 TextButton(onClick = {
                     val name = pendingPresetName
-                    val levels = ShortArray(31) { i -> round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() }
+                    val levels = ShortArray(31) { i -> if (i < bandCount) round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() else 0 }
                     engine.saveCustomPreset(name, levels, bassBoost, virtualizer, loudness)
                     customPresets = engine.listCustomPresets()
                     selectedPreset = name
@@ -3952,7 +3952,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             DropdownMenuItem(
                 text = { Text("Update with current") },
                 onClick = {
-                    val levels = ShortArray(31) { i -> round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() }
+                    val levels = ShortArray(31) { i -> if (i < bandCount) round(bandLevels.getOrElse(i) { 0f }).toInt().toShort() else 0 }
                     engine.updateCustomPreset(preset.name, levels, bassBoost, virtualizer, loudness)
                     customPresets = engine.listCustomPresets()
                     scope2.launch { snackbarHost.showSnackbar("Updated '${'$'}{preset.name}'") }
