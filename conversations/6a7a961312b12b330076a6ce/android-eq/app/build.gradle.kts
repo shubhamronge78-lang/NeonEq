@@ -32,7 +32,7 @@ android {
         // (Settings > Apps > Neon EQ > version) that you're actually running the
         // build you think you're running.
         versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
-        versionName = "2.8.0"
+        versionName = "2.8.1"
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
