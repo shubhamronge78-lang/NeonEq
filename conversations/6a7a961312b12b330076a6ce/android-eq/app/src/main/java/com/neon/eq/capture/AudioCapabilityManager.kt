@@ -100,6 +100,10 @@ object AudioCapabilityManager {
      */
     fun dspSelfTest(): String {
         if (!NeonDsp.available) return "DSP SELF-TEST: FAIL (native library unavailable: " + NeonDsp.loadError + ")"
+        // Build #136: the self-test re-inits and mutates the global native DSP
+        // state — running it while system capture is live would wipe the
+        // user's running DSP configuration mid-playback.
+        if (CaptureEqService.running) return "DSP SELF-TEST: SKIPPED — system capture is active (would corrupt live DSP state)"
         fun rms(buf: ShortArray): Double {
             var sum = 0.0
             for (s in buf) sum += s.toDouble() * s.toDouble()

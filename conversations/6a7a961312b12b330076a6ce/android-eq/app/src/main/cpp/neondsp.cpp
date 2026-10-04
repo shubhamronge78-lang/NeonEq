@@ -12,6 +12,7 @@
 #include <jni.h>
 #include <math.h>
 #include <string.h>
+#include <atomic>
 
 #define MAXBANDS 31
 #define MAXPEQ 8
@@ -62,7 +63,7 @@ static int outLRmsMs = 0, outRRmsMs = 0, outLPkMs = 0, outRPkMs = 0;
    (FFT, band mapping) runs on the caller (UI) thread inside spectrum().
    Never on the audio thread. */
 static short specPreL[2048], specPreR[2048], specPostL[2048], specPostR[2048];
-static int specPreIdx = 0, specPostIdx = 0;
+static std::atomic<int> specPreIdx{0}, specPostIdx{0};   /* Build #136: audio-thread writes, UI-thread reads */
 
 static const double F10[10] = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
 static const double F15[15] = {25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000};
@@ -77,6 +78,11 @@ typedef struct { int on; double f, g, q; } PeqParam;
 static PeqParam peqTarget[MAXPEQ];
 static double grafTarget[MAXBANDS];
 static double grafApplied[MAXBANDS];
+/* Build #136: last-applied PEQ snapshot — setPeak() also clears biquad
+   history (clearB), so it must run ONLY on real parameter changes. The
+   graphic loop already had this check; the PEQ loop called setPeak every
+   audio block, wiping filter memory every ~5ms (clicks, broken LF). */
+static PeqParam peqApplied[MAXPEQ];
 static volatile int peqSeq = 0;   /* seqlock: even = stable */
 static volatile int grafSeq = 0;
 
@@ -176,9 +182,13 @@ static void applyPendingParams() {
         if (peqSeq != s1) continue;
         for (i = 0; i < MAXPEQ; i++) {
             peqOn[i] = snap[i].on;
-            if (snap[i].on) {
+            if (snap[i].on && (!peqApplied[i].on || snap[i].f != peqApplied[i].f ||
+                               snap[i].g != peqApplied[i].g || snap[i].q != peqApplied[i].q)) {
                 setPeak(&peq[i][0], snap[i].f, snap[i].g, snap[i].q);
                 setPeak(&peq[i][1], snap[i].f, snap[i].g, snap[i].q);
+                peqApplied[i] = snap[i];
+            } else if (!snap[i].on) {
+                peqApplied[i].on = 0;
             }
         }
         break;
@@ -309,6 +319,7 @@ Java_com_neon_eq_dsp_NeonDsp_init(JNIEnv* env, jobject thiz, jint rate, jint ban
     __sync_synchronize();
     for (int i = 0; i < MAXPEQ; i++) { peqTarget[i].on = 0; peqTarget[i].f = 1000.0; peqTarget[i].g = 0.0; peqTarget[i].q = 1.0; }
     for (int i = 0; i < MAXBANDS; i++) { grafTarget[i] = 0.0; grafApplied[i] = 0.0; }
+    memset(peqApplied, 0, sizeof(peqApplied));
     __sync_synchronize();
 }
 
@@ -413,6 +424,11 @@ Java_com_neon_eq_dsp_NeonDsp_loadIr(JNIEnv* env, jobject thiz, jfloatArray left,
     if (n > MAXIR) n = MAXIR;
     jfloat* l = env->GetFloatArrayElements(left, NULL);
     jfloat* r = env->GetFloatArrayElements(right, NULL);
+    if (l == NULL || r == NULL) {   /* Build #136: pinning can fail — never deref NULL */
+        if (l != NULL) env->ReleaseFloatArrayElements(left, l, JNI_ABORT);
+        if (r != NULL) env->ReleaseFloatArrayElements(right, r, JNI_ABORT);
+        return;
+    }
     for (int i = 0; i < n; i++) { irL[i] = l[i]; irR[i] = r[i]; }
     env->ReleaseFloatArrayElements(left, l, JNI_ABORT);
     env->ReleaseFloatArrayElements(right, r, JNI_ABORT);
@@ -451,9 +467,9 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
         /* spectrum snapshot rings (captured PCM, pre-DSP): bounded O(n)
            stores, no allocation, no locks — analysis on the UI thread */
         for (int i = 0; i < frames; i++) {
-            specPreL[specPreIdx] = p[2 * i];
-            specPreR[specPreIdx] = p[2 * i + 1];
-            if (++specPreIdx >= 2048) specPreIdx = 0;
+            { int wi = specPreIdx.load(std::memory_order_relaxed);
+              specPreL[wi] = p[2 * i]; specPreR[wi] = p[2 * i + 1];
+              specPreIdx.store((wi + 1) & 2047, std::memory_order_relaxed); }
         }
     }
     for (int i = 0; i < frames; i++) processFrame(p + 2 * i);
@@ -480,9 +496,9 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
         outRPkMs = (pkR * 1000) / 32768;
         /* processed-PCM rings (post-DSP) for the BEFORE/AFTER analyzer */
         for (int i = 0; i < frames; i++) {
-            specPostL[specPostIdx] = p[2 * i];
-            specPostR[specPostIdx] = p[2 * i + 1];
-            if (++specPostIdx >= 2048) specPostIdx = 0;
+            { int wi = specPostIdx.load(std::memory_order_relaxed);
+              specPostL[wi] = p[2 * i]; specPostR[wi] = p[2 * i + 1];
+              specPostIdx.store((wi + 1) & 2047, std::memory_order_relaxed); }
         }
     }
     env->ReleasePrimitiveArrayCritical(buf, p, 0);
@@ -543,12 +559,12 @@ Java_com_neon_eq_dsp_NeonDsp_spectrum(JNIEnv* env, jobject thiz, jfloatArray out
     int i;
     const short* ringA; const short* ringB; int ringIdx;
     switch (mode) {
-        case 1: ringA = specPreL;  ringB = NULL;     ringIdx = specPreIdx;  break;
-        case 2: ringA = specPreR;  ringB = NULL;     ringIdx = specPreIdx;  break;
-        case 4: ringA = specPostL; ringB = NULL;     ringIdx = specPostIdx; break;
-        case 5: ringA = specPostR; ringB = NULL;     ringIdx = specPostIdx; break;
-        default: if (mode >= 3) { ringA = specPostL; ringB = specPostR; ringIdx = specPostIdx; }
-                 else { ringA = specPreL; ringB = specPreR; ringIdx = specPreIdx; }
+        case 1: ringA = specPreL;  ringB = NULL;     ringIdx = specPreIdx.load(std::memory_order_relaxed);  break;
+        case 2: ringA = specPreR;  ringB = NULL;     ringIdx = specPreIdx.load(std::memory_order_relaxed);  break;
+        case 4: ringA = specPostL; ringB = NULL;     ringIdx = specPostIdx.load(std::memory_order_relaxed); break;
+        case 5: ringA = specPostR; ringB = NULL;     ringIdx = specPostIdx.load(std::memory_order_relaxed); break;
+        default: if (mode >= 3) { ringA = specPostL; ringB = specPostR; ringIdx = specPostIdx.load(std::memory_order_relaxed); }
+                 else { ringA = specPreL; ringB = specPreR; ringIdx = specPreIdx.load(std::memory_order_relaxed); }
                  break;
     }
     /* assemble oldest-first window and apply Hann */

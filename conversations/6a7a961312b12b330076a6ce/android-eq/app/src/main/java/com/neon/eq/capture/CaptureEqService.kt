@@ -125,6 +125,12 @@ class CaptureEqService : Service() {
             }
         }
 
+        // Build #136: a previous thread still in its cleanup tail must finish
+        // first — a start intent arriving mid-cleanup used to be dropped and
+        // the dying thread then stopSelf()ed, silently killing the service.
+        if (!running && thread?.isAlive == true) {
+            try { thread?.join(1000) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        }
         if (!running && thread?.isAlive != true) {
             requestStop = false
             paused = false
@@ -350,9 +356,15 @@ class CaptureEqService : Service() {
                     } catch (t: Throwable) { }
                     // Build #121: refresh the foreground notification with
                     // current route + meters (mirror thread, not audio thread).
+                    // Build #136: notification updates posted OFF the urgent-audio
+                    // thread — the binder IPC to system_server could stall the loop.
                     try {
-                        (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
-                            .notify(NOTIF_ID, buildRichNotification())
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            try {
+                                    (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                                            .notify(NOTIF_ID, buildRichNotification())
+                                } catch (_: Throwable) { }
+                        }
                     } catch (_: Throwable) { }
                     // Build #119: rolling-threshold escalation — a single
                     // underrun never changes the mode. Escalate only after
@@ -391,7 +403,11 @@ class CaptureEqService : Service() {
                             oldRateLine = sr.toString() + "Hz"
                             try {
                                 track?.pause(); track?.flush(); track?.stop(); track?.release()
-                                val minOut2 = AudioTrack.getMinBufferSize(newSr, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+                                // Build #136: the track must match the CAPTURE rate (sr) —
+                                // the PCM we write is captured at sr; the framework resamples
+                                // track-side to the new output rate. Rebuilding at newSr played
+                                // sr-rate PCM at the wrong speed (pitch shift + underruns).
+                                val minOut2 = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
                                 val rebuilt = AudioTrack.Builder()
                                     .setAudioAttributes(
                                         AudioAttributes.Builder()
@@ -400,7 +416,7 @@ class CaptureEqService : Service() {
                                             .build())
                                     .setAudioFormat(
                                         AudioFormat.Builder()
-                                            .setSampleRate(newSr)
+                                            .setSampleRate(sr)
                                             .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                                             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                                             .build())
@@ -409,19 +425,23 @@ class CaptureEqService : Service() {
                                     .build()
                                 if (rebuilt.state == AudioTrack.STATE_INITIALIZED) {
                                     track = rebuilt
-                                    sr = newSr
-                                    captureSampleRate = sr
+                                    // sr (capture rate) intentionally UNCHANGED — record stays at sr.
                                     capLatencyMs = chunkFrames * 1000.0 / sr
                                     outLatencyMs = try { rebuilt.bufferSizeInFrames * 1000.0 / sr } catch (t: Throwable) { 0.0 }
                                     try { rebuilt.setVolume(outVolume) } catch (t: Throwable) { }
                                     rebuilt.play()
                                     routeNote = "ROUTE CHANGED: " + (oldRouteLine ?: "?") + " to " + AudioPath.outputDevice(this) +
-                                        " | " + (oldRateLine ?: "?") + " to " + newSr + "Hz — output rebuilt, DSP state preserved"
+                                        " | output rate " + (oldRateLine ?: "?") + " → " + newSr + "Hz — track rebuilt at capture rate " + sr + "Hz, DSP state preserved"
                                     // Build #122: report the new route only AFTER the rebuild
                                     // confirmed the output path is ready.
+                                    // Build #136: posted off the audio thread (binder IPC stall risk).
                                     try {
-                                        (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
-                                            .notify(NOTIF_ID, buildRichNotification())
+                                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                            try {
+                                                    (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                                                            .notify(NOTIF_ID, buildRichNotification())
+                                                } catch (_: Throwable) { }
+                                        }
                                     } catch (_: Throwable) { }
                                 } else {
                                     lastError = AudioErrors.AUDIO_TRACK_INITIALIZATION_FAILED + ": rebuild after route change failed"

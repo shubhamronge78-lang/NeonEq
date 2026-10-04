@@ -575,7 +575,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         try {
             s.params.applyTo(NeonDsp)
             s.params.save(engine)
-            bandLevels = s.levels.copyOf()
+            // NOTE: do NOT assign bandLevels here — animateLevelsTo() must
+            // capture the PRE-transition levels as its animation start.
             val lv = ShortArray(31) { i -> round(s.levels.getOrElse(i) { 0f }).toInt().toShort() }
             bassBoost = s.bass; virtualizer = s.virt; loudness = s.loud
             engine.applyFullState(lv, s.bass, s.virt, s.loud, smooth = true)
@@ -1000,7 +1001,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                             if (mRms[i] > 0.001f) {
                                 drawRoundRect(color = if (i < 2) T.primary else T.accent, size = androidx.compose.ui.geometry.Size(w * mRms[i], h), cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f))
                             }
-                            val px = w * mPeak[i]
+                            val px = w * mPeak[i + 4]   // peaks live in slots 4..7, RMS in 0..3
                             drawLine(color = Color.White.copy(alpha = 0.8f), start = androidx.compose.ui.geometry.Offset(px, 0f), end = androidx.compose.ui.geometry.Offset(px, h), strokeWidth = 2f)
                             if (mRms[i] > 0.999f) {
                                 drawLine(color = T.accent, start = androidx.compose.ui.geometry.Offset(w - 3f, 0f), end = androidx.compose.ui.geometry.Offset(w - 3f, h), strokeWidth = 3f)
@@ -1661,7 +1662,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         pushUndo(true, "Reset EQ")
                         try {
                             val newLevels = FloatArray(31) { 0f }
-                            bandLevels = newLevels
                             animateLevelsTo(newLevels)
                             engine.applyFullState(ShortArray(31) { 0 }, bassBoost, virtualizer, loudness, smooth = true)
                             val p = DspParams.load(engine)
@@ -3973,7 +3973,16 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         context.startActivity(Intent.createChooser(
                             Intent(Intent.ACTION_SEND).apply {
                                 type = "application/json"
-                                putExtra(Intent.EXTRA_TEXT, buildPresetJson())
+                                putExtra(Intent.EXTRA_TEXT, org.json.JSONObject().apply {
+                                    put("neoneq_preset", 1)
+                                    put("name", preset.name)
+                                    val larr = org.json.JSONArray()
+                                    for (lvl in preset.levels) larr.put(lvl.toInt())
+                                    put("levels", larr)
+                                    put("bassBoost", preset.bassBoost)
+                                    put("virtualizer", preset.virtualizer)
+                                    put("loudness", preset.loudness)
+                                }.toString())
                                 putExtra(Intent.EXTRA_SUBJECT, "SonicCore preset — DSP configuration only")
                             }, "Share preset"))
                     } catch (t: Throwable) { }
@@ -4049,7 +4058,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             confirmButton = {
                 TextButton(onClick = {
                     val newName = renameInput.trim()
-                    if (newName.isNotEmpty() && newName != renamingFrom) {
+                    if (engine.customPresetExists(newName) && newName != renamingFrom) {
+                        scope2.launch { snackbarHost.showSnackbar("Name already exists — pick another") }
+                    } else if (newName.isNotEmpty() && newName != renamingFrom) {
                         engine.renameCustomPreset(renamingFrom, newName)
                         customPresets = engine.listCustomPresets()
                         if (selectedPreset == renamingFrom) {
@@ -4962,6 +4973,9 @@ fun CanvasEQ(
         val normY = 1f - (clampedY / trackHeight)
         return (normY * (scaleDb * 2f) - scaleDb).coerceIn(-15f, 20f)
     }
+    // x is NORMALIZED 0..1 (log-frequency fraction of canvas width) —
+    // callers must divide pixel coordinates by size.width (Build #136 fix:
+    // raw pixels vs 0..1 fractions made every gesture hit the last band).
     fun nearestBand(x: Float): Int {
         var best = 0
         var bestD = Float.MAX_VALUE
@@ -4982,7 +4996,7 @@ fun CanvasEQ(
                 detectDragGestures(
                     onDragStart = { offset ->
                         val trackHeight = size.height.toFloat() - labelAreaPx
-                        val band = nearestBand(offset.x)
+                        val band = nearestBand(offset.x / size.width.toFloat())
                         val lvl = levelFromY(offset.y, trackHeight)
                         onGestureStart(band)   // one undo entry for the whole gesture
                         onLevelChange(band, lvl)
@@ -4995,7 +5009,7 @@ fun CanvasEQ(
                     onDragCancel = { activeBand = -1 },
                     onDrag = { change, _ ->
                         val trackHeight = size.height.toFloat() - labelAreaPx
-                        val band = activeBand.coerceAtLeast(nearestBand(change.position.x))
+                        val band = activeBand.coerceAtLeast(nearestBand(change.position.x / size.width.toFloat()))
                         val lvl = if (precisionMode) {
                             // PRECISION: relative movement at 0.25x rate —
                             // continuous updates, never waiting for release.
@@ -5017,17 +5031,17 @@ fun CanvasEQ(
                 // editor), double-tap = reset that band, long-press = editor.
                 detectTapGestures(
                     onTap = { offset ->
-                        val band = nearestBand(offset.x)
+                        val band = nearestBand(offset.x / size.width.toFloat())
                         onBandSelect(band)
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     },
                     onDoubleTap = { offset ->
-                        val band = nearestBand(offset.x)
+                        val band = nearestBand(offset.x / size.width.toFloat())
                         onResetBand(band)
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
                     onLongPress = { offset ->
-                        onBandTap(nearestBand(offset.x))
+                        onBandTap(nearestBand(offset.x / size.width.toFloat()))
                     }
                 )
             }
@@ -5059,11 +5073,12 @@ fun CanvasEQ(
         var v = -scaleDb
         while (v <= scaleDb + 0.01f) {
             val y = trackHeight * 0.5f - (v / (scaleDb * 2f)) * trackHeight
+            val isCenter = kotlin.math.abs(v) < 0.01f
             drawLine(
-                color = if (v == 0f) centerColor else gridColor,
+                color = if (isCenter) centerColor else gridColor,
                 start = androidx.compose.ui.geometry.Offset(0f, y),
                 end = androidx.compose.ui.geometry.Offset(size.width, y),
-                strokeWidth = if (v == 0f) gridPx * 1.5f else gridPx
+                strokeWidth = if (isCenter) gridPx * 1.5f else gridPx
             )
             v += dbStep
         }
@@ -5338,6 +5353,11 @@ fun CircularDial(
     val haptic = LocalHapticFeedback.current
     val fraction = (value - range.first).toFloat() / (range.last - range.first).toFloat()
 
+    // Build #136: hoisted out of the draw pass — was allocating a new
+    // shader every frame while the dial animated.
+    val dialSweepBrush = remember(T.primary, T.secondary) {
+        Brush.sweepGradient(0.375f to T.secondary, 1.0f to T.primary)
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(contentAlignment = Alignment.Center) {
             Canvas(
@@ -5388,11 +5408,7 @@ fun CircularDial(
                 // Progress — neon gradient sweep (cyan → purple), stops
                 // shifted so the gradient begins at the dial's 135° start.
                 drawArc(
-                    brush = Brush.sweepGradient(
-                        0.375f to T.secondary,
-                        1.0f to T.primary,
-                        center = Offset(size.width / 2f, size.height / 2f)
-                    ),
+                    brush = dialSweepBrush,
                     startAngle = 135f,
                     sweepAngle = 270f * fraction,
                     useCenter = false,
