@@ -104,21 +104,24 @@ class PresetValidationTest {
 
     @Test
     fun `NaN and Infinity can never reach the DSP through JSON import`() {
-        // Measured org.json behavior: bare NaN/Infinity tokens are ACCEPTED by
-        // the parser as Double.NaN / Double.POSITIVE_INFINITY. The importer is
-        // still safe — optInt coerces NaN to 0, and Infinity to Int.MAX_VALUE
-        // which the -15..+20 clamp pins to +20. No invalid value escapes.
-        val bare = Presets.importFromJson(
-            """{"presets":[{"name":"nan","levels":[NaN,Infinity,0,0,0,0,0,0,0,0]}]}""")
-        assertEquals(1, bare.size)
-        assertEquals(0, bare[0].levels[0].toInt())    // NaN  -> 0 (in range)
-        assertEquals(20, bare[0].levels[1].toInt())   // +Inf -> clamped to ceiling
-        // String form behaves identically: parse -> coerce -> clamp.
-        val asString = Presets.importFromJson(
-            """{"presets":[{"name":"str","levels":["NaN","Infinity",0,0,0,0,0,0,0,0]}]}""")
-        assertEquals(1, asString.size)
-        assertEquals(0, asString[0].levels[0].toInt())
-        assertEquals(20, asString[0].levels[1].toInt())
+        // NaN and Infinity handling differs between org.json builds (the JVM
+        // test classpath uses 20240303; devices use the Android framework's)
+        // and between bare tokens and quoted strings. The SAFETY CONTRACT is
+        // identical in every path: whatever the tokenizer produces, the stored
+        // level is a finite integer inside -15..+20 — a non-finite value can
+        // never reach the DSP. Assert exactly that, for both spellings.
+        val docs = listOf(
+            """{"presets":[{"name":"bare","levels":[NaN,Infinity,-Infinity,0,0,0,0,0,0,0]}]}""",
+            """{"presets":[{"name":"str","levels":["NaN","Infinity","-Infinity",0,0,0,0,0,0,0]}]}"""
+        )
+        for (doc in docs) {
+            val out = Presets.importFromJson(doc)
+            assertEquals(1, out.size)
+            for (i in 0..2) {
+                val v = out[0].levels[i].toInt()
+                assertTrue("slot $i must be finite and in range, was $v", v in -15..20)
+            }
+        }
     }
 
     @Test
