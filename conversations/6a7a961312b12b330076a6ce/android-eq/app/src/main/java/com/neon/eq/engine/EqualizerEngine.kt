@@ -211,7 +211,8 @@ class EqualizerEngine private constructor(context: Context) {
     private val persistHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val persistLevelsRunnable = Runnable {
         try {
-            prefs.edit().putString(KEY_LEVELS, currentBandLevels.joinToString(",")).apply()
+            // Build #136: defensive copy — currentBandLevels mutates on other threads.
+            prefs.edit().putString(KEY_LEVELS, currentBandLevels.copyOf().joinToString(",")).apply()
         } catch (_: Throwable) { }
     }
     private fun persistLevels() {
@@ -634,8 +635,11 @@ class EqualizerEngine private constructor(context: Context) {
                     restorePresetName = selectedPresetName
                     restoreEffects = intArrayOf(currentBassBoost, currentVirtualizer, currentLoudness)
                 }
-                activeProfilePackage = playingPkg
+                // Build #136: guard first, then publish — markUserOverrideIfApplicable()
+                // reads applyingProfile; the old order left a window where a UI
+                // slider drag between the two lines cleared the profile state.
                 applyingProfile = true
+                activeProfilePackage = playingPkg
                 try {
                     if (applyPresetByName(profilePreset)) {
                         selectedPresetName = profilePreset
@@ -810,7 +814,7 @@ class EqualizerEngine private constructor(context: Context) {
         val root = org.json.JSONObject()
         root.put("type", "neoneq_backup")
         root.put("version", 1)
-        root.put("levels", currentBandLevels.joinToString(","))
+        root.put("levels", currentBandLevels.copyOf().joinToString(","))
         root.put("bass", currentBassBoost)
         root.put("virt", currentVirtualizer)
         root.put("loud", currentLoudness)
@@ -1848,14 +1852,16 @@ class EqualizerEngine private constructor(context: Context) {
         persistScalar(KEY_BASS, currentBassBoost)
         persistScalar(KEY_VIRT, currentVirtualizer)
         persistScalar(KEY_LOUD, currentLoudness)
+        // Build #136: bump the generation SYNCHRONOUSLY — a direct call
+        // supersedes in-flight glides at CALL time, and a queued smooth call
+        // carries a token a later drag can actually supersede.
+        val gen = ++fxRampGeneration
         audioExecutor.execute {
             if (!smooth) {
-                fxRampGeneration++  // direct call supersedes any in-flight glide
                 applyEffectsToHardware(currentBassBoost, currentVirtualizer, currentLoudness)
                 reapplyBandLevelsToHardware()
                 return@execute
             }
-            val gen = ++fxRampGeneration
             rampActiveUntil = SystemClock.elapsedRealtime() + 250L  // heal must not fight the glide
             val tb = currentBassBoost; val tv = currentVirtualizer; val tl = currentLoudness
             val maxDelta = maxOf(
@@ -1907,10 +1913,14 @@ class EqualizerEngine private constructor(context: Context) {
         persistScalar(KEY_BASS, currentBassBoost)
         persistScalar(KEY_VIRT, currentVirtualizer)
         persistScalar(KEY_LOUD, currentLoudness)
+        // Build #136: take the generation token SYNCHRONOUSLY, before this task
+        // is queued. Taking it inside the executor AFTER a user's direct slider
+        // drag (which bumps rampGeneration to cancel ramps) adopted a fresh,
+        // unstoppable generation and stomped the manual drag.
+        val gen = ++rampGeneration
+        fxRampGeneration = gen  // one job drives both counters
+        rampActiveUntil = SystemClock.elapsedRealtime() + 250L  // heal must not fight the glide
         audioExecutor.execute {
-            val gen = ++rampGeneration
-            fxRampGeneration = gen  // one job drives both counters
-            rampActiveUntil = SystemClock.elapsedRealtime() + 250L  // heal must not fight the glide
             val tb = currentBassBoost; val tv = currentVirtualizer; val tl = currentLoudness
             val fb = appliedBass; val fv = appliedVirt; val fl = appliedLoud
             var maxBand = 0

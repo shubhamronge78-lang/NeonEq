@@ -34,8 +34,10 @@ import com.neon.eq.dsp.NeonDsp
 
 /** One RBJ cookbook peaking-EQ biquad, direct form 1. gainDb 0 = identity. */
 class BiquadBand {
-    private var b0 = 1f; private var b1 = 0f; private var b2 = 0f
-    private var a1 = 0f; private var a2 = 0f
+    // Build #136: reconfigured off-thread, read on the audio thread —
+    // @Volatile guarantees the audio loop sees committed coefficient values.
+    @Volatile private var b0 = 1f; @Volatile private var b1 = 0f; @Volatile private var b2 = 0f
+    @Volatile private var a1 = 0f; @Volatile private var a2 = 0f
     private var x1 = 0f; private var x2 = 0f
     private var y1 = 0f; private var y2 = 0f
 
@@ -89,9 +91,11 @@ class SoftwareEq {
         // writer; the UI only reads the published copy.
         @Volatile var sharedWaveform: ByteArray? = null
         @Volatile var sharedWaveformAt: Long = 0
-        private val capTmp = ByteArray(128)
+        // Build #136: was a shared companion buffer — two players writing it
+        // concurrently corrupted the visualizer waveform. Local per-call copy.
         fun publishCapture(samples: ShortArray, from: Int, len: Int) {
             if (len <= 0) return
+            val capTmp = ByteArray(128)
             val stride = (len / 128).coerceAtLeast(1)
             var ci = 0
             var i = from
@@ -241,11 +245,17 @@ class TonePlayer(private val eq: SoftwareEq) {
 
     val isRunning: Boolean get() = thread?.isAlive == true
 
+    // Build #136: guarded by UI-thread-only ++; read from the player thread.
+    @Volatile private var playSession = 0
+
     fun play() {
         stop()
         requestStop = false
         taps++
-        thread = Thread { toneLoop() }.apply { start() }
+        // Build #136: session token — if a stalled old thread outlives the
+        // join() timeout, its finally must NOT reset the new session's alive.
+        val mySession = ++playSession
+        thread = Thread { toneLoop(mySession) }.apply { start() }
         alive = true
     }
 
@@ -256,7 +266,7 @@ class TonePlayer(private val eq: SoftwareEq) {
     }
 
     @Suppress("DEPRECATION")
-    private fun toneLoop() {
+    private fun toneLoop(mySession: Int) {
         var track: AudioTrack? = null
         try {
             val sr = 48000
@@ -336,7 +346,7 @@ class TonePlayer(private val eq: SoftwareEq) {
         } finally {
             try { track?.stop() } catch (_: Throwable) {}
             try { track?.release() } catch (_: Throwable) {}
-            alive = false
+            if (playSession == mySession) alive = false
         }
     }
 }
@@ -380,6 +390,9 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
     val isRunning: Boolean get() = thread?.isAlive == true
     fun isPaused(): Boolean = pauseReq
 
+    // Build #136: session token — stale finally must not clobber new state.
+    @Volatile private var playSession = 0
+
     fun play(context: Context, uri: Uri) {
         stop()
         requestStop = false
@@ -387,8 +400,9 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
         lastError = null
         trackInfo = ""
         starts++
+        val mySession = ++playSession
         alive = true
-        thread = Thread { decodeLoop(context.applicationContext, uri) }.apply {
+        thread = Thread { decodeLoop(context.applicationContext, uri, mySession) }.apply {
             priority = Thread.MAX_PRIORITY - 1
             start()
         }
@@ -404,7 +418,7 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
     }
 
     @Suppress("DEPRECATION")
-    private fun decodeLoop(context: Context, uri: Uri) {
+    private fun decodeLoop(context: Context, uri: Uri, mySession: Int) {
         var extractor: MediaExtractor? = null
         var codec: MediaCodec? = null
         var track: AudioTrack? = null
@@ -510,11 +524,11 @@ class SoftEqPlayer(private val eq: SoftwareEq) {
             try { codec?.release() } catch (_: Throwable) {}
             try { track?.stop() } catch (_: Throwable) {}
             try { track?.release() } catch (_: Throwable) {}
-            outTrack = null
+            if (playSession == mySession) outTrack = null
             try { extractor?.release() } catch (_: Throwable) {}
             try { wl?.release() } catch (_: Throwable) {}
             try { am?.abandonAudioFocus(focusListener) } catch (_: Throwable) {}
-            alive = false
+            if (playSession == mySession) alive = false
         }
     }
 }

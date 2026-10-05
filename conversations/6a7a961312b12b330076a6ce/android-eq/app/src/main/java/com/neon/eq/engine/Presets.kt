@@ -79,7 +79,11 @@ object Presets {
             val f = 20.0 * Math.pow(1000.0, i.toDouble() / (count - 1).coerceAtLeast(1).toDouble())
             val lo = freqs10.indexOfFirst { it >= f }
             out[i] = when {
-                lo <= 0 -> base[0].toShort()
+                // Build #136: indexOfFirst returns -1 ABOVE 16 kHz (15/31-band tops
+                // reach 20 kHz) — the old `lo <= 0` read that as "sub-bass" and
+                // assigned the 31 Hz gain to high-treble bands.
+                lo < 0 -> base[9].toShort()
+                lo == 0 -> base[0].toShort()
                 lo >= 10 -> base[9].toShort()
                 else -> {
                     val t = (f - freqs10[lo - 1]) / (freqs10[lo] - freqs10[lo - 1])

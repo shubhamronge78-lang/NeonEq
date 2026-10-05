@@ -27,7 +27,12 @@ class EQTileService : TileService() {
             // If the service isn't running it will start, handle ACTION_STOP
             // and stop itself — a harmless, self-cleaning path.
             val stop = Intent(this, EQService::class.java).apply { action = EQService.ACTION_STOP }
-            try { startService(stop) } catch (_: Throwable) {}
+            // Build #136: startForegroundService on API 26+ — background
+            // startService throws and the stop was silently dropped.
+            try {
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(stop)
+                else startService(stop)
+            } catch (_: Throwable) {}
         } else {
             // On: plain start flips the engine on and applies the persisted config.
             val start = Intent(this, EQService::class.java)

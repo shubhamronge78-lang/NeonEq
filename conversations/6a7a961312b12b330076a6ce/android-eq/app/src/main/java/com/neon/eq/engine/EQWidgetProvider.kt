@@ -32,7 +32,7 @@ class EQWidgetProvider : AppWidgetProvider() {
                     .getBoolean("enabled", true)
                 val views = RemoteViews(context.packageName, R.layout.neon_widget).apply {
                     setTextViewText(R.id.widget_toggle, if (enabled) "ON" else "OFF")
-                    setBoolean(R.id.widget_toggle, "setEnabled", !enabled)
+                    setBoolean(R.id.widget_toggle, "setEnabled", true)   // Build #136: disabling when ON meant the widget could not switch the EQ OFF
                     setInt(R.id.widget_toggle, "setTextColor",
                         if (enabled) 0xFF00E5FF.toInt() else 0xFF6A6A7A.toInt())
                 }
@@ -61,7 +61,10 @@ class EQWidgetProvider : AppWidgetProvider() {
             val enabled = prefs.getBoolean("enabled", true)
             if (enabled) {
                 val stop = Intent(context, EQService::class.java).apply { action = EQService.ACTION_STOP }
-                context.startService(stop)
+                // Build #136: plain startService is dropped from the background on
+                // API 26+ — the stop intent silently never arrived.
+                if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(stop)
+                else context.startService(stop)
             } else {
                 val start = Intent(context, EQService::class.java)
                 if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(start)

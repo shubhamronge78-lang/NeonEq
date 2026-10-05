@@ -33,6 +33,11 @@ class EQService : Service() {
             engine.setEnabled(false)
             engine.release()
             EQWidgetProvider.pushUpdate(this)
+            // Build #136: widget/tile stop paths now arrive via startForegroundService()
+            // (required from background on API 26+). If ACTION_STOP is the FIRST
+            // command after that, the system still demands a startForeground() call
+            // before teardown — otherwise ForegroundServiceDidNotStartInTime crashes.
+            try { startForeground(NOTIF_ID, buildNotification()) } catch (_: Throwable) { }
             stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
