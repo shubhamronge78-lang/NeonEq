@@ -83,7 +83,8 @@ class PresetValidationTest {
         val long = Presets.importFromJson(validPresetJson(name = "long", levels = longLevels))
         assertEquals(31, long[0].levels.size)
         assertEquals(1, long[0].levels[0].toInt())
-        assertEquals(31, long[0].levels[30].toInt())
+        // value 31 sits above the +20 dB UI ceiling — clamped on import
+        assertEquals(20, long[0].levels[30].toInt())
     }
 
     @Test
