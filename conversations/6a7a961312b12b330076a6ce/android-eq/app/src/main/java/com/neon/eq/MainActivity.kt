@@ -1041,7 +1041,20 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             var spHold by remember { mutableStateOf(FloatArray(48)) }
             var spPost by remember { mutableStateOf(false) }
             var spChan by remember { mutableStateOf(0) }
-            LaunchedEffect(spFps) { while (true) { kotlinx.coroutines.delay(1000L / spFps.coerceAtLeast(5)); spTick++ } }
+            // Build #136: Phase-14 FPS tiers — full user rate while the app is
+            // RESUMED, 8 FPS when backgrounded (the activity keeps composing
+            // off-screen; on the Redmi 10C that CPU is needed elsewhere).
+            // Capture + DSP run in the service and are NEVER throttled here.
+            var spForeground by remember { mutableStateOf(true) }
+            val spLifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+            androidx.compose.runtime.DisposableEffect(spLifecycleOwner) {
+                val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+                    spForeground = ev == androidx.lifecycle.Lifecycle.Event.ON_RESUME
+                }
+                spLifecycleOwner.lifecycle.addObserver(obs)
+                onDispose { spLifecycleOwner.lifecycle.removeObserver(obs) }
+            }
+            LaunchedEffect(spFps, spForeground) { while (true) { kotlinx.coroutines.delay(1000L / (if (spForeground) spFps.coerceAtLeast(5) else 8)); spTick++ } }
             val spActive = NeonDsp.available && runCatching { NeonDsp.inRmsMs() > 0 || NeonDsp.outRmsMs() > 0 }.getOrDefault(false)
             LaunchedEffect(spTick) {
                 // Build #124: FREEZE stops visualization updates only —
@@ -4746,9 +4759,19 @@ fun VisualizerBars(waveform: ByteArray, waveformAt: Long = 0L, active: Boolean, 
     val barGlowColor = remember { T.primary.copy(alpha = 0.08f) }
 
     // Drive peak decay at ~30fps — cheaper than recomposing the whole tree.
-    LaunchedEffect(Unit) {
+    // Build #136: 8 FPS when the app is backgrounded (Phase-14 tiering).
+    var vdForeground by remember { mutableStateOf(true) }
+    val vdLifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(vdLifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+            vdForeground = ev == androidx.lifecycle.Lifecycle.Event.ON_RESUME
+        }
+        vdLifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { vdLifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+    LaunchedEffect(vdForeground) {
         while (true) {
-            kotlinx.coroutines.delay(33)
+            kotlinx.coroutines.delay(if (vdForeground) 33 else 125)
             for (i in 0 until barCount) peaks[i] = (peaks[i] - 0.015f).coerceAtLeast(0f)
             tick++
         }
