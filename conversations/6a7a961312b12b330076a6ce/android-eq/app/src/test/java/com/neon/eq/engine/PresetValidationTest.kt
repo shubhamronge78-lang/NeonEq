@@ -22,9 +22,9 @@ class PresetValidationTest {
         val out = Presets.importFromJson(validPresetJson())
         assertEquals(1, out.size)
         assertEquals("Bass", out[0].name)
-        assertEquals(5, out[0].levels[0])
-        assertEquals(3, out[0].levels[1])
-        assertEquals(0, out[0].levels[9])
+        assertEquals(5, out[0].levels[0].toInt())
+        assertEquals(3, out[0].levels[1].toInt())
+        assertEquals(0, out[0].levels[9].toInt())
         assertEquals(100, out[0].bassBoost)
         assertEquals(50, out[0].loudness)
     }
@@ -34,13 +34,13 @@ class PresetValidationTest {
         val json = validPresetJson(name = "Wild", levels = "[999,-999,12,20,21,32767,-32768,0,0,0]")
         val out = Presets.importFromJson(json)
         assertEquals(1, out.size)
-        assertEquals(20, out[0].levels[0])   // +999 dB -> +20
-        assertEquals(-15, out[0].levels[1])  // -999 dB -> -15
-        assertEquals(20, out[0].levels[3])
-        assertEquals(20, out[0].levels[4])   // 21 -> 20
-        assertEquals(20, out[0].levels[5])
-        assertEquals(-15, out[0].levels[6])
-        assertEquals(0, out[0].levels[9])
+        assertEquals(20, out[0].levels[0].toInt())   // +999 dB -> +20
+        assertEquals(-15, out[0].levels[1].toInt())  // -999 dB -> -15
+        assertEquals(20, out[0].levels[3].toInt())
+        assertEquals(20, out[0].levels[4].toInt())   // 21 -> 20
+        assertEquals(20, out[0].levels[5].toInt())
+        assertEquals(-15, out[0].levels[6].toInt())
+        assertEquals(0, out[0].levels[9].toInt())
     }
 
     @Test
@@ -75,15 +75,15 @@ class PresetValidationTest {
     fun `short levels arrays pad with zero and long ones are truncated to 31 slots`() {
         val short = Presets.importFromJson(validPresetJson(name = "short", levels = "[7,8]"))
         assertEquals(31, short[0].levels.size)
-        assertEquals(7, short[0].levels[0])
-        assertEquals(8, short[0].levels[1])
-        assertEquals(0, short[0].levels[30])
+        assertEquals(7, short[0].levels[0].toInt())
+        assertEquals(8, short[0].levels[1].toInt())
+        assertEquals(0, short[0].levels[30].toInt())
 
         val longLevels = (1..60).joinToString(",", "[", "]")
         val long = Presets.importFromJson(validPresetJson(name = "long", levels = longLevels))
         assertEquals(31, long[0].levels.size)
-        assertEquals(1, long[0].levels[0])
-        assertEquals(31, long[0].levels[30])
+        assertEquals(1, long[0].levels[0].toInt())
+        assertEquals(31, long[0].levels[30].toInt())
     }
 
     @Test
