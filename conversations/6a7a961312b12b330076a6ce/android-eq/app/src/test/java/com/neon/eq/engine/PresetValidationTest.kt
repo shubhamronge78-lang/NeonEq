@@ -88,6 +88,37 @@ class PresetValidationTest {
     }
 
     @Test
+    fun `boundary values are normalized to the -15..+20 contract`() {
+        // Directed boundary sweep: input -> expected stored value.
+        // The clamp is the safety boundary between imported JSON and the DSP.
+        val inputs = listOf(-20, -15, -14, 0, 19, 20, 21, 31, 999999, -999999)
+        val expected = listOf(-15, -15, -14, 0, 19, 20, 20, 20, 20, -15)
+        val levels = inputs.joinToString(",", "[", "]")
+        val out = Presets.importFromJson(validPresetJson(name = "bounds", levels = levels))
+        assertEquals(1, out.size)
+        for (i in inputs.indices) {
+            assertEquals("input ${inputs[i]} must normalize to ${expected[i]}",
+                expected[i], out[0].levels[i].toInt())
+        }
+    }
+
+    @Test
+    fun `NaN and Infinity can never reach the DSP through JSON import`() {
+        // Bare NaN/Infinity are not valid JSON — org.json rejects the document
+        // wholesale and the importer returns an empty list (safe reject).
+        assertEquals(emptyList<Presets.CustomPreset>(), Presets.importFromJson(
+            """{"presets":[{"name":"nan","levels":[NaN,0,0,0,0,0,0,0,0,0]}]}"""))
+        assertEquals(emptyList<Presets.CustomPreset>(), Presets.importFromJson(
+            """{"presets":[{"name":"inf","levels":[Infinity,0,0,0,0,0,0,0,0,0]}]}"""))
+        // As strings they parse but optInt falls back to 0 — never the raw token.
+        val asString = Presets.importFromJson(
+            """{"presets":[{"name":"str","levels":["NaN","Infinity",0,0,0,0,0,0,0,0]}]}""")
+        assertEquals(1, asString.size)
+        assertEquals(0, asString[0].levels[0].toInt())
+        assertEquals(0, asString[0].levels[1].toInt())
+    }
+
+    @Test
     fun `builtin resample never assigns sub bass gain above 16 kHz`() {
         // Build #136 regression test: resampling to 15/31 bands used to read
         // indexOfFirst == -1 (f > 16 kHz) as "sub-bass" and copy base[0].
