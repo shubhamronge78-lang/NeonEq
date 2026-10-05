@@ -24,6 +24,12 @@ jobs:
       with:
         gradle-version: "8.5"
 
+    - name: Run unit tests (preset validation)
+      working-directory: conversations/6a7a961312b12b330076a6ce/android-eq
+      run: |
+        chmod +x gradlew
+        ./gradlew testDebugUnitTest --no-daemon --continue
+
     - name: Build Debug APK
       working-directory: conversations/6a7a961312b12b330076a6ce/android-eq
       run: |
