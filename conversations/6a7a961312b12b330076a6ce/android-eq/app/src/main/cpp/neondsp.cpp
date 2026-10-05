@@ -20,9 +20,26 @@
 static const double TAU = 6.28318530717958647692;
 
 struct Biquad {
-    double b0, b1, b2, a1, a2;
-    double x1, x2, y1, y2;
+    double b0, b1, b2, a1, a2;      /* working coefficients (audio thread) */
+    double x1, x2, y1, y2;          /* filter history — NEVER cleared on param change */
+    /* Build #136 hardening: target coefficients + bounded ramp. Parameter
+       changes write tb*/ta* and start a short ramp; the working coefficients
+       glide to target at block boundaries. No history reset, no click, no
+       zipper noise — and the audio thread stays lock-free and allocation-free. */
+    double tb0, tb1, tb2, ta1, ta2;
+    int ramp;                        /* remaining ramp blocks; 0 = at target */
 };
+#define COEF_RAMP_BLOCKS 10
+
+/* Glide working coefficients one step toward target. Called once per block
+   (only while ramp > 0). Direct-form-1 history is preserved. */
+static inline void rampB(Biquad* f) {
+    if (f->ramp <= 0) return;
+    double t = 1.0 / (double) f->ramp;
+    f->b0 += (f->tb0 - f->b0) * t; f->b1 += (f->tb1 - f->b1) * t; f->b2 += (f->tb2 - f->b2) * t;
+    f->a1 += (f->ta1 - f->a1) * t; f->a2 += (f->ta2 - f->a2) * t;
+    if (--f->ramp == 0) { f->b0 = f->tb0; f->b1 = f->tb1; f->b2 = f->tb2; f->a1 = f->ta1; f->a2 = f->ta2; }
+}
 
 static double sr = 48000.0;
 static int nbands = 10;
@@ -42,7 +59,7 @@ static double stWidth = 1.0, stBalance = 0.0;
 static bool stSwap = false, stMono = false;
 
 static bool convOn = false;
-static int irTaps = 0;
+static std::atomic<int> irTaps{0};   /* Build #136: released-store after IR arrays are committed */
 static float irL[MAXIR], irR[MAXIR];
 static float histL[MAXIR], histR[MAXIR];
 static int histIdx = 0;
@@ -75,6 +92,23 @@ static const double F31[31] = {20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200,
    never observes a half-updated configuration (e.g. new gain with old Q).
    Single UI-thread writer, bounded-retry reader, fully lock-free. */
 typedef struct { int on; double f, g, q; } PeqParam;
+
+/* Build #136 hardening: coherent snapshot for ALL scalar DSP parameters
+   (preamp, shelves, compressor, stereo, limiter, convolver enable). The
+   JNI setters write cfgTarget under a seqlock; applyPendingParams() commits
+   the whole snapshot at the block boundary. The audio thread can therefore
+   never observe new-threshold+old-ratio or width-without-balance. */
+typedef struct {
+    double preampDb, bassDb, trebleDb;
+    int compOn; double compThreshDb, compRatio, compAtkCoef, compRelCoef;
+    double stWidth, stBalance; int stSwap, stMono;
+    int limOn; double limThreshDb;
+    int convOn;
+} CfgScalar;
+static CfgScalar cfgTarget = { 0.0, 0.0, 0.0, 0, -18.0, 4.0, 0.05, 0.005,
+                               1.0, 0.0, 0, 0, 1, -1.0, 0 };
+static CfgScalar cfgApplied = cfgTarget;
+static volatile int cfgSeq = 0;   /* seqlock: even = stable */
 static PeqParam peqTarget[MAXPEQ];
 static double grafTarget[MAXBANDS];
 static double grafApplied[MAXBANDS];
@@ -93,6 +127,21 @@ static double bandFreq(int i) {
 }
 
 static void clearB(Biquad* f) { f->x1 = f->x2 = f->y1 = f->y2 = 0.0; }
+
+/* Write TARGET coefficients and start the ramp — history untouched. */
+static void setPeakT(Biquad* f, double freq, double gdb, double q) {
+    double A = pow(10.0, gdb / 40.0);
+    double w0 = TAU * freq / sr;
+    double cw = cos(w0), sw = sin(w0);
+    double alpha = sw / (2.0 * q);
+    double a0 = 1.0 + alpha / A;
+    f->tb0 = (1.0 + alpha * A) / a0;
+    f->tb1 = (-2.0 * cw) / a0;
+    f->tb2 = (1.0 - alpha * A) / a0;
+    f->ta1 = (-2.0 * cw) / a0;
+    f->ta2 = (1.0 - alpha / A) / a0;
+    f->ramp = COEF_RAMP_BLOCKS;
+}
 
 static void setPeak(Biquad* f, double freq, double gdb, double q) {
     double A = pow(10.0, gdb / 40.0);
@@ -133,6 +182,34 @@ static void setShelf(Biquad* f, double freq, double gdb, bool high) {
     f->b0 = b0 / a0; f->b1 = b1 / a0; f->b2 = b2 / a0;
     f->a1 = a1 / a0; f->a2 = a2 / a0;
     clearB(f);
+}
+
+/* Target-mode shelf — history untouched, ramped at block boundaries. */
+static void setShelfT(Biquad* f, double freq, double gdb, bool high) {
+    double A = pow(10.0, gdb / 40.0);
+    double w0 = TAU * freq / sr;
+    double cw = cos(w0), sw = sin(w0);
+    double alpha = sw / 1.4;
+    double sqA = sqrt(A);
+    double b0, b1, b2, a0, a1, a2;
+    if (!high) {
+        b0 =    A * ((A + 1) - (A - 1) * cw + 2 * sqA * alpha);
+        b1 =  2 * A * ((A - 1) - (A + 1) * cw);
+        b2 =    A * ((A + 1) - (A - 1) * cw - 2 * sqA * alpha);
+        a0 =        (A + 1) + (A - 1) * cw + 2 * sqA * alpha;
+        a1 =   -2 * ((A - 1) + (A + 1) * cw);
+        a2 =        (A + 1) - (A - 1) * cw - 2 * sqA * alpha;
+    } else {
+        b0 =    A * ((A + 1) + (A - 1) * cw + 2 * sqA * alpha);
+        b1 = -2 * A * ((A - 1) + (A + 1) * cw);
+        b2 =    A * ((A + 1) + (A - 1) * cw - 2 * sqA * alpha);
+        a0 =        (A + 1) - (A - 1) * cw + 2 * sqA * alpha;
+        a1 =   2 * ((A - 1) - (A + 1) * cw);
+        a2 =        (A + 1) - (A - 1) * cw - 2 * sqA * alpha;
+    }
+    f->tb0 = b0 / a0; f->tb1 = b1 / a0; f->tb2 = b2 / a0;
+    f->ta1 = a1 / a0; f->ta2 = a2 / a0;
+    f->ramp = COEF_RAMP_BLOCKS;
 }
 
 static inline double runB(Biquad* f, double x) {
@@ -184,10 +261,18 @@ static void applyPendingParams() {
             peqOn[i] = snap[i].on;
             if (snap[i].on && (!peqApplied[i].on || snap[i].f != peqApplied[i].f ||
                                snap[i].g != peqApplied[i].g || snap[i].q != peqApplied[i].q)) {
-                setPeak(&peq[i][0], snap[i].f, snap[i].g, snap[i].q);
-                setPeak(&peq[i][1], snap[i].f, snap[i].g, snap[i].q);
+                /* Build #136 hardening: target-mode recompute + ramp — the
+                   filter HISTORY is never cleared on a parameter change. */
+                setPeakT(&peq[i][0], snap[i].f, snap[i].g, snap[i].q);
+                setPeakT(&peq[i][1], snap[i].f, snap[i].g, snap[i].q);
                 peqApplied[i] = snap[i];
             } else if (!snap[i].on) {
+                if (peqApplied[i].on) {
+                    /* Build #136 hardening: OFF transition GLIDES to identity
+                       instead of snapping off mid-waveform — no click. */
+                    setPeakT(&peq[i][0], snap[i].f, 0.0, snap[i].q);
+                    setPeakT(&peq[i][1], snap[i].f, 0.0, snap[i].q);
+                }
                 peqApplied[i].on = 0;
             }
         }
@@ -203,11 +288,49 @@ static void applyPendingParams() {
         if (grafSeq != s1) continue;
         for (i = 0; i < nbands; i++) {
             if (snap[i] != grafApplied[i]) {
-                setPeak(&graphic[i][0], bandFreq(i), snap[i], 1.0);
-                setPeak(&graphic[i][1], bandFreq(i), snap[i], 1.0);
+                setPeakT(&graphic[i][0], bandFreq(i), snap[i], 1.0);
+                setPeakT(&graphic[i][1], bandFreq(i), snap[i], 1.0);
                 grafApplied[i] = snap[i];
             }
         }
+        break;
+    }
+    /* Build #136 hardening: commit the scalar config snapshot coherently. */
+    for (tries = 0; tries < 4; tries++) {
+        int s1 = cfgSeq;
+        __sync_synchronize();
+        if (s1 & 1) continue;
+        CfgScalar snap2 = cfgTarget;
+        __sync_synchronize();
+        if (cfgSeq != s1) continue;
+        /* Envelope/env state resets ONLY on toggle transitions — a threshold
+           move during playback must never pump the gain envelope. */
+        if (snap2.compOn && !cfgApplied.compOn) compEnvDb = 0.0;
+        if (snap2.limOn && !cfgApplied.limOn) limEnvDb = 0.0;
+        if (snap2.convOn && !cfgApplied.convOn) {
+            /* fresh enable: clear the convolver history on the AUDIO thread */
+            histIdx = 0;
+            memset(histL, 0, sizeof(histL)); memset(histR, 0, sizeof(histR));
+        }
+        if (snap2.bassDb != cfgApplied.bassDb) {
+            setShelfT(&bassSh[0], 100.0, snap2.bassDb, false);
+            setShelfT(&bassSh[1], 100.0, snap2.bassDb, false);
+        }
+        if (snap2.trebleDb != cfgApplied.trebleDb) {
+            setShelfT(&trebSh[0], 8000.0, snap2.trebleDb, true);
+            setShelfT(&trebSh[1], 8000.0, snap2.trebleDb, true);
+        }
+        preampDb = snap2.preampDb;
+        bassDb = snap2.bassDb;
+        trebleDb = snap2.trebleDb;
+        compOn = snap2.compOn;
+        compThreshDb = snap2.compThreshDb; compRatio = snap2.compRatio;
+        compAtkCoef = snap2.compAtkCoef; compRelCoef = snap2.compRelCoef;
+        stWidth = snap2.stWidth; stBalance = snap2.stBalance;
+        stSwap = snap2.stSwap; stMono = snap2.stMono;
+        limOn = snap2.limOn; limThreshDb = snap2.limThreshDb;
+        convOn = snap2.convOn;
+        cfgApplied = snap2;
         break;
     }
 }
@@ -220,18 +343,18 @@ static inline void processFrame(jshort* p) {
         double g = pow(10.0, preampDb / 20.0);
         l *= g; r *= g;
     }
-    /* parametric EQ */
+    /* parametric EQ — held open while a disable-glide still lands */
     for (int i = 0; i < MAXPEQ; i++) {
-        if (peqOn[i]) { l = runB(&peq[i][0], l); r = runB(&peq[i][1], r); }
+        if (peqOn[i] || peq[i][0].ramp > 0) { l = runB(&peq[i][0], l); r = runB(&peq[i][1], r); }
     }
     /* graphic EQ */
     for (int i = 0; i < nbands; i++) {
         l = runB(&graphic[i][0], l);
         r = runB(&graphic[i][1], r);
     }
-    /* shelves */
-    if (bassDb != 0.0) { l = runB(&bassSh[0], l); r = runB(&bassSh[1], r); }
-    if (trebleDb != 0.0) { l = runB(&trebSh[0], l); r = runB(&trebSh[1], r); }
+    /* shelves — held open while a glide back to identity still lands */
+    if (bassDb != 0.0 || bassSh[0].ramp > 0) { l = runB(&bassSh[0], l); r = runB(&bassSh[1], r); }
+    if (trebleDb != 0.0 || trebSh[0].ramp > 0) { l = runB(&trebSh[0], l); r = runB(&trebSh[1], r); }
     /* stereo stage: width, balance, swap, mono */
     if (stMono) { l = r = (l + r) * 0.5; }
     if (stSwap) { double tmp = l; l = r; r = tmp; }
@@ -320,6 +443,26 @@ Java_com_neon_eq_dsp_NeonDsp_init(JNIEnv* env, jobject thiz, jint rate, jint ban
     for (int i = 0; i < MAXPEQ; i++) { peqTarget[i].on = 0; peqTarget[i].f = 1000.0; peqTarget[i].g = 0.0; peqTarget[i].q = 1.0; }
     for (int i = 0; i < MAXBANDS; i++) { grafTarget[i] = 0.0; grafApplied[i] = 0.0; }
     memset(peqApplied, 0, sizeof(peqApplied));
+    /* Build #136 hardening: start every session with ramp disabled and
+       targets == working identity, plus a clean scalar config. Kotlin
+       reapplies the persisted DSP snapshot immediately after init. */
+    for (int i = 0; i < MAXBANDS; i++) for (int ch = 0; ch < 2; ch++) {
+        graphic[i][ch].tb0 = graphic[i][ch].b0; graphic[i][ch].tb1 = graphic[i][ch].b1;
+        graphic[i][ch].tb2 = graphic[i][ch].b2; graphic[i][ch].ta1 = graphic[i][ch].a1;
+        graphic[i][ch].ta2 = graphic[i][ch].a2; graphic[i][ch].ramp = 0;
+    }
+    Biquad* sh[4] = { &bassSh[0], &bassSh[1], &trebSh[0], &trebSh[1] };
+    for (int i = 0; i < 4; i++) {
+        sh[i]->tb0 = sh[i]->b0; sh[i]->tb1 = sh[i]->b1; sh[i]->tb2 = sh[i]->b2;
+        sh[i]->ta1 = sh[i]->a1; sh[i]->ta2 = sh[i]->a2; sh[i]->ramp = 0;
+    }
+    cfgTarget = CfgScalar { 0.0, 0.0, 0.0, 0, -18.0, 4.0, 0.05, 0.005, 1.0, 0.0, 0, 0, 1, -1.0, 0 };
+    cfgApplied = cfgTarget;
+    preampDb = 0.0; bassDb = 0.0; trebleDb = 0.0;
+    compOn = 0; compThreshDb = -18.0; compRatio = 4.0; compEnvDb = 0.0;
+    stWidth = 1.0; stBalance = 0.0; stSwap = 0; stMono = 0;
+    limOn = 1; limThreshDb = -1.0; limEnvDb = 0.0;
+    convOn = 0;
     __sync_synchronize();
 }
 
@@ -327,7 +470,10 @@ JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setPreamp(JNIEnv* env, jobject thiz, jfloat db) {
     double v = (double) db;
     if (!isfinite(v)) return;
-    preampDb = v < -30.0 ? -30.0 : (v > 30.0 ? 30.0 : v);
+    v = v < -30.0 ? -30.0 : (v > 30.0 ? 30.0 : v);
+    int s = cfgSeq; cfgSeq = s + 1; __sync_synchronize();
+    cfgTarget.preampDb = v;
+    __sync_synchronize(); cfgSeq = s + 2;
 }
 
 JNIEXPORT void JNICALL
@@ -371,22 +517,44 @@ Java_com_neon_eq_dsp_NeonDsp_setParametric(JNIEnv* env, jobject thiz, jint slot,
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setShelves(JNIEnv* env, jobject thiz, jfloat bass, jfloat treble) {
-    bassDb = (double) bass; trebleDb = (double) treble;
-    setShelf(&bassSh[0], 100.0, bassDb, false); setShelf(&bassSh[1], 100.0, bassDb, false);
-    setShelf(&trebSh[0], 8000.0, trebleDb, true); setShelf(&trebSh[1], 8000.0, trebleDb, true);
+    double bv = (double) bass, tv = (double) treble;
+    if (!isfinite(bv)) bv = 0.0;
+    if (!isfinite(tv)) tv = 0.0;
+    /* Build #136 hardening: v136 rewrote shelf coefficients field-by-field ON
+       THE UI THREAD (torn coefficients = clicks) and cleared filter history on
+       every change (audible reset transient). Now: only the target gains are
+       committed under the seqlock; the audio thread recomputes coefficients
+       coherently at the block boundary and ramps them — history preserved. */
+    bv = bv < -30.0 ? -30.0 : (bv > 30.0 ? 30.0 : bv);
+    tv = tv < -30.0 ? -30.0 : (tv > 30.0 ? 30.0 : tv);
+    int s = cfgSeq; cfgSeq = s + 1; __sync_synchronize();
+    cfgTarget.bassDb = bv; cfgTarget.trebleDb = tv;
+    __sync_synchronize(); cfgSeq = s + 2;
 }
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setCompressor(JNIEnv* env, jobject thiz, jboolean on, jfloat threshDb,
                                           jfloat ratio, jfloat atkMs, jfloat relMs) {
-    compOn = on == JNI_TRUE;
-    compThreshDb = (double) threshDb;
-    compRatio = ratio > 1.0f ? (double) ratio : 4.0;
-    double atk = atkMs > 0.1f ? atkMs : 5.0f;
-    double rel = relMs > 1.0f ? relMs : 150.0f;
-    compAtkCoef = 1.0 - exp(-1.0 / (atk * sr / 1000.0));
-    compRelCoef = 1.0 - exp(-1.0 / (rel * sr / 1000.0));
-    compEnvDb = 0.0;
+    double th = (double) threshDb;
+    if (!isfinite(th)) th = -18.0;
+    if (th < -60.0) th = -60.0; else if (th > 0.0) th = 0.0;
+    /* Build #136 hardening: whole set committed coherently — the audio thread
+       can never mix a new threshold with the old ratio/time constants. The
+       gain envelope now resets ONLY on the OFF→ON transition, not on every
+       threshold move (v136 pumped audibly during slider drags). */
+    double ra = (double) ratio;
+    if (!isfinite(ra) || ra < 1.0) ra = 4.0;
+    double atk = atkMs > 0.1f ? (double) atkMs : 5.0;
+    double rel = relMs > 1.0f ? (double) relMs : 150.0;
+    double atkC = 1.0 - exp(-1.0 / (atk * sr / 1000.0));
+    double relC = 1.0 - exp(-1.0 / (rel * sr / 1000.0));
+    int s = cfgSeq; cfgSeq = s + 1; __sync_synchronize();
+    cfgTarget.compOn = on == JNI_TRUE;
+    cfgTarget.compThreshDb = th;
+    cfgTarget.compRatio = ra;
+    cfgTarget.compAtkCoef = atkC;
+    cfgTarget.compRelCoef = relC;
+    __sync_synchronize(); cfgSeq = s + 2;
 }
 
 JNIEXPORT void JNICALL
@@ -395,33 +563,51 @@ Java_com_neon_eq_dsp_NeonDsp_setStereo(JNIEnv* env, jobject thiz, jfloat width, 
     double wv = (double) width;
     if (!isfinite(wv)) wv = 1.0;
     if (wv < 0.0) wv = 0.0; else if (wv > 4.0) wv = 4.0;
-    stWidth = wv > 0.0 ? wv : 1.0;
-    stBalance = balance < -1.0f ? -1.0 : (balance > 1.0f ? 1.0 : (double) balance);
-    stSwap = swap == JNI_TRUE;
-    stMono = mono == JNI_TRUE;
+    double bal = (double) balance;
+    if (!isfinite(bal)) bal = 0.0;
+    /* Build #136 hardening: width/balance/swap/mono commit as ONE coherent
+       snapshot — never width-applied-with-old-balance. */
+    if (bal < -1.0) bal = -1.0; else if (bal > 1.0) bal = 1.0;
+    int s = cfgSeq; cfgSeq = s + 1; __sync_synchronize();
+    cfgTarget.stWidth = wv > 0.0 ? wv : 1.0;
+    cfgTarget.stBalance = bal;
+    cfgTarget.stSwap = swap == JNI_TRUE;
+    cfgTarget.stMono = mono == JNI_TRUE;
+    __sync_synchronize(); cfgSeq = s + 2;
 }
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setLimiter(JNIEnv* env, jobject thiz, jboolean on, jfloat threshDb) {
-    limOn = on == JNI_TRUE;
     double tv = (double) threshDb;
     if (!isfinite(tv)) tv = -1.0;
     if (tv < -60.0) tv = -60.0; else if (tv > 0.0) tv = 0.0;
-    limThreshDb = tv;
-    limEnvDb = 0.0;
+    /* Build #136 hardening: envelope resets only on OFF→ON, not per move. */
+    int s = cfgSeq; cfgSeq = s + 1; __sync_synchronize();
+    cfgTarget.limOn = on == JNI_TRUE;
+    cfgTarget.limThreshDb = tv;
+    __sync_synchronize(); cfgSeq = s + 2;
 }
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_setConvolverEnabled(JNIEnv* env, jobject thiz, jboolean on) {
-    convOn = on == JNI_TRUE;
-    histIdx = 0;
-    memset(histL, 0, sizeof(histL)); memset(histR, 0, sizeof(histR));
+    /* Build #136 hardening: the enable flag commits through the cfg seqlock;
+       the history reset happens ON THE AUDIO THREAD at the OFF→ON transition
+       (v136 reset convolver state from the UI thread mid-frame). */
+    int s = cfgSeq; cfgSeq = s + 1; __sync_synchronize();
+    cfgTarget.convOn = on == JNI_TRUE;
+    __sync_synchronize(); cfgSeq = s + 2;
 }
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_loadIr(JNIEnv* env, jobject thiz, jfloatArray left, jfloatArray right) {
-    jsize n = env->GetArrayLength(left);
-    if (n > MAXIR) n = MAXIR;
+    if (left == NULL || right == NULL) return;
+    jsize nL = env->GetArrayLength(left);
+    jsize nR = env->GetArrayLength(right);
+    /* Build #136 hardening: mismatched L/R lengths use the SHORTER side
+       (v136 indexed both with n from the LEFT array — oversized right arrays
+       read out of bounds into irR). */
+    jsize n = nL < nR ? nL : nR;
+    if (n > MAXIR) n = MAXIR;   /* oversized IR: truncate, never overflow */
     jfloat* l = env->GetFloatArrayElements(left, NULL);
     jfloat* r = env->GetFloatArrayElements(right, NULL);
     if (l == NULL || r == NULL) {   /* Build #136: pinning can fail — never deref NULL */
@@ -429,12 +615,22 @@ Java_com_neon_eq_dsp_NeonDsp_loadIr(JNIEnv* env, jobject thiz, jfloatArray left,
         if (r != NULL) env->ReleaseFloatArrayElements(right, r, JNI_ABORT);
         return;
     }
-    for (int i = 0; i < n; i++) { irL[i] = l[i]; irR[i] = r[i]; }
+    /* Build #136 hardening: zero the previous taps FIRST so a stale long IR
+       never rings under a shorter new one, sanitize NaN/Inf to 0, then
+       release-store the new tap count so the audio thread can never observe
+       new taps with partially-written arrays. No audio-side state (histIdx,
+       histL/R) is touched from this thread anymore. */
+    memset(irL, 0, sizeof(irL));
+    memset(irR, 0, sizeof(irR));
+    for (int i = 0; i < n; i++) {
+        float lv = l[i], rv = r[i];
+        if (!isfinite(lv)) lv = 0.0f;
+        if (!isfinite(rv)) rv = 0.0f;
+        irL[i] = lv; irR[i] = rv;
+    }
     env->ReleaseFloatArrayElements(left, l, JNI_ABORT);
     env->ReleaseFloatArrayElements(right, r, JNI_ABORT);
-    irTaps = (int) n;
-    histIdx = 0;
-    memset(histL, 0, sizeof(histL)); memset(histR, 0, sizeof(histR));
+    __atomic_store_n(&irTaps, (int) n, __ATOMIC_RELEASE);
 }
 
 JNIEXPORT void JNICALL
@@ -443,6 +639,12 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
     if (p == NULL) return;
     jniFramesIn += frames;
     applyPendingParams();   /* whole-block commit: audio never sees partial configs */
+    /* Build #136 hardening: bounded coefficient glide — one step per block,
+     * only while a ramp is in flight. Lock-free, allocation-free, and the
+     * filter history is never disturbed. */
+    for (int i = 0; i < nbands; i++) { rampB(&graphic[i][0]); rampB(&graphic[i][1]); }
+    for (int i = 0; i < MAXPEQ; i++) { rampB(&peq[i][0]); rampB(&peq[i][1]); }
+    rampB(&bassSh[0]); rampB(&bassSh[1]); rampB(&trebSh[0]); rampB(&trebSh[1]);
     /* input meters — measured on raw captured PCM BEFORE any processing */
     {
         double sum = 0.0, sumL = 0.0, sumR = 0.0; int pk = 0, pkL = 0, pkR = 0;

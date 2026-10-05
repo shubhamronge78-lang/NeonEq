@@ -62,6 +62,10 @@ class CaptureEqService : Service() {
         @Volatile var loopMs = 0.0
         @Volatile var sessionStartedAt = 0L
         @Volatile var sessionRouteChanges = 0
+        // Build #136 hardening: bounded-recovery telemetry (spec 12) — the UI
+        // and diagnostics export read these; counters only, never fabricated.
+        @Volatile var recoveryCount = 0
+        @Volatile var lastRecoveryReason = ""
         @Volatile var sessionBufferChanges = 0
         @Volatile var underruns = 0
         @Volatile var noEligiblePlayback = false
@@ -148,13 +152,22 @@ class CaptureEqService : Service() {
             sessionRouteChanges = 0
             sessionBufferChanges = 0
             underruns = 0
+            recoveryCount = 0
+            lastRecoveryReason = ""
             noEligiblePlayback = false
-            thread = Thread { captureLoop() }.apply { start() }
+            // Build #136 hardening: session token — a stale captureLoop whose
+            // cleanup tail outlives the start-join can never clobber the NEW
+            // session's running/state flags with its finally block.
+            val mySession = ++loopSession
+            thread = Thread { captureLoop(mySession) }.apply { start() }
         }
         return START_NOT_STICKY
     }
 
-    private fun captureLoop() {
+    // Build #136 hardening: bumped on the service thread only; read by the loop thread.
+    @Volatile private var loopSession = 0
+
+    private fun captureLoop(mySession: Int) {
         var recorder: AudioRecord? = null
         var track: AudioTrack? = null
         var projection: MediaProjection? = null
@@ -377,14 +390,14 @@ class CaptureEqService : Service() {
                         if (bufferMode == "low") {
                             bufferMode = "balanced"
                             eng.setCaptureBufferMode("balanced")
-                            routeNote = "Buffer automatically changed: LOW → BALANCED (sustained underruns)"
+                            routeNote = "Buffer automatically changed: LOW → BALANCED (sustained underruns)"; recoveryCount++; lastRecoveryReason = "buffer escalation LOW->BALANCED"
                             lastBufferChange = "LOW → BALANCED"
                             sessionBufferChanges++
                             notifyBufferAdjusted("LOW → BALANCED")
                         } else if (bufferMode == "balanced") {
                             bufferMode = "stable"
                             eng.setCaptureBufferMode("stable")
-                            routeNote = "Buffer automatically changed: BALANCED → STABLE (sustained underruns)"
+                            routeNote = "Buffer automatically changed: BALANCED → STABLE (sustained underruns)"; recoveryCount++; lastRecoveryReason = "buffer escalation BALANCED->STABLE"
                             lastBufferChange = "BALANCED → STABLE"
                             sessionBufferChanges++
                             notifyBufferAdjusted("BALANCED → STABLE")
@@ -430,6 +443,8 @@ class CaptureEqService : Service() {
                                     outLatencyMs = try { rebuilt.bufferSizeInFrames * 1000.0 / sr } catch (t: Throwable) { 0.0 }
                                     try { rebuilt.setVolume(outVolume) } catch (t: Throwable) { }
                                     rebuilt.play()
+                                    recoveryCount++
+                                    lastRecoveryReason = "route rebuild " + (oldRouteLine ?: "?") + " -> " + AudioPath.outputDevice(this)
                                     routeNote = "ROUTE CHANGED: " + (oldRouteLine ?: "?") + " to " + AudioPath.outputDevice(this) +
                                         " | output rate " + (oldRateLine ?: "?") + " → " + newSr + "Hz — track rebuilt at capture rate " + sr + "Hz, DSP state preserved"
                                     // Build #122: report the new route only AFTER the rebuild
@@ -455,9 +470,10 @@ class CaptureEqService : Service() {
                 }
             }
         } catch (t: Throwable) {
-            lastError = t.message ?: t.toString()
+            if (loopSession == mySession) lastError = t.message ?: t.toString()
         } finally {
-            running = false
+            // Only the CURRENT session's loop may clear live state.
+            if (loopSession == mySession) running = false
             try { recorder?.stop() } catch (t: Throwable) { }
             try { recorder?.release() } catch (t: Throwable) { }
             try { track?.stop() } catch (t: Throwable) { }
@@ -493,6 +509,8 @@ class CaptureEqService : Service() {
                 sess.put("sr", captureSampleRate)
                 sess.put("route", AudioPath.outputDevice(this))
                 sess.put("route_changes", sessionRouteChanges)
+                sess.put("recovery_count", recoveryCount)
+                sess.put("last_recovery_reason", lastRecoveryReason)
                 sess.put("buffer_changes", sessionBufferChanges)
                 sess.put("bypass", bypass)
                 sess.put("error", lastError ?: "none")

@@ -73,6 +73,12 @@ object Presets {
     /** Resample a 10-band built-in to any band count (log-frequency spacing). */
     fun builtinForCount(name: String, count: Int): ShortArray {
         val base = BUILTIN_QUICK.firstOrNull { it.first == name }?.second ?: return ShortArray(count)
+        return resampleBase(base, count)
+    }
+
+    // Build #136 hardening: the testable core of the resampler (spec 26) —
+    // PresetValidationTest pins the >16 kHz branch directly.
+    fun resampleBase(base: IntArray, count: Int): ShortArray {
         val freqs10 = doubleArrayOf(31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0)
         val out = ShortArray(count)
         for (i in 0 until count) {
@@ -140,24 +146,38 @@ object Presets {
     }
 
     // Parse an exported JSON string back into CustomPreset objects.
-    // Returns empty list on any parse failure — caller handles conflict resolution.
+    // Build #136 hardening: per-preset validation — one malformed preset is
+    // skipped while the healthy ones import; every field is range-clamped so
+    // an impossible value can never reach the DSP; a broken document yields
+    // an empty list (the previous valid configuration is always retained).
     fun importFromJson(json: String): List<CustomPreset> {
-        return try {
+        val out = mutableListOf<CustomPreset>()
+        try {
             val root = org.json.JSONObject(json)
             val arr = root.optJSONArray("presets") ?: return emptyList()
-            (0 until arr.length()).mapNotNull { i ->
-                val obj = arr.getJSONObject(i)
-                val name = obj.getString("name")
-                val levelsArr = obj.getJSONArray("levels")
-                val levels = ShortArray(31) { idx -> levelsArr.optInt(idx, 0).toShort() }
-                CustomPreset(
-                    name = name,
-                    levels = levels,
-                    bassBoost = obj.optInt("bass", 0),
-                    virtualizer = obj.optInt("virt", 0),
-                    loudness = obj.optInt("loud", 0)
-                )
+            for (i in 0 until arr.length()) {
+                try {
+                    val obj = arr.getJSONObject(i)
+                    val name = obj.optString("name", "").trim()
+                    if (name.isEmpty()) continue
+                    val levelsArr = obj.optJSONArray("levels") ?: continue
+                    // Band levels: UI contract is -15..+20 dB per band.
+                    val levels = ShortArray(31) { idx ->
+                        levelsArr.optInt(idx, 0).coerceIn(-15, 20).toShort()
+                    }
+                    out.add(CustomPreset(
+                        name = name.take(40),
+                        levels = levels,
+                        // Effect strengths: app scale 0..1000, loudness 0..300.
+                        bassBoost = obj.optInt("bass", 0).coerceIn(0, 1000),
+                        virtualizer = obj.optInt("virt", 0).coerceIn(0, 1000),
+                        loudness = obj.optInt("loud", 0).coerceIn(0, 300)
+                    ))
+                } catch (_: Throwable) {
+                    // one bad preset must never abort the whole import
+                }
             }
-        } catch (_: Throwable) { emptyList() }
+        } catch (_: Throwable) { return emptyList() }
+        return out
     }
 }

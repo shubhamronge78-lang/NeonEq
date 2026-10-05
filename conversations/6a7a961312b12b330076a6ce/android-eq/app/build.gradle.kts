@@ -80,4 +80,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    // Build #136 hardening (spec 26): real JVM unit tests for preset validation.
+    testImplementation("junit:junit:4.13.2")
+    // org.json runs on the JVM for tests (framework stubs throw on-device mocks)
+    testImplementation("org.json:json:20240303")
 }
