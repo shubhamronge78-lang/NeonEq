@@ -630,7 +630,7 @@ Java_com_neon_eq_dsp_NeonDsp_loadIr(JNIEnv* env, jobject thiz, jfloatArray left,
     }
     env->ReleaseFloatArrayElements(left, l, JNI_ABORT);
     env->ReleaseFloatArrayElements(right, r, JNI_ABORT);
-    __atomic_store_n(&irTaps, (int) n, __ATOMIC_RELEASE);
+    irTaps.store((int) n, std::memory_order_release);
 }
 
 JNIEXPORT void JNICALL
