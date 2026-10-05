@@ -88,7 +88,7 @@ class PresetValidationTest {
     }
 
     @Test
-    fun `boundary values are normalized to the -15..+20 contract`() {
+    fun `boundary values normalize to the 15dB floor and 20dB ceiling`() {
         // Directed boundary sweep: input -> expected stored value.
         // The clamp is the safety boundary between imported JSON and the DSP.
         val inputs = listOf(-20, -15, -14, 0, 19, 20, 21, 31, 999999, -999999)
