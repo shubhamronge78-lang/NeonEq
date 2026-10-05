@@ -104,18 +104,21 @@ class PresetValidationTest {
 
     @Test
     fun `NaN and Infinity can never reach the DSP through JSON import`() {
-        // Bare NaN/Infinity are not valid JSON — org.json rejects the document
-        // wholesale and the importer returns an empty list (safe reject).
-        assertEquals(emptyList<Presets.CustomPreset>(), Presets.importFromJson(
-            """{"presets":[{"name":"nan","levels":[NaN,0,0,0,0,0,0,0,0,0]}]}"""))
-        assertEquals(emptyList<Presets.CustomPreset>(), Presets.importFromJson(
-            """{"presets":[{"name":"inf","levels":[Infinity,0,0,0,0,0,0,0,0,0]}]}"""))
-        // As strings they parse but optInt falls back to 0 — never the raw token.
+        // Measured org.json behavior: bare NaN/Infinity tokens are ACCEPTED by
+        // the parser as Double.NaN / Double.POSITIVE_INFINITY. The importer is
+        // still safe — optInt coerces NaN to 0, and Infinity to Int.MAX_VALUE
+        // which the -15..+20 clamp pins to +20. No invalid value escapes.
+        val bare = Presets.importFromJson(
+            """{"presets":[{"name":"nan","levels":[NaN,Infinity,0,0,0,0,0,0,0,0]}]}""")
+        assertEquals(1, bare.size)
+        assertEquals(0, bare[0].levels[0].toInt())    // NaN  -> 0 (in range)
+        assertEquals(20, bare[0].levels[1].toInt())   // +Inf -> clamped to ceiling
+        // String form behaves identically: parse -> coerce -> clamp.
         val asString = Presets.importFromJson(
             """{"presets":[{"name":"str","levels":["NaN","Infinity",0,0,0,0,0,0,0,0]}]}""")
         assertEquals(1, asString.size)
         assertEquals(0, asString[0].levels[0].toInt())
-        assertEquals(0, asString[0].levels[1].toInt())
+        assertEquals(20, asString[0].levels[1].toInt())
     }
 
     @Test
