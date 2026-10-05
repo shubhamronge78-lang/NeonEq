@@ -23,7 +23,7 @@ struct Biquad {
     double b0, b1, b2, a1, a2;      /* working coefficients (audio thread) */
     double x1, x2, y1, y2;          /* filter history — NEVER cleared on param change */
     /* Build #136 hardening: target coefficients + bounded ramp. Parameter
-       changes write tb*/ta* and start a short ramp; the working coefficients
+       changes write the tb/ta targets and start a short ramp; the working coefficients
        glide to target at block boundaries. No history reset, no click, no
        zipper noise — and the audio thread stays lock-free and allocation-free. */
     double tb0, tb1, tb2, ta1, ta2;
