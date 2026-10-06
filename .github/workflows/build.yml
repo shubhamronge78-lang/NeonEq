@@ -33,8 +33,9 @@ jobs:
     - name: Native DSP host self-test (ASan/UBSan)
       working-directory: conversations/6a7a961312b12b330076a6ce/android-eq
       run: |
+        # Single TU: harness.cpp #includes the real neondsp.cpp directly
         g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-          -I tools/dspharness tools/dspharness/harness.cpp app/src/main/cpp/neondsp.cpp \
+          -I tools/dspharness -I . tools/dspharness/harness.cpp \
           -o /tmp/dsp_harness -lpthread
         /tmp/dsp_harness
 

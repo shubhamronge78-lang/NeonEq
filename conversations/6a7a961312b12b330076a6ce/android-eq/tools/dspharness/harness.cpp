@@ -1,4 +1,8 @@
 /* SonicCore native DSP host self-test (runs in CI, ASan+UBSan).
+   v139: sections [9]-[13] add the permanent low-shelf regression (RBJ Jury
+   stability criterion asserted on target coefficients for EVERY gain step,
+   plus an amplification no-op guard), high-shelf sweep, PEQ low-freq high-Q
+   extremes with stability checks, comp/limiter extremes, stereo extremes.
    Drives the REAL JNI entry points of app/src/main/cpp/neondsp.cpp through a
    stub jni.h: silence, normal PCM, full-scale PCM, 200-block rapid parameter
    churn, extreme-but-valid max-gain stack, repeated bypass toggles, convolver
@@ -11,28 +15,14 @@
    to the DSP must keep this harness green. */
 #include "jni.h"
 #include <cstdio>
+/* Single translation unit: the REAL production DSP is compiled in, so the
+   harness can also assert on internal filter coefficient stability. */
+#include "app/src/main/cpp/neondsp.cpp"  // path from android-eq CWD; -I. resolves via -include trick
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
-extern "C" {
-void Java_com_neon_eq_dsp_NeonDsp_init(JNIEnv*, jobject, jint, jint);
-void Java_com_neon_eq_dsp_NeonDsp_setPreamp(JNIEnv*, jobject, jfloat);
-void Java_com_neon_eq_dsp_NeonDsp_setGraphicGains(JNIEnv*, jobject, jfloatArray);
-void Java_com_neon_eq_dsp_NeonDsp_setParametric(JNIEnv*, jobject, jint, jboolean, jfloat, jfloat, jfloat);
-void Java_com_neon_eq_dsp_NeonDsp_setShelves(JNIEnv*, jobject, jfloat, jfloat);
-void Java_com_neon_eq_dsp_NeonDsp_setCompressor(JNIEnv*, jobject, jboolean, jfloat, jfloat, jfloat, jfloat);
-void Java_com_neon_eq_dsp_NeonDsp_setStereo(JNIEnv*, jobject, jfloat, jfloat, jboolean, jboolean);
-void Java_com_neon_eq_dsp_NeonDsp_setLimiter(JNIEnv*, jobject, jboolean, jfloat);
-void Java_com_neon_eq_dsp_NeonDsp_setConvolverEnabled(JNIEnv*, jobject, jboolean);
-void Java_com_neon_eq_dsp_NeonDsp_loadIr(JNIEnv*, jobject, jfloatArray, jfloatArray);
-void Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv*, jobject, jshortArray, jint);
-jlong Java_com_neon_eq_dsp_NeonDsp_clipCount(JNIEnv*, jobject);
-jlong Java_com_neon_eq_dsp_NeonDsp_nanCount(JNIEnv*, jobject);
-jlong Java_com_neon_eq_dsp_NeonDsp_processedFrames(JNIEnv*, jobject);
-void Java_com_neon_eq_dsp_NeonDsp_resetStats(JNIEnv*, jobject);
-void Java_com_neon_eq_dsp_NeonDsp_spectrum(JNIEnv*, jobject, jfloatArray, jint);
-}
+
 HostArr g_hostArrays[512]; int g_hostArrCount = 0;
 static JNIEnv env;
 static jobject thiz = nullptr;
@@ -133,6 +123,128 @@ int main() {
       Java_com_neon_eq_dsp_NeonDsp_spectrum(&env, thiz, b, 0);
       bool finite = true; for (int i = 0; i < 64; i++) if (!std::isfinite(bins[i])) finite = false;
       CHECK(finite, "spectrum bins finite"); }
+
+    printf("[9] v138 REGRESSION: low-shelf coefficient stability, full-range sweep\n");
+    /* The v138 bug: setShelfT wrote a2 with b2's signs -> for most gains the
+       TARGET coefficients violate the 2nd-order stability criterion and the
+       filter blows up within a block. Assert RBJ stability (Jury:
+       |a2| < 1 && |a1| < 1 + a2) on the TARGET of every gain step, and that
+       the shelf genuinely amplifies (guards a no-op regression too). */
+    {
+        Java_com_neon_eq_dsp_NeonDsp_setLimiter(&env, thiz, JNI_FALSE, -1.0f);
+        Java_com_neon_eq_dsp_NeonDsp_setPreamp(&env, thiz, 0.0f);
+        bool stable = true, finiteAll = true, amplifies = false;
+        for (int g = -20; g <= 20; g++) {
+            Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, (jfloat) g, 0.0f);
+            Biquad* b = &bassSh[0];
+            if (!isfinite(b->tb0) || !isfinite(b->tb1) || !isfinite(b->tb2) ||
+                !isfinite(b->ta1) || !isfinite(b->ta2) ||
+                fabs(b->ta2) >= 1.0 || fabs(b->ta1) >= 1.0 + b->ta2) {
+                printf("  FAIL: bass shelf target UNSTABLE at %+d dB (a1=%.6f a2=%.6f)\n",
+                       g, b->ta1, b->ta2);
+                stable = false; break;
+            }
+            /* glide to target over its blocks while feeding a 60 Hz tone */
+            double peakIn = 0.0, peakOut = 0.0;
+            for (int blk = 0; blk < 12; blk++) {
+                for (int i = 0; i < FRAMES; i++) {
+                    double v = 1000.0 * sin(2*M_PI*60.0*i/SR);
+                    pcm[2*i]=(jshort)v; pcm[2*i+1]=(jshort)v;
+                    if (fabs(v) > peakIn) peakIn = fabs(v);
+                }
+                Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, buf, FRAMES);
+                for (int i = 0; i < FRAMES*2; i++) {
+                    if (!std::isfinite((double) pcm[i])) finiteAll = false;
+                    if (fabs((double) pcm[i]) > peakOut) peakOut = fabs((double) pcm[i]);
+                }
+            }
+            if (g == 20 && peakOut > peakIn * 5.0) amplifies = true;
+            if (peakOut > 1e9) { finiteAll = false; printf("  FAIL: shelf runaway at %+d dB: peak=%g\n", g, peakOut); break; }
+        }
+        CHECK(stable, "bass shelf targets stable across -20..+20 dB sweep");
+        CHECK(finiteAll, "bass shelf sweep: output finite and bounded");
+        CHECK(amplifies, "bass shelf +20 dB genuinely amplifies (no-op guard)");
+    }
+
+    printf("[10] high-shelf coefficient stability, full-range sweep\n");
+    {
+        bool stable = true;
+        for (int g = -20; g <= 20; g++) {
+            Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, 0.0f, (jfloat) g);
+            Biquad* b = &trebSh[0];
+            if (!isfinite(b->tb0) || !isfinite(b->tb1) || !isfinite(b->tb2) ||
+                !isfinite(b->ta1) || !isfinite(b->ta2) ||
+                fabs(b->ta2) >= 1.0 || fabs(b->ta1) >= 1.0 + b->ta2) {
+                printf("  FAIL: treble shelf target UNSTABLE at %+d dB (a1=%.6f a2=%.6f)\n",
+                       g, b->ta1, b->ta2);
+                stable = false; break;
+            }
+            for (int blk = 0; blk < 12; blk++) {
+                for (int i = 0; i < FRAMES; i++) { pcm[2*i]=(jshort)(8000.0*sin(2*M_PI*9000*i/SR)); pcm[2*i+1]=pcm[2*i]; }
+                Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, buf, FRAMES);
+                for (int i = 0; i < FRAMES*2; i++) if (!std::isfinite((double) pcm[i])) stable = false;
+            }
+        }
+        CHECK(stable, "treble shelf targets stable and output finite, -20..+20 dB");
+    }
+
+    printf("[11] PEQ extremes: low-frequency high-Q\n");
+    {
+        bool ok = true;
+        const float qs[3] = {0.3f, 4.0f, 12.0f};
+        for (int qi = 0; qi < 3; qi++) for (int g = -20; g <= 20; g += 4) {
+            Java_com_neon_eq_dsp_NeonDsp_setParametric(&env, thiz, 0, JNI_TRUE, 40.0f, (jfloat) g, qs[qi]);
+            for (int blk = 0; blk < 12; blk++) {
+                for (int i = 0; i < FRAMES; i++) { pcm[2*i]=(jshort)(12000.0*sin(2*M_PI*70*i/SR)); pcm[2*i+1]=pcm[2*i]; }
+                Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, buf, FRAMES);
+                for (int i = 0; i < FRAMES*2; i++) if (!std::isfinite((double) pcm[i])) ok = false;
+            }
+            Biquad* b = &peq[0][0];
+            if (fabs(b->ta2) >= 1.0 || fabs(b->ta1) >= 1.0 + b->ta2) { ok = false; printf("  FAIL: PEQ unstable at q=%.1f g=%d\n", qs[qi], g); }
+        }
+        Java_com_neon_eq_dsp_NeonDsp_setParametric(&env, thiz, 0, JNI_FALSE, 1000.0f, 0.0f, 1.0f);
+        CHECK(ok, "PEQ 40 Hz Q0.3-12 sweep -20..+20 dB: stable and finite");
+    }
+
+    printf("[12] compressor + limiter extremes on loud input\n");
+    {
+        bool ok = true;
+        Java_com_neon_eq_dsp_NeonDsp_setCompressor(&env, thiz, JNI_TRUE, -60.0f, 20.0f, 0.01f, 2000.0f);
+        Java_com_neon_eq_dsp_NeonDsp_setLimiter(&env, thiz, JNI_TRUE, -60.0f);
+        for (int blk = 0; blk < 60; blk++) {
+            for (int i = 0; i < FRAMES; i++) { pcm[2*i]=(jshort)(32000.0*sin(2*M_PI*(50+blk*13)*i/SR)); pcm[2*i+1]=(jshort)(32000.0*sin(2*M_PI*(50+blk*13)*i/SR)); }
+            Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, buf, FRAMES);
+            for (int i = 0; i < FRAMES*2; i++) if (!std::isfinite((double) pcm[i])) ok = false;
+        }
+        Java_com_neon_eq_dsp_NeonDsp_setCompressor(&env, thiz, JNI_TRUE, -6.0f, 2.0f, 5.0f, 50.0f);
+        Java_com_neon_eq_dsp_NeonDsp_setLimiter(&env, thiz, JNI_TRUE, -1.0f);
+        for (int blk = 0; blk < 60; blk++) {
+            for (int i = 0; i < FRAMES; i++) { pcm[2*i]=(jshort)(32000.0*sin(2*M_PI*(50+blk*13)*i/SR)); pcm[2*i+1]=(jshort)(32000.0*sin(2*M_PI*(50+blk*13)*i/SR)); }
+            Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, buf, FRAMES);
+            for (int i = 0; i < FRAMES*2; i++) if (!std::isfinite((double) pcm[i])) ok = false;
+        }
+        CHECK(ok, "extreme comp/limiter settings on full-scale input: finite");
+        CHECK(Java_com_neon_eq_dsp_NeonDsp_nanCount(&env, thiz) == 0, "nanEvents still zero after extremes");
+    }
+
+    printf("[13] stereo width/balance/mono extremes\n");
+    {
+        bool ok = true;
+        const float ws[3] = {0.0f, 1.0f, 2.0f};
+        const float bs[3] = {-1.0f, 0.0f, 1.0f};
+        for (int wi = 0; wi < 3; wi++) for (int bi = 0; bi < 3; bi++) {
+            Java_com_neon_eq_dsp_NeonDsp_setStereo(&env, thiz, ws[wi], bs[bi], JNI_TRUE, JNI_FALSE);
+            for (int blk = 0; blk < 6; blk++) {
+                for (int i = 0; i < FRAMES; i++) { pcm[2*i]=(jshort)(20000.0*sin(2*M_PI*300*i/SR)); pcm[2*i+1]=(jshort)(-14000.0*sin(2*M_PI*300*i/SR)); }
+                Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, buf, FRAMES);
+                for (int i = 0; i < FRAMES*2; i++) if (!std::isfinite((double) pcm[i])) ok = false;
+            }
+            Java_com_neon_eq_dsp_NeonDsp_setStereo(&env, thiz, ws[wi], bs[bi], JNI_FALSE, JNI_TRUE);
+            for (int blk = 0; blk < 6; blk++) Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, buf, FRAMES);
+        }
+        Java_com_neon_eq_dsp_NeonDsp_setStereo(&env, thiz, 1.0f, 0.0f, JNI_FALSE, JNI_FALSE);
+        CHECK(ok && Java_com_neon_eq_dsp_NeonDsp_nanCount(&env, thiz) == 0, "stereo width/balance/swap/mono extremes: finite");
+    }
 
     printf("\n%s (%d failures)\n", fails ? "HARNESS FAIL" : "HARNESS PASS", fails);
     return fails ? 1 : 0;
