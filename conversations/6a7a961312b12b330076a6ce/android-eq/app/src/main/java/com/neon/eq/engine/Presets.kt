@@ -74,8 +74,8 @@ object Presets {
      *  negative indices (not found) and both directions. -1 = no presets. */
     @JvmStatic fun stepIndex(count: Int, current: Int, dir: Int): Int {
         if (count <= 0) return -1
-        val base = if (current < 0) 0 else current
-        return ((base + dir) % count + count) % count
+        if (current < 0) return 0   // not found -> start at the first preset
+        return ((current + dir) % count + count) % count
     }
 
     /** Resample a 10-band built-in to any band count (log-frequency spacing). */

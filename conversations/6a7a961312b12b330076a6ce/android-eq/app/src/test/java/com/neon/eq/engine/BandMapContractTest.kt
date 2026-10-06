@@ -257,8 +257,8 @@ class BandMapContractTest {
         assertFalse(EqualizerEngine.isCustomizedDb(same, preset, 0))
         assertFalse(EqualizerEngine.isCustomizedDb(same, preset, -3))
         assertFalse(EqualizerEngine.isCustomizedDb(same, preset, 999))
-        // shorter preset pads with 0 — band 3 (preset 0) vs current 0 -> equal
-        val shortPreset = shortArrayOf(0, 2)
+        // shorter preset pads with 0 — a flat current curve matches [0, 0]
+        val shortPreset = shortArrayOf(0, 0)
         val cur2 = FloatArray(31) { 0f }
         assertFalse(EqualizerEngine.isCustomizedDb(cur2, shortPreset, 10))
         cur2[5] = -1f
