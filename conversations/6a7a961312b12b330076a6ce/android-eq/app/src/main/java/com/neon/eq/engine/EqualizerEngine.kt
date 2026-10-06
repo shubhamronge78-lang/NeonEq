@@ -44,6 +44,16 @@ class EqualizerEngine private constructor(context: Context) {
                 indices[j] * (count - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
             }
 
+        /** v142: total sanitizer for pasted/imported EQ level arrays — any
+            length (short/oversized), NaN/Inf, or out-of-range value becomes a
+            safe in-range float in the 31-slot UI curve space. The DSP range
+            stays -15..+20 dB; invalid input can never reach the engine. */
+        @JvmStatic fun sanitizeEqLevelsDb(raw: FloatArray): FloatArray =
+            FloatArray(31) { i ->
+                val v = raw.getOrNull(i) ?: 0f
+                if (v.isFinite()) v.coerceIn(-15f, 20f) else 0f
+            }
+
         /** Generic fallback band table so sliders still render without a real
             Equalizer attached (moved from the instance method, same math). */
         @JvmStatic fun fallbackBands(count: Int): List<BandInfo> {

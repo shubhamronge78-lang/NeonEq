@@ -152,4 +152,74 @@ class BandMapContractTest {
             for (j in b2.indices) p2[j]
         }
     }
+
+    // ── v142 §37: mode-switch transitions with a 5-band device attached —
+    // every published pair agrees at every step (the v141 invariant holds
+    // through the new EQ Pro UI paths). ─────────────────────────────────────
+    @Test
+    fun eqModeSwitchTransitions_pairsAgreeAtEveryStep() {
+        val transitions = listOf(5 to 10, 5 to 15, 5 to 31, 10 to 15, 15 to 31, 31 to 10)
+        for ((from, to) in transitions) {
+            // attached 5-band hardware map at `from` UI count:
+            val hwIdx = EqualizerEngine.bandIndices(from, 5)
+            val hwPos = EqualizerEngine.bandPositions(hwIdx, from, 5)
+            assertEquals(hwIdx.size, hwPos.size)
+            // UI count switch publishes the fallback PAIR at `to`:
+            val fb = EqualizerEngine.fallbackBands(to)
+            val fp = FloatArray(to) { it.toFloat() }
+            assertEquals("switch $from->$to", fb.size, fp.size)
+            for (j in fb.indices) fp[j]
+            // re-attach republishes the 5-band hardware pair at `to`:
+            val rIdx = EqualizerEngine.bandIndices(to, 5)
+            val rPos = EqualizerEngine.bandPositions(rIdx, to, 5)
+            assertEquals(rIdx.size, rPos.size)
+            for (j in rIdx.indices) assertTrue(rPos[j] >= 0f && rPos[j] <= (to - 1).toFloat())
+        }
+    }
+
+    // ── v142 §37: hostile mapping inputs must degrade to a consistent
+    // (possibly empty) pair — never a mismatched pair, never a throw. ───────
+    @Test
+    fun hostileMappingInputs_neverProduceMismatchedPairs() {
+        for (usable in listOf(0, -3, 1, Int.MAX_VALUE)) {
+            for (count in listOf(0, -1, 1, 10, 31)) {
+                val idx = EqualizerEngine.bandIndices(count, usable)
+                val pos = EqualizerEngine.bandPositions(idx, count, usable)
+                assertEquals("usable=$usable count=$count", idx.size, pos.size)
+                for (j in idx.indices) {
+                    val p = pos[j]
+                    assertTrue(java.lang.Float.isFinite(p))
+                    if (count in 1..31) assertTrue(p >= 0f && p <= (count - 1).toFloat())
+                }
+            }
+        }
+    }
+
+    // ── v142 §37/§28: paste/import sanitization — any array shape or value
+    // becomes a safe 31-slot curve inside the DSP range. ────────────────────
+    @Test
+    fun sanitizeEqLevels_anyInputBecomesSafeCurve() {
+        fun sane(raw: FloatArray) = EqualizerEngine.sanitizeEqLevelsDb(raw)
+        // empty / too-short / oversized
+        assertEquals(31, sane(FloatArray(0)).size)
+        assertEquals(31, sane(floatArrayOf(1f, 2f)).size)
+        assertEquals(31, sane(FloatArray(40) { 3f }).size)
+        assertTrue(sane(FloatArray(40) { 3f }).all { it == 3f })
+        // short arrays pad with zeros (never repeat the last value — v135 lesson)
+        val padded = sane(floatArrayOf(5f, -5f))
+        assertEquals(5f, padded[0]); assertEquals(-5f, padded[1]); assertEquals(0f, padded[30])
+        // out-of-range clamps to the DSP range
+        assertEquals(20f, sane(floatArrayOf(999f))[0])
+        assertEquals(-15f, sane(floatArrayOf(-999f))[0])
+        assertEquals(20f, sane(floatArrayOf(20.0001f))[0])
+        assertEquals(-15f, sane(floatArrayOf(-15.0001f))[0])
+        // NaN / Inf become 0 — never reach the DSP
+        assertEquals(0f, sane(floatArrayOf(Float.NaN))[0])
+        assertEquals(0f, sane(floatArrayOf(Float.POSITIVE_INFINITY))[0])
+        assertEquals(0f, sane(floatArrayOf(Float.NEGATIVE_INFINITY))[0])
+        // in-range values pass through exactly
+        assertEquals(4.5f, sane(floatArrayOf(4.5f))[0])
+        assertEquals(-15f, sane(floatArrayOf(-15f))[0])
+        assertEquals(20f, sane(floatArrayOf(20f))[0])
+    }
 }
