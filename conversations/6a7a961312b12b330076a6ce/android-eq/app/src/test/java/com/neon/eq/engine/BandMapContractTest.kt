@@ -233,7 +233,7 @@ class BandMapContractTest {
         assertEquals(0, Presets.stepIndex(3, 2, 1))          // wrap forward
         assertEquals(1, Presets.stepIndex(3, 0, 1))
         assertEquals(1, Presets.stepIndex(3, 1, 3))           // multi-step wraps
-        assertEquals(2, Presets.stepIndex(1, 0, -1))          // single preset stays
+        assertEquals(0, Presets.stepIndex(1, 0, -1))          // single preset stays
     }
 
     // ── v143 §28: CUSTOMIZED indicator — pure, allocation-free compare ──
