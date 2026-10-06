@@ -74,6 +74,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.neon.eq.engine.EQService
 import com.neon.eq.engine.EqualizerEngine
+import com.neon.eq.engine.OutputContract
+import com.neon.eq.engine.OutputRoutes
 import com.neon.eq.engine.Presets
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -637,6 +639,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var previewPresetName by remember { mutableStateOf<String?>(null) }
     // Build #130: EQ preset picker sheet (a picker, NOT a second manager)
     var showPresetPicker by remember { mutableStateOf(false) }
+    // ── v144 OUTPUT STUDIO ──
+    var showOutputStudio by remember { mutableStateOf(false) }
+    var outputTick by remember { mutableStateOf(0) }          // bumps on any device add/remove
+    var nicknameEditKey by remember { mutableStateOf<String?>(null) }
+    var nicknameEditInput by remember { mutableStateOf("") }
     var showSessionCompare by remember { mutableStateOf(false) }
     var showImportPreset by remember { mutableStateOf(false) }
     var importPresetInput by remember { mutableStateOf("") }
@@ -669,6 +676,37 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // movableContentOf: when the orientation flips, the whole Column MOVES
     // between the portrait and landscape parents — every remember{} inside
     // (selected band, open sheets, scroll position) survives the move.
+    // v144 §16: apply a preset by name through the EXISTING atomic apply path
+    // (identical to the preset picker APPLY button). Invalid/missing name →
+    // false, EQ untouched — never a partial or invalid DSP state.
+    fun tryApplyPresetByName(pname: String): Boolean {
+        val bp = Presets.presets.firstOrNull { it.name == pname }
+        val cp = customPresets.firstOrNull { it.name == pname }
+        val lv = when {
+            bp != null -> Presets.levelsForCount(bp, bandCount)
+            cp != null -> Presets.levelsForCount(cp, bandCount)
+            else -> null
+        } ?: return false
+        return try {
+            pushUndo(true, "Output profile: " + pname)
+            markRecent(pname)
+            selectedPreset = pname
+            engine.setSelectedPresetName(pname)
+            val newLevels = FloatArray(31) { 0f }
+            lv.forEachIndexed { i, l -> newLevels[i] = l.toFloat() }
+            animateLevelsTo(newLevels)
+            if (cp != null) {
+                bassBoost = if (cp.bassBoost > 0) cp.bassBoost else bassBoost
+                virtualizer = if (cp.virtualizer > 0) cp.virtualizer else virtualizer
+                loudness = if (cp.loudness > 0) cp.loudness else loudness
+            }
+            engine.applyFullState(
+                ShortArray(31) { i -> round(newLevels[i]).toInt().toShort() },
+                bassBoost, virtualizer, loudness, smooth = true)
+            true
+        } catch (_: Throwable) { false }
+    }
+
     val mainContent = remember { movableContentOf {
     Column(
         modifier = Modifier
@@ -840,6 +878,22 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 Spacer(Modifier.width(6.dp))
             }
             StatusChip((CaptureEqService.captureSampleRate / 1000).toString() + " kHz", 3, dot = false)
+        }
+        Spacer(Modifier.height(6.dp))
+        // v144 §28: QUICK OUTPUT SWITCHER — current route always visible
+        val quickRoute by remember(outputTick) { mutableStateOf(OutputRoutes.activeRouteLabel(context)) }
+        Row(verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(50))
+                .background(T.primary.copy(alpha = 0.10f))
+                .clickable { showOutputStudio = true }
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .semantics { contentDescription = "Output: " + quickRoute + " — opens Output Studio" }) {
+            Text("OUTPUT", fontSize = 10.sp, color = T.secondary, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(8.dp))
+            Text(quickRoute, fontSize = 11.sp, color = T.primary, maxLines = 1, modifier = Modifier.weight(1f))
+            Text("▾", fontSize = 11.sp, color = T.primary)
         }
         Spacer(Modifier.height(6.dp))
         // Build #124: landscape audio console — two-column workspace,
@@ -1877,7 +1931,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
             val rate = if (CaptureEqService.running && CaptureEqService.captureSampleRate > 0)
                 " · " + (CaptureEqService.captureSampleRate / 1000) + " kHz" else ""
-            val route = runCatching { AudioCapabilityManager.outputDeviceLine(context) }.getOrDefault("ROUTE UNKNOWN")
+            val route = runCatching { OutputRoutes.activeRouteLabel(context) }.getOrDefault("ROUTE UNKNOWN")
             ds + rate + " · " + route
         }
         Text(eqStatusLine, fontSize = 8.sp, color = T.secondary, modifier = Modifier.padding(top = 2.dp))
@@ -3646,6 +3700,50 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(24.dp))
     }
     } }
+    // v144 §11: live route monitoring — public AudioDeviceCallback, registered
+    // for the composition and ALWAYS unregistered on dispose (lifecycle-safe;
+    // never registered from or touching the audio thread).
+    val ctx = LocalContext.current
+    DisposableEffect(Unit) {
+        val cb = object : AudioDeviceCallback() {
+            override fun onAudioDeviceAdded(added: AudioDeviceInfo) {
+                outputTick++
+                OutputRoutes.note("Device connected: " + (runCatching { added.productName?.toString() }.getOrNull() ?: "output"))
+            }
+            override fun onAudioDeviceRemoved(removed: AudioDeviceInfo) {
+                outputTick++
+                OutputRoutes.note("Device removed: " + (runCatching { removed.productName?.toString() }.getOrNull() ?: "output"))
+            }
+        }
+        val ok = OutputRoutes.registerCallback(ctx, cb)
+        if (ok) OutputRoutes.note("Route monitoring active")
+        onDispose { OutputRoutes.unregisterCallback(ctx, cb) }
+    }
+    // v144 §16: per-output EQ profile — ONE existing DSP state, applied
+    // atomically through the existing preset apply path. Runs only when the
+    // ACTIVE route key actually changes; a missing profile keeps the live EQ.
+    var lastOutputKey by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(outputTick) {
+        val key = OutputRoutes.activeKey(ctx)
+        if (key != null && key != lastOutputKey) {
+            val firstSeen = lastOutputKey == null
+            lastOutputKey = key
+            val name = OutputRoutes.activeRouteLabel(ctx)
+            OutputRoutes.rememberRoute(ctx, name)
+            OutputRoutes.note("Route changed → " + name)
+            val pname = OutputRoutes.profileFor(ctx, key)
+            if (pname != null) {
+                val applied = tryApplyPresetByName(pname)
+                if (applied) {
+                    OutputRoutes.note("Profile restored: " + pname)
+                    android.widget.Toast.makeText(ctx, "Restoring " + pname + " EQ… ✓", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            } else if (!firstSeen) {
+                android.widget.Toast.makeText(ctx, "Output: " + name, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
     GlassBackground()
     mainContent()
@@ -3847,6 +3945,271 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
         }
         Spacer(Modifier.height(8.dp))
+    }
+
+    // ══════════════ v144: OUTPUT STUDIO ══════════════
+    GlassBottomSheet(visible = showOutputStudio, onDismiss = { showOutputStudio = false }) {
+        GradientText("OUTPUT STUDIO", 13.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+        Text("Choose where SonicCore sends processed audio", fontSize = 9.sp, color = T.secondary)
+        Spacer(Modifier.height(8.dp))
+        val octx = context
+        val routes = remember(showOutputStudio, outputTick) { OutputRoutes.devices(octx) }
+        val act = routes.firstOrNull { it.isActive } ?: routes.firstOrNull()
+        val nicknames = remember(showOutputStudio) { OutputRoutes.nicknames(octx) }
+
+        // ── ACTIVE OUTPUT (§4/§7) ──
+        NeonCard {
+            GradientText("ACTIVE OUTPUT", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                (act?.let { OutputContract.displayName(it.key, it.productName, nicknames) } ?: "ROUTE UNKNOWN"),
+                fontSize = 18.sp, fontWeight = FontWeight.Bold, color = T.primary
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("● ACTIVE", fontSize = 10.sp, color = T.primary,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.12f))
+                        .padding(horizontal = 8.dp, vertical = 3.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(act?.let { OutputContract.categoryDetail(it.category) } ?: "n/a", fontSize = 10.sp, color = T.secondary)
+            }
+            Spacer(Modifier.height(4.dp))
+            val maxRate = act?.sampleRates?.maxOrNull() ?: 0
+            TechValue(
+                (if (CaptureEqService.running) "Sample rate: " + CaptureEqService.captureSampleRate + " Hz (measured)"
+                 else if (maxRate > 0) "Supports up to " + maxRate + " Hz (reported by Android)" else "Sample rate: not reported by Android") +
+                    " · Channels: " + (if ((act?.channelCount ?: 0) > 1) "Stereo" else if (act?.channelCount == 1) "Mono" else "not reported")
+            )
+            TechValue(
+                "Latency: ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + " ms (estimated, capture chain)" +
+                    " · DSP: " + (if (!NeonDsp.available) "ERROR" else if (CaptureEqService.running && !CaptureEqService.bypass) "ACTIVE" else if (CaptureEqService.bypass) "BYPASS" else "STANDBY")
+            )
+            TechValue("Codec: not reported by Android public APIs", fontSize = 9.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // ── OUTPUT METERS (§22) — native per-channel RMS, no new analysis ──
+        var oMeters by remember { mutableStateOf(0) }
+        LaunchedEffect(showOutputStudio) {
+            while (showOutputStudio) { delay(400); oMeters++ }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("L", fontSize = 9.sp, color = T.secondary)
+            Spacer(Modifier.width(4.dp))
+            val lDb = (remember(oMeters) { runCatching { NeonDsp.outLRmsMs() }.getOrDefault(0) } / 100f)
+            Box(Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(T.secondary.copy(alpha = 0.10f))) {
+                Box(Modifier.fillMaxWidth(lDb.coerceIn(0f, 1f)).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(T.primary))
+            }
+            Spacer(Modifier.width(6.dp))
+            Text("R", fontSize = 9.sp, color = T.secondary)
+            Spacer(Modifier.width(4.dp))
+            val rDb = (remember(oMeters) { runCatching { NeonDsp.outRRmsMs() }.getOrDefault(0) } / 100f)
+            Box(Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(T.secondary.copy(alpha = 0.10f))) {
+                Box(Modifier.fillMaxWidth(rDb.coerceIn(0f, 1f)).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(T.primary))
+            }
+        }
+        Text("native output RMS (L/R) — live while the DSP chain runs", fontSize = 7.sp, color = T.secondary)
+        Spacer(Modifier.height(8.dp))
+
+        // ── AVAILABLE OUTPUTS (§5/§6) ──
+        GradientText("AVAILABLE OUTPUTS", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+        Spacer(Modifier.height(4.dp))
+        if (routes.isEmpty()) {
+            Text("No output devices reported by Android", fontSize = 10.sp, color = T.secondary)
+        }
+        routes.forEach { r ->
+            val rname = OutputContract.displayName(r.key, r.productName, nicknames)
+            val isFav = remember(showOutputStudio, r.key) { OutputRoutes.favorites(octx).contains(r.key) }
+            NeonCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (isFav) "★" else " ", fontSize = 12.sp, color = T.accent,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).clickable {
+                            OutputRoutes.toggleFavorite(octx, r.key)
+                            outputTick++
+                        }.padding(horizontal = 6.dp, vertical = 4.dp)
+                            .semantics { contentDescription = (if (isFav) "Unfavorite " else "Favorite ") + rname })
+                    Column(Modifier.weight(1f)) {
+                        Text(rname, fontSize = 12.sp, color = T.primary, fontWeight = FontWeight.Bold)
+                        Text(OutputContract.categoryLabel(r.category) + " · " + OutputContract.categoryDetail(r.category) +
+                            (if (r.sampleRates.maxOrNull() != null && (r.sampleRates.maxOrNull() ?: 0) > 0) " · up to " + (r.sampleRates.maxOrNull() ?: 0) + " Hz" else "") +
+                            if (r.isActive) " · ACTIVE ✓" else "", fontSize = 9.sp, color = T.secondary, maxLines = 1)
+                    }
+                    Text("USE", fontSize = 10.sp, color = T.primary,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.12f))
+                            .clickable {
+                                // Honest (§8/§40): Android public APIs do not let an app
+                                // force the media route — hand off to the system.
+                                OutputRoutes.note("USE: " + rname)
+                                if (r.category == OutputContract.CAT_SPEAKER || r.category == OutputContract.CAT_EARPIECE) {
+                                    android.widget.Toast.makeText(octx, "Built-in output is always available — unplug other outputs to use it", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(octx, "Android routes media from system settings — opening output settings", android.widget.Toast.LENGTH_SHORT).show()
+                                    try {
+                                        octx.startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                                    } catch (_: Throwable) { }
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                            .semantics { contentDescription = "Use " + rname + " as output" })
+                    Spacer(Modifier.width(6.dp))
+                    Text("NICKNAME", fontSize = 8.sp, color = T.accent,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
+                            .clickable { nicknameEditKey = r.key; nicknameEditInput = nicknames[r.key] ?: "" }
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                            .semantics { contentDescription = "Rename " + rname })
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+
+        // ── FOLLOW SYSTEM OUTPUT (§12) ──
+        var followSys by remember(showOutputStudio) { mutableStateOf(OutputRoutes.followSystem(octx)) }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(50)).background(T.secondary.copy(alpha = 0.08f))
+            .clickable { followSys = !followSys; OutputRoutes.setFollowSystem(octx, followSys) }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .semantics { contentDescription = "Follow system output" }) {
+            Column(Modifier.weight(1f)) {
+                Text("FOLLOW SYSTEM OUTPUT", fontSize = 10.sp, color = T.secondary, fontWeight = FontWeight.Bold)
+                Text(if (followSys) "FOLLOWING SYSTEM — SonicCore tracks Android's selected media route" else "MANUAL OUTPUT — Android may still override routing", fontSize = 8.sp, color = T.secondary)
+            }
+            Text(if (followSys) "ON" else "OFF", fontSize = 10.sp, color = if (followSys) T.primary else T.secondary)
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // ── PREFERRED OUTPUT (§13) ──
+        GradientText("PREFERRED OUTPUT", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
+        val prefKey = remember(showOutputStudio, outputTick) { OutputRoutes.preferredOutput(octx) }
+        val connectedKeys = routes.map { it.key }
+        if (prefKey != null && !OutputContract.preferredAvailable(prefKey, connectedKeys)) {
+            Text("Preferred output unavailable", fontSize = 10.sp, color = T.accent)
+            Text("Use current system output", fontSize = 10.sp, color = T.primary,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.12f))
+                    .clickable { OutputRoutes.setPreferredOutput(octx, null); outputTick++ }
+                    .padding(horizontal = 10.dp, vertical = 5.dp))
+        } else if (routes.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                routes.forEach { r ->
+                    val rn = OutputContract.displayName(r.key, r.productName, nicknames)
+                    Text((if (r.key == prefKey) "● " else "○ ") + rn, fontSize = 9.sp,
+                        color = if (r.key == prefKey) T.primary else T.secondary,
+                        modifier = Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50))
+                            .background((if (r.key == prefKey) T.primary else T.secondary).copy(alpha = 0.10f))
+                            .clickable { OutputRoutes.setPreferredOutput(octx, if (r.key == prefKey) null else r.key); outputTick++ }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .semantics { contentDescription = "Preferred output " + rn })
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // ── DEVICE EQ PROFILE (§16/§17) ──
+        if (act != null) {
+            GradientText("DEVICE EQ PROFILE", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+            val actName = OutputContract.displayName(act.key, act.productName, nicknames)
+            val curProfile = remember(showOutputStudio, outputTick) { OutputRoutes.profileFor(octx, act.key) }
+            Text(actName + " → " + (curProfile ?: "no profile (live EQ kept)"), fontSize = 10.sp, color = T.primary)
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                (Presets.presets.map { it.name } + customPresets.map { it.name }).take(16).forEach { pn ->
+                    Text((if (pn == curProfile) "● " else "○ ") + pn, fontSize = 9.sp,
+                        color = if (pn == curProfile) T.primary else T.secondary,
+                        modifier = Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50))
+                            .background((if (pn == curProfile) T.primary else T.secondary).copy(alpha = 0.10f))
+                            .clickable {
+                                if (pn == curProfile) OutputRoutes.setOutputProfile(octx, act.key, null)
+                                else OutputRoutes.setOutputProfile(octx, act.key, pn)
+                                outputTick++
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp))
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("APPLY NOW", fontSize = 9.sp, color = T.accent,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
+                        .clickable {
+                            curProfile?.let { pn ->
+                                if (tryApplyPresetByName(pn)) android.widget.Toast.makeText(octx, "Profile applied ✓", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .padding(horizontal = 10.dp, vertical = 4.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("CLEAR", fontSize = 9.sp, color = T.secondary,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).background(T.secondary.copy(alpha = 0.10f))
+                        .clickable { OutputRoutes.setOutputProfile(octx, act.key, null); outputTick++ }
+                        .padding(horizontal = 10.dp, vertical = 4.dp))
+            }
+            Text("Applies automatically when this output becomes active · one DSP state, applied atomically", fontSize = 7.sp, color = T.secondary)
+            Spacer(Modifier.height(8.dp))
+        }
+
+        // ── OUTPUT TEST (§20/§21) — existing TonePlayer through the DSP chain ──
+        GradientText("OUTPUT TEST", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
+        Text("Lower device volume before testing — safe 0.6-level test signals through the existing DSP path", fontSize = 8.sp, color = T.secondary)
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            listOf("LEFT" to "lonly", "RIGHT" to "ronly", "ALTERNATE L/R" to "lr", "TONE 440" to "tone440", "SWEEP" to "sweep").forEach { (label, mode) ->
+                Text(label, fontSize = 9.sp, color = T.primary,
+                    modifier = Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.12f))
+                        .clickable { tone.mode = mode; tone.play(); OutputRoutes.note("Output test: " + label) }
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .semantics { contentDescription = "Play " + label + " test signal" })
+            }
+            Text("STOP", fontSize = 9.sp, color = T.accent,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.12f))
+                    .clickable { tone.stop() }
+                    .padding(horizontal = 10.dp, vertical = 5.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // ── RECENT OUTPUTS (§27) ──
+        GradientText("RECENT OUTPUTS", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+        val hist = remember(showOutputStudio, outputTick) { OutputRoutes.history(octx) }
+        if (hist.isEmpty()) Text("No output history yet", fontSize = 9.sp, color = T.secondary)
+        hist.take(10).forEachIndexed { i, (t, r) ->
+            Text(OutputContract.historyBucket(t, System.currentTimeMillis()) + " · " + r, fontSize = 9.sp,
+                color = if (i == 0) T.primary else T.secondary)
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // ── MULTI-OUTPUT (§2/§31/§32) — honest, never faked ──
+        GradientText("MULTI-OUTPUT", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
+        Text("Not supported by this device — Android public media APIs do not expose simultaneous multi-route output for third-party apps. SonicCore never duplicates AudioTracks to fake it.", fontSize = 9.sp, color = T.secondary)
+        Spacer(Modifier.height(8.dp))
+
+        // ── OUTPUT HEALTH (§34/§35) ──
+        GradientText("OUTPUT HEALTH", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+        TechValue("Route changes this session: " + OutputRoutes.logEntries().size + " · recoveries: " + (CaptureEqService.lastRecoveryReason ?: "none"))
+        TechValue("Capture: " + (if (CaptureEqService.running) "running · " + CaptureEqService.bufferMode else "idle") +
+            (if (CaptureEqService.lastError != null) " · last error: " + CaptureEqService.lastError else ""))
+        Spacer(Modifier.height(4.dp))
+        OutputRoutes.logEntries().takeLast(8).forEach { (t, m) ->
+            Text(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date(t)) + "  " + m,
+                fontSize = 8.sp, color = T.secondary, maxLines = 1)
+        }
+    }
+
+    // v144 §15: nickname editor — local display name only, never the system name
+    if (nicknameEditKey != null) {
+        AlertDialog(
+            containerColor = S.card.copy(alpha = 0.94f),
+            shape = RoundedCornerShape(24.dp),
+            onDismissRequest = { nicknameEditKey = null },
+            title = { Text("Nickname", color = T.primary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Local display name for this output. The Android device name is unchanged.", fontSize = 9.sp, color = T.secondary)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(value = nicknameEditInput, onValueChange = { if (it.length <= 32) nicknameEditInput = it },
+                        singleLine = true, label = { Text("Nickname") })
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    nicknameEditKey?.let { k -> OutputRoutes.setNickname(context, k, nicknameEditInput) }
+                    nicknameEditKey = null
+                }) { Text("SAVE") }
+            },
+            dismissButton = { TextButton(onClick = { nicknameEditKey = null }) { Text("CANCEL", color = T.secondary) } }
+        )
     }
 
     // ── Build #123: PRESET COMPARE — current vs saved preset (or Flat) ──
