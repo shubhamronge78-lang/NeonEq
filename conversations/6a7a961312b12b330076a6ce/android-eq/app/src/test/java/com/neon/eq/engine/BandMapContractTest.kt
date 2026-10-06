@@ -2,6 +2,7 @@ package com.neon.eq.engine
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -221,5 +222,46 @@ class BandMapContractTest {
         assertEquals(4.5f, sane(floatArrayOf(4.5f))[0])
         assertEquals(-15f, sane(floatArrayOf(-15f))[0])
         assertEquals(20f, sane(floatArrayOf(20f))[0])
+    }
+
+    // ── v143: preset stepping (prev/next) — total on empty, not-found, wrap ──
+    @Test
+    fun presetStepping_isTotalAndCyclic() {
+        assertEquals(-1, Presets.stepIndex(0, 0, 1))          // no presets
+        assertEquals(0, Presets.stepIndex(3, -1, -1))        // not found -> start
+        assertEquals(2, Presets.stepIndex(3, 0, -1))         // wrap backward
+        assertEquals(0, Presets.stepIndex(3, 2, 1))          // wrap forward
+        assertEquals(1, Presets.stepIndex(3, 0, 1))
+        assertEquals(1, Presets.stepIndex(3, 1, 3))           // multi-step wraps
+        assertEquals(2, Presets.stepIndex(1, 0, -1))          // single preset stays
+    }
+
+    // ── v143 §28: CUSTOMIZED indicator — pure, allocation-free compare ──
+    @Test
+    fun customizedIndicator_detectsAnyDrift() {
+        val preset = shortArrayOf(0, 2, 4, 0, 0, 0, 0, 0, 0, 0)
+        val same = FloatArray(31) { if (it < 10) preset[it].toFloat() else 0f }
+        assertFalse("identical curve is not customized", EqualizerEngine.isCustomizedDb(same, preset, 10))
+        val drifted = same.copyOf().also { it[2] = 5f }
+        assertTrue("one band moved -> customized", EqualizerEngine.isCustomizedDb(drifted, preset, 10))
+        val nan = same.copyOf().also { it[4] = Float.NaN }
+        assertTrue("NaN never silently equals a preset", EqualizerEngine.isCustomizedDb(nan, preset, 10))
+        val inf = same.copyOf().also { it[4] = Float.POSITIVE_INFINITY }
+        assertTrue("Inf never silently equals a preset", EqualizerEngine.isCustomizedDb(inf, preset, 10))
+        // rounding: 4.49 rounds to 4 -> not customized; 4.51 -> customized
+        val almost = same.copyOf().also { it[2] = 4.49f }
+        assertFalse(EqualizerEngine.isCustomizedDb(almost, preset, 10))
+        val beyond = same.copyOf().also { it[2] = 4.51f }
+        assertTrue(EqualizerEngine.isCustomizedDb(beyond, preset, 10))
+        // hostile counts clamp to 0..31 — never index out of bounds
+        assertFalse(EqualizerEngine.isCustomizedDb(same, preset, 0))
+        assertFalse(EqualizerEngine.isCustomizedDb(same, preset, -3))
+        assertFalse(EqualizerEngine.isCustomizedDb(same, preset, 999))
+        // shorter preset pads with 0 — band 3 (preset 0) vs current 0 -> equal
+        val shortPreset = shortArrayOf(0, 2)
+        val cur2 = FloatArray(31) { 0f }
+        assertFalse(EqualizerEngine.isCustomizedDb(cur2, shortPreset, 10))
+        cur2[5] = -1f
+        assertTrue(EqualizerEngine.isCustomizedDb(cur2, shortPreset, 10))
     }
 }

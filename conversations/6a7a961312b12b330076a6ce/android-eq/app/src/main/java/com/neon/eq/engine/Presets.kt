@@ -70,6 +70,14 @@ object Presets {
         "Movie" to intArrayOf(5, 4, 2, 1, 0, 0, 1, 2, 3, 3)
     )
 
+    /** v143: cyclic preset stepping for prev/next — total on empty lists,
+     *  negative indices (not found) and both directions. -1 = no presets. */
+    @JvmStatic fun stepIndex(count: Int, current: Int, dir: Int): Int {
+        if (count <= 0) return -1
+        val base = if (current < 0) 0 else current
+        return ((base + dir) % count + count) % count
+    }
+
     /** Resample a 10-band built-in to any band count (log-frequency spacing). */
     fun builtinForCount(name: String, count: Int): ShortArray {
         val base = BUILTIN_QUICK.firstOrNull { it.first == name }?.second ?: return ShortArray(count)

@@ -44,6 +44,19 @@ class EqualizerEngine private constructor(context: Context) {
                 indices[j] * (count - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
             }
 
+        /** v143: does the live curve differ from the loaded preset? Pure,
+         *  allocation-free compare — NaN/Inf in current always counts as
+         *  customized (never silently equal to a preset value). */
+        @JvmStatic fun isCustomizedDb(current: FloatArray, preset: ShortArray, count: Int): Boolean {
+            val n = count.coerceIn(0, 31)
+            for (i in 0 until n) {
+                val cur = current.getOrNull(i) ?: 0f
+                val pre = preset.getOrNull(i)?.toInt() ?: 0
+                if (!cur.isFinite() || kotlin.math.round(cur).toInt() != pre) return true
+            }
+            return false
+        }
+
         /** v142: total sanitizer for pasted/imported EQ level arrays — any
             length (short/oversized), NaN/Inf, or out-of-range value becomes a
             safe in-range float in the 31-slot UI curve space. The DSP range

@@ -66,6 +66,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.TextUnit
@@ -607,6 +608,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // feeds both the big analyzer and the EQ-graph overlay. No second
     // observer, no second native readback.
     var spBars by remember { mutableStateOf(FloatArray(48)) }
+    var spHold by remember { mutableStateOf(FloatArray(48)) }
+    // v143: FOCUS EQ — immersive EQ workspace; STUDIO & SYSTEM collapsed by default.
+    var focusEq by remember { mutableStateOf(false) }
+    var advOpen by remember { mutableStateOf(false) }
     var spSmoothAmt by remember { mutableStateOf(when (favPrefs.getInt("an_smooth", 1)) { 0 -> 0.35f; 2 -> 0.75f; else -> 0.55f }) }
     var spFrozen by remember { mutableStateOf(false) }
     var presetFavs by remember { mutableStateOf(favPrefs.getStringSet("preset_favs", emptySet<String>()) ?: emptySet()) }
@@ -839,6 +844,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Spacer(Modifier.height(6.dp))
         // Build #124: landscape audio console — two-column workspace,
         // never a stretched portrait layout
+        // v143 §32: FOCUS EQ hides the technical dashboard; the compact
+        // power/status header above always stays.
+        if (!focusEq) {
         val isLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         if (isLandscape) {
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -1041,7 +1049,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("SPECTRUM", 11.sp, Brush.horizontalGradient(listOf(T.accent, T.primary)))
             Spacer(Modifier.height(4.dp))
             var spTick by remember { mutableStateOf(0) }
-            var spHold by remember { mutableStateOf(FloatArray(48)) }
             var spPost by remember { mutableStateOf(false) }
             var spChan by remember { mutableStateOf(0) }
             // Build #136: Phase-14 FPS tiers — full user rate while the app is
@@ -1325,6 +1332,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // landscape columns
             } // landscape row
+        }   // v143: dashboard hidden in FOCUS EQ
 
 
         var editBand by remember { mutableStateOf(-1) }
@@ -1334,13 +1342,62 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         var autoScale by remember { mutableStateOf(6f) }
         var eqAnalyzerMode by remember { mutableStateOf(0) } // 0 OFF · 1 SPECTRUM · 2 SPECT+CURVE
         val eqClipboard = remember { mutableStateOf<FloatArray?>(null) }   // v142 COPY/PASTE EQ
+        var eqHold by remember { mutableStateOf(false) }   // v143 §8: spectrum peak-hold trace on the EQ overlay
         var gainEditBand by remember { mutableStateOf(-1) }
         var gainEditInput by remember { mutableStateOf("") }
         var showResetEqDialog by remember { mutableStateOf(false) }
-        // ── Build #130: EQUALIZER header — title, preset selector, actions ──
+        // v143 §28: cached levels of the LOADED preset (one allocation per
+        // preset/band-count change, never per drag frame) for CUSTOMIZED check.
+        val eqPresetLv = remember(selectedPreset, bandCount, customPresets) {
+            try {
+                val bp = Presets.presets.firstOrNull { it.name == selectedPreset }
+                val cp = customPresets.firstOrNull { it.name == selectedPreset }
+                when {
+                    selectedPreset == "Custom" -> null
+                    bp != null -> Presets.levelsForCount(bp, bandCount)
+                    cp != null -> Presets.levelsForCount(cp, bandCount)
+                    else -> null
+                }
+            } catch (_: Throwable) { null }
+        }
+        // ── v143: EQUALIZER header — title + FOCUS EQ (§32) ──
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             GradientText("EQUALIZER", 16.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
             Spacer(Modifier.weight(1f))
+            Text(
+                if (focusEq) "✕ EXIT FOCUS" else "◎ FOCUS EQ", fontSize = 10.sp,
+                color = if (focusEq) T.accent else T.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background((if (focusEq) T.accent else T.primary).copy(alpha = 0.14f))
+                    .clickable { focusEq = !focusEq }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .semantics { contentDescription = if (focusEq) "Exit Focus EQ mode" else "Enter Focus EQ — immersive full-screen EQ workspace" }
+            )
+        }
+        // ── v143 §4: PRESET BAR — star, prev/next (measured preview), browser, save ──
+        val presetOrder = remember(customPresets) { Presets.presets.map { it.name } + customPresets.map { it.name } }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                if (selectedPreset in presetFavs) "★" else "☆", fontSize = 14.sp,
+                color = if (selectedPreset in presetFavs) T.accent else T.secondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable {
+                        if (selectedPreset in Presets.presets.map { it.name } + customPresets.map { it.name }) toggleFav(selectedPreset)
+                    }
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                    .semantics { contentDescription = (if (selectedPreset in presetFavs) "Unfavorite " else "Favorite ") + selectedPreset }
+            )
+            Text("‹", fontSize = 15.sp, color = T.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable {
+                        val ni = com.neon.eq.engine.Presets.stepIndex(presetOrder.size, presetOrder.indexOf(selectedPreset), -1)
+                        if (ni >= 0) previewPresetName = presetOrder[ni]
+                    }
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .semantics { contentDescription = "Previous preset — opens measured preview" })
             Text(selectedPreset + " ▾", fontSize = 11.sp, color = T.primary,
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
@@ -1348,35 +1405,26 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     .clickable { showPresetPicker = true }
                     .padding(horizontal = 10.dp, vertical = 5.dp)
                     .semantics { contentDescription = "Select a preset — opens the preset picker" })
-        }
-        Spacer(Modifier.height(6.dp))
-        // ── UNDO / REDO — complete-configuration history ──
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // v142 §19: FLAT zeroes the graphic curve only — frequencies, Q and
-            // PEQ slot states are preserved; one undo entry covers the action.
-            GlassButton("FLAT", 1) {
-                pushUndo(true, "Flat EQ")
-                try {
-                    animateLevelsTo(FloatArray(31) { 0f })
-                    engine.applyFullState(ShortArray(31) { 0 }, bassBoost, virtualizer, loudness, smooth = true)
-                    selectedPreset = "Flat"
-                    engine.setSelectedPresetName("Flat")
-                } catch (_: Throwable) { }
+            Text("›", fontSize = 15.sp, color = T.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable {
+                        val ni = com.neon.eq.engine.Presets.stepIndex(presetOrder.size, presetOrder.indexOf(selectedPreset), +1)
+                        if (ni >= 0) previewPresetName = presetOrder[ni]
+                    }
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .semantics { contentDescription = "Next preset — opens measured preview" })
+            Spacer(Modifier.width(4.dp))
+            // v143 §28: CUSTOMIZED — current curve differs from the loaded preset
+            if (eqPresetLv != null && com.neon.eq.engine.EqualizerEngine.isCustomizedDb(bandLevels, eqPresetLv!!, bandCount)) {
+                Text("• CUSTOMIZED", fontSize = 8.sp, color = T.accent,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f))
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                        .semantics { contentDescription = "Current EQ differs from the loaded preset" })
             }
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.weight(1f))
             GlassButton("SAVE", 0) { presetNameInput = ""; showSaveDialog = true }
-            Spacer(Modifier.width(6.dp))
-            GlassButton("↶ UNDO" + if (undoStack.isEmpty()) "" else " " + undoStack.size,
-                if (undoStack.isEmpty()) 1 else 0, enabled = undoStack.isNotEmpty()) { undoDsp() }
-            Spacer(Modifier.width(6.dp))
-            GlassButton("↷ REDO", if (redoStack.isEmpty()) 1 else 0, enabled = redoStack.isNotEmpty()) { redoDsp() }
-            Spacer(Modifier.width(6.dp))
-            GlassButton("RESET EQ", 2) { showResetEqDialog = true }
         }
-        Text(
-            (undoStack.lastOrNull()?.label ?: "no changes yet") + " · complete configurations through the atomic parameter system",
-            fontSize = 8.sp, color = T.secondary, modifier = Modifier.padding(top = 2.dp)
-        )
         Spacer(Modifier.height(8.dp))
 
         NeonCard {
@@ -1404,36 +1452,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     modifier = Modifier.padding(end = 6.dp)
                 ) { Text("$n", fontSize = 9.sp) }
             }
-            Spacer(Modifier.weight(1f))
-            // v142 §28: COPY/PASTE EQ — graphic curve only, sanitized on paste.
-            Text("COPY", fontSize = 9.sp, color = T.secondary,
-                modifier = Modifier.clip(RoundedCornerShape(50)).background(T.secondary.copy(alpha = 0.12f))
-                    .clickable {
-                        eqClipboard.value = bandLevels.copyOf()
-                        Toast.makeText(context, "EQ curve copied", Toast.LENGTH_SHORT).show()
-                    }
-                    .padding(horizontal = 9.dp, vertical = 4.dp)
-                    .semantics { contentDescription = "Copy EQ curve" })
-            Spacer(Modifier.width(5.dp))
-            Text("PASTE", fontSize = 9.sp,
-                color = if (eqClipboard.value != null) T.primary else T.secondary.copy(alpha = 0.4f),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background((if (eqClipboard.value != null) T.primary else T.secondary.copy(alpha = 0.4f)).copy(alpha = 0.12f))
-                    .clickable(enabled = eqClipboard.value != null) {
-                        eqClipboard.value?.let { clip ->
-                            pushUndo(true, "Paste EQ")
-                            try {
-                                val safe = com.neon.eq.engine.EqualizerEngine.sanitizeEqLevelsDb(clip)
-                                animateLevelsTo(safe)
-                                engine.applyFullState(ShortArray(31) { i -> round(safe[i]).toInt().toShort() }, bassBoost, virtualizer, loudness, smooth = true)
-                                selectedPreset = "Custom"
-                                engine.setSelectedPresetName("Custom")
-                            } catch (_: Throwable) { }
-                        }
-                    }
-                    .padding(horizontal = 9.dp, vertical = 4.dp)
-                    .semantics { contentDescription = "Paste copied EQ curve (EQ bands only)" })
         }
         // v142 §16/§17: EQ analyzer overlay — OFF / SPECTRUM / SPECTRUM + CURVE.
         // The bins come from the shared live analyzer (real PCM); the curve is
@@ -1459,6 +1477,17 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             Text(
                 "spectrum = live analyzer (real PCM via native DSP) · curve = EQ response (theoretical)",
                 fontSize = 7.sp, color = T.secondary, modifier = Modifier.padding(top = 2.dp)
+            )
+            Text(
+                if (eqHold) "HOLD ●" else "HOLD ○", fontSize = 9.sp,
+                color = if (eqHold) T.accent else T.secondary,
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background((if (eqHold) T.accent else T.secondary).copy(alpha = 0.12f))
+                    .clickable { eqHold = !eqHold }
+                    .padding(horizontal = 9.dp, vertical = 4.dp)
+                    .semantics { contentDescription = if (eqHold) "Disable spectrum peak hold trace" else "Enable spectrum peak hold trace" }
             )
         }
         Spacer(Modifier.height(4.dp))
@@ -1539,7 +1568,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         precisionMode = eqPrecision,
                         onGestureStart = { band -> pushUndo(true, "EQ band " + (band + 1)) },
                         analyzerMode = eqAnalyzerMode,
-                        spectrumBins = spBars
+                        spectrumBins = spBars,
+                        spectrumHold = spHold,
+                        showHold = eqHold
                     )
                 }
                 Column(
@@ -1579,6 +1610,14 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 .padding(horizontal = 12.dp, vertical = 4.dp)
                                 .semantics { contentDescription = "EQ overlay " + ml }
                         )
+                    }
+                    if (eqAnalyzerMode > 0) {
+                        Text(if (eqHold) "HOLD ●" else "HOLD ○", fontSize = 10.sp,
+                            color = if (eqHold) T.accent else T.secondary,
+                            modifier = Modifier.clip(RoundedCornerShape(50)).background((if (eqHold) T.accent else T.secondary).copy(alpha = 0.12f))
+                                .clickable { eqHold = !eqHold }
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                                .semantics { contentDescription = "Spectrum peak hold trace" })
                     }
                     // Build #126: selected-band panel — only real engine values
                     if (selBand >= 0 && selBand < bandCount) {
@@ -1639,7 +1678,10 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 precisionMode = eqPrecision,
                 onGestureStart = { band -> pushUndo(true, "EQ band " + (band + 1)) },
                 analyzerMode = eqAnalyzerMode,
-                spectrumBins = spBars
+                spectrumBins = spBars,
+                spectrumHold = spHold,
+                showHold = eqHold,
+                graphHeight = if (focusEq) 460.dp else 360.dp
             )
             // Build #124: visual scale selector — visualization only, never alters DSP gains
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1783,6 +1825,64 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             )
         }
 
+        // ── v143 §15: GRAPH ACTION BAR — one compact row under the graph ──
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            GlassButton("↶ UNDO" + if (undoStack.isEmpty()) "" else " " + undoStack.size,
+                if (undoStack.isEmpty()) 1 else 0, enabled = undoStack.isNotEmpty()) { undoDsp() }
+            Spacer(Modifier.width(6.dp))
+            GlassButton("↷ REDO", if (redoStack.isEmpty()) 1 else 0, enabled = redoStack.isNotEmpty()) { redoDsp() }
+            Spacer(Modifier.width(6.dp))
+            // FLAT zeroes the graphic curve only — frequencies, Q and PEQ
+            // slot states are preserved; one undo entry covers the action.
+            GlassButton("FLAT", 1) {
+                pushUndo(true, "Flat EQ")
+                try {
+                    animateLevelsTo(FloatArray(31) { 0f })
+                    engine.applyFullState(ShortArray(31) { 0 }, bassBoost, virtualizer, loudness, smooth = true)
+                    selectedPreset = "Flat"
+                    engine.setSelectedPresetName("Flat")
+                } catch (_: Throwable) { }
+            }
+            Spacer(Modifier.width(6.dp))
+            GlassButton("RESET EQ", 2) { showResetEqDialog = true }
+            Spacer(Modifier.width(6.dp))
+            GlassButton("COPY", 1, enabled = true) {
+                eqClipboard.value = bandLevels.copyOf()
+                Toast.makeText(context, "EQ COPIED ✓", Toast.LENGTH_SHORT).show()
+            }
+            Spacer(Modifier.width(6.dp))
+            GlassButton("PASTE", 1, enabled = eqClipboard.value != null) {
+                eqClipboard.value?.let { clip ->
+                    pushUndo(true, "Paste EQ")
+                    try {
+                        val safe = com.neon.eq.engine.EqualizerEngine.sanitizeEqLevelsDb(clip)
+                        animateLevelsTo(safe)
+                        engine.applyFullState(ShortArray(31) { i -> round(safe[i]).toInt().toShort() }, bassBoost, virtualizer, loudness, smooth = true)
+                        selectedPreset = "Custom"
+                        engine.setSelectedPresetName("Custom")
+                        Toast.makeText(context, "EQ PASTED ✓", Toast.LENGTH_SHORT).show()
+                    } catch (_: Throwable) { }
+                }
+            }
+        }
+        // ── v143 §30: mini status line — honest runtime facts only ──
+        var eqRouteTick by remember { mutableStateOf(0) }
+        LaunchedEffect(Unit) { while (true) { delay(2000); eqRouteTick++ } }
+        val eqStatusLine = remember(eqRouteTick, CaptureEqService.running) {
+            val ds = when {
+                !NeonDsp.available -> "DSP ERROR"
+                CaptureEqService.running && CaptureEqService.bypass -> "DSP BYPASS"
+                CaptureEqService.running -> "DSP ACTIVE"
+                else -> "STANDBY"
+            }
+            val rate = if (CaptureEqService.running && CaptureEqService.captureSampleRate > 0)
+                " · " + (CaptureEqService.captureSampleRate / 1000) + " kHz" else ""
+            val route = runCatching { AudioCapabilityManager.outputDeviceLine(context) }.getOrDefault("ROUTE UNKNOWN")
+            ds + rate + " · " + route
+        }
+        Text(eqStatusLine, fontSize = 8.sp, color = T.secondary, modifier = Modifier.padding(top = 2.dp))
+        Spacer(Modifier.height(8.dp))
+
         // ── Build #123: BAND EDITOR — tap a band point for details ──
         if (editBand >= 0 && editBand < bandCount) {
             val info = bandList.getOrNull(editBand)
@@ -1894,6 +1994,26 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         } // tab guard
 
+        // v143 §31/§32: STUDIO & SYSTEM — every technical section stays one
+        // tap away, but the EQ is the centerpiece. Collapsed by default in
+        // normal mode; fully hidden in FOCUS EQ. Same composables, same state.
+        if (!focusEq) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .background(T.secondary.copy(alpha = 0.08f))
+                    .clickable { advOpen = !advOpen }
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .semantics { contentDescription = (if (advOpen) "Collapse studio and system sections" else "Expand studio and system sections") }
+            ) {
+                GradientText("STUDIO & SYSTEM", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+                Spacer(Modifier.weight(1f))
+                Text(if (advOpen) "▾ COLLAPSE" else "▸ EXPAND", fontSize = 10.sp, color = if (advOpen) T.primary else T.secondary)
+            }
+            Spacer(Modifier.height(8.dp))
+            if (advOpen) {
         // ── Build #110: VISUALIZER on the main screen — system capture when
         // the device allows it, software-player capture when it doesn't ──
         NeonCard {
@@ -3520,6 +3640,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
 
 
+        }   // v143: studio expanded
+        }   // v143: hidden in FOCUS EQ
+
         Spacer(Modifier.height(24.dp))
     }
     } }
@@ -3628,6 +3751,32 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                                 Text("Stored 0 means 'not set' — live values are kept.", fontSize = 8.sp, color = T.secondary)
                             }
                             Text("Parametric EQ: not part of presets — unchanged.", fontSize = 9.sp, color = T.secondary)
+                            Spacer(Modifier.height(6.dp))
+                            // v143 23: mini preview graph — current curve (cyan)
+                            // vs preset curve (accent). Visualization only.
+                            Text("CURVE PREVIEW — current vs " + pname, fontSize = 8.sp, color = T.secondary)
+                            Canvas(modifier = Modifier.fillMaxWidth().height(80.dp)
+                                .semantics { contentDescription = "Preview: current EQ curve versus " + pname }) {
+                                val w = size.width
+                                val h = size.height
+                                val n = bandCount.coerceAtLeast(2)
+                                fun yFor(lvl: Int): Float = h * (1f - ((lvl.toFloat() + 15f) / 35f))
+                                fun drawLv(lv: List<Int>, color: Color, widthPx: Float) {
+                                    for (i in 0 until n - 1) {
+                                        drawLine(
+                                            color = color,
+                                            start = androidx.compose.ui.geometry.Offset(w * i / (n - 1).toFloat(), yFor(lv.getOrElse(i) { 0 })),
+                                            end = androidx.compose.ui.geometry.Offset(w * (i + 1) / (n - 1).toFloat(), yFor(lv.getOrElse(i + 1) { 0 })),
+                                            strokeWidth = widthPx
+                                        )
+                                    }
+                                }
+                                drawLine(color = T.secondary.copy(alpha = 0.25f),
+                                    start = androidx.compose.ui.geometry.Offset(0f, yFor(0)),
+                                    end = androidx.compose.ui.geometry.Offset(w, yFor(0)), strokeWidth = 1f)
+                                drawLv(tgt, T.accent.copy(alpha = 0.85f), 2.5f)
+                                drawLv(cur, T.primary, 2f)
+                            }
                         }
                     },
                     confirmButton = {
@@ -5055,7 +5204,11 @@ fun CanvasEQ(
     // spBars), never synthetic. Log-spaced native bins map linearly onto the
     // log-frequency x-axis, same as the big analyzer.
     analyzerMode: Int = 0,
-    spectrumBins: FloatArray? = null
+    spectrumBins: FloatArray? = null,
+    // v143: larger immersive graph (§5) + optional peak-hold trace (§8)
+    graphHeight: Dp = 280.dp,
+    spectrumHold: FloatArray? = null,
+    showHold: Boolean = false
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
@@ -5124,7 +5277,7 @@ fun CanvasEQ(
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(280.dp)
+            .height(graphHeight)
             .pointerInput(bandCount, precisionMode, scaleDb) {
                 var lastY = 0f
                 var dragLvl = 0f
@@ -5215,6 +5368,19 @@ fun CanvasEQ(
                 end = androidx.compose.ui.geometry.Offset(size.width, y),
                 strokeWidth = if (isCenter) gridPx * 1.5f else gridPx
             )
+            // v143 §6: per-line dB value labels on wide screens
+            if (size.width >= 380f) {
+                drawIntoCanvas {
+                    labelPaint.textSize = dbLabelPx
+                    labelPaint.color = grayLabel
+                    it.nativeCanvas.drawText(
+                        (if (v > 0.01f) "+" else "") + v.toInt().toString(),
+                        size.width - 3f,
+                        y - 2f,
+                        labelPaint
+                    )
+                }
+            }
             v += dbStep
         }
         drawIntoCanvas {
@@ -5250,6 +5416,27 @@ fun CanvasEQ(
                         startY = 0f, endY = trackHeight
                     )
                 )
+                // v143 §8: peak-hold trace — same decay the big analyzer uses
+                // (spHold), a thin accent line per bin. No extra polling.
+                if (showHold) {
+                    val hold = spectrumHold
+                    if (hold != null && hold.size >= 2) {
+                        val nH = hold.size
+                        val holdPx = 1.5f
+                        for (i in 0 until nH) {
+                            val hv = hold[i]
+                            if (hv <= 0.02f) continue
+                            val hx = size.width * i / (nH - 1).toFloat()
+                            val hy = trackHeight * (1f - hv.coerceIn(0f, 1f) * 0.94f)
+                            drawLine(
+                                color = T.accent.copy(alpha = 0.55f),
+                                start = androidx.compose.ui.geometry.Offset(hx, hy),
+                                end = androidx.compose.ui.geometry.Offset(hx + size.width / nH - 2f, hy),
+                                strokeWidth = holdPx
+                            )
+                        }
+                    }
+                }
             }
         }
 
