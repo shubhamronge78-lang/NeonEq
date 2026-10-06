@@ -246,6 +246,62 @@ int main() {
         CHECK(ok && Java_com_neon_eq_dsp_NeonDsp_nanCount(&env, thiz) == 0, "stereo width/balance/swap/mono extremes: finite");
     }
 
+    printf("[14] v140: shelf RESPONSE SHAPE (not just finite — RBJ shape)\n");
+    /* Section 24: the shelf response must be checked for actual response
+       shape. Re-init for a clean chain (limiter off, preamp 0, only the
+       shelf under test active), feed steady sine tones, measure the dB
+       change after settling, and assert the textbook S=1 RBJ shape:
+       +/-20 dB shelf -> ~+/-18 dB in-band, ~+/-10 dB at the corner,
+       ~0 dB out-of-band, and unity at 0 dB. */
+    {
+        Java_com_neon_eq_dsp_NeonDsp_init(&env, thiz, SR, BANDS);
+        Java_com_neon_eq_dsp_NeonDsp_setLimiter(&env, thiz, JNI_FALSE, -1.0f);
+        Java_com_neon_eq_dsp_NeonDsp_setPreamp(&env, thiz, 0.0f);
+        auto probeDb = [&](double freq) {
+            const int PR = 480, SETTLE = 30, BLOCKS = 40;
+            static jshort pr[PR * 2];
+            jshortArray pbuf = (jshortArray) &g_hostArrays[hostReg(pr, PR * 2, 0)];
+            double inE = 0.0, outE = 0.0;
+            for (int blk = 0; blk < BLOCKS; blk++) {
+                for (int i = 0; i < PR; i++) { double v = 5000.0 * sin(2*M_PI*freq*(blk*PR+i)/SR); pr[2*i]=(jshort)v; pr[2*i+1]=(jshort)v; }
+                Java_com_neon_eq_dsp_NeonDsp_process(&env, thiz, pbuf, PR);
+                if (blk >= SETTLE) for (int i = 0; i < PR; i++) {
+                    /* accumulate the ACTUAL sample energy (sine RMS = peak/sqrt(2)),
+                       not the peak squared, or every probe reads a constant -3 dB */
+                    double v = 5000.0 * sin(2*M_PI*freq*(blk*PR+i)/SR);
+                    inE += 2.0 * v * v;  /* both channels of the source tone */
+                    double ol = pr[2*i], orr = pr[2*i+1];
+                    if (!isfinite(ol) || !isfinite(orr)) return 999.0;
+                    outE += ol*ol + orr*orr;
+                }
+            }
+            return 10.0 * log10(outE / inE);
+        };
+        auto closeTo = [&](double got, double want, double tol, const char* what) {
+            bool ok = got > want - tol && got < want + tol;
+            printf("  %s: %+.1f dB (expected ~%+.0f) -> %s\n", what, got, want, ok ? "ok" : "FAIL");
+            if (!ok) fails++;
+        };
+        Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, 20.0f, 0.0f);
+        closeTo(probeDb(30.0),   18.0, 3.0, "bass +20dB @ 30 Hz");
+        closeTo(probeDb(100.0),  10.0, 2.0, "bass +20dB @ 100 Hz corner");
+        closeTo(probeDb(1000.0),  0.0, 1.0, "bass +20dB @ 1 kHz");
+        Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, -20.0f, 0.0f);
+        closeTo(probeDb(30.0),  -18.0, 3.0, "bass -20dB @ 30 Hz");
+        Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, 0.0f, 0.0f);
+        closeTo(probeDb(30.0),    0.0, 1.0, "bass 0dB @ 30 Hz (unity)");
+        closeTo(probeDb(1000.0),  0.0, 1.0, "bass 0dB @ 1 kHz (unity)");
+        Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, 0.0f, 20.0f);
+        closeTo(probeDb(16000.0), 17.7, 3.0, "treble +20dB @ 16 kHz");
+        closeTo(probeDb(8000.0),  10.0, 2.0, "treble +20dB @ 8 kHz corner");
+        closeTo(probeDb(1000.0),   0.0, 1.0, "treble +20dB @ 1 kHz");
+        Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, 0.0f, -20.0f);
+        closeTo(probeDb(16000.0), -17.7, 3.0, "treble -20dB @ 16 kHz");
+        Java_com_neon_eq_dsp_NeonDsp_setShelves(&env, thiz, 0.0f, 0.0f);
+        CHECK(Java_com_neon_eq_dsp_NeonDsp_nanCount(&env, thiz) == 0, "response probes: nanEvents still zero");
+        Java_com_neon_eq_dsp_NeonDsp_setLimiter(&env, thiz, JNI_TRUE, -1.0f);
+    }
+
     printf("\n%s (%d failures)\n", fails ? "HARNESS FAIL" : "HARNESS PASS", fails);
     return fails ? 1 : 0;
 }
