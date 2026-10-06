@@ -27,6 +27,33 @@ class EqualizerEngine private constructor(context: Context) {
         const val MIN_BANDS = 5
         const val BASS_BOOST_STRENGTH_MAX = 300
         const val VIRTUALIZER_STRENGTH_MAX = 300
+
+        // ── v141: pure band-mapping math, extracted 1:1 from pickBands() so the
+        // exact Redmi 10C crash state (5 hardware bands) is JVM-testable. This
+        // is a MOVE of the existing formulas, not a behavior change. ──
+        /** Hardware band indices to use for a UI band count of `count` on a
+            device exposing `usable` bands (same formula as pickBands). */
+        @JvmStatic fun bandIndices(count: Int, usable: Int): List<Int> =
+            if (usable <= count) (0 until usable).toList()
+            else (0 until count).map { it * usable / count }
+
+        /** Position of each hardware band in UI-slot space — band j samples the
+            UI curve at this fractional position (same formula as pickBands). */
+        @JvmStatic fun bandPositions(indices: List<Int>, count: Int, usable: Int): FloatArray =
+            FloatArray(indices.size) { j ->
+                indices[j] * (count - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
+            }
+
+        /** Generic fallback band table so sliders still render without a real
+            Equalizer attached (moved from the instance method, same math). */
+        @JvmStatic fun fallbackBands(count: Int): List<BandInfo> {
+            val freqs = listOf(60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000)
+            val n = count.coerceIn(MIN_BANDS, MAX_BANDS)
+            return (0 until n).map { i ->
+                val f = freqs.getOrElse(i * freqs.size / n) { 1000 }
+                BandInfo(i, f, -1500, 1500)
+            }
+        }
         private const val TAG = "NeonEQ"
         private const val DB_TO_MILLIBEL = 100
         private const val POLL_INTERVAL_MS = 1500L
@@ -128,9 +155,23 @@ class EqualizerEngine private constructor(context: Context) {
         // Regenerate the UI band table so the canvas shows the new count.
         // If a hardware session is attached, the next scan re-picks real
         // frequencies; on locked devices (Vivo) the fallback table is used.
-        try { if (bands.size < count) bands = fallbackBands(count) } catch (_: Throwable) { }
+        // v141: publish bands AND positions as one snapshot — previously only
+        // `bands` was replaced, leaving a 5-entry bandPos behind on the
+        // Redmi 10C and crashing applyBands() with index 5, length 5.
+        try { if (bands.size < count) publishBands(fallbackBands(count), FloatArray(count) { it.toFloat() }) } catch (_: Throwable) { }
     }
-    @Volatile var bands: List<BandInfo> = emptyList()
+    // v141 CRASH FIX: `bands` and `bandPos` were two independent @Volatile
+    // fields with NO atomic pair update. setUiBandCount() replaced `bands`
+    // without resizing `bandPos`, and pickBands() assigned them in two steps
+    // — on a 5-band device (Redmi 10C) applyBands() could see bands=15 with
+    // bandPos=5 and throw ArrayIndexOutOfBoundsException(length=5, index=5)
+    // on the NeonEQ-Audio thread. They now travel as ONE immutable snapshot
+    // published through a single volatile write: an inconsistent pair is
+    // UNREPRESENTABLE. Readers take one atomic snapshot and always agree.
+    val bands: List<BandInfo> get() = bandMap.bands
+    @Volatile private var bandMap = BandMap(emptyList(), FloatArray(0))
+    private fun publishBands(b: List<BandInfo>, pos: FloatArray) { bandMap = BandMap(b, pos) }
+    private fun publishBands(map: Pair<List<BandInfo>, FloatArray>) { bandMap = BandMap(map.first, map.second) }
     @Volatile var enabled = false
         private set
     @Volatile var isReady = false
@@ -191,6 +232,7 @@ class EqualizerEngine private constructor(context: Context) {
     var onSessionUpdate: ((Int) -> Unit)? = null
 
     data class BandInfo(val index: Int, val freq: Int, val minLevel: Short, val maxLevel: Short)
+    private class BandMap(val bands: List<BandInfo>, val bandPos: FloatArray)
 
     private fun loadLevels(): ShortArray {
         val raw = prefs.getString(KEY_LEVELS, null)
@@ -452,11 +494,12 @@ class EqualizerEngine private constructor(context: Context) {
     // device's band level range — an out-of-range setBandLevel throws (caught
     // silently) and would leave the band drifting at its old value.
     private fun applyBands(levels: IntArray) {
-        if (bands.isNotEmpty() && bandPos.isNotEmpty()) {
+        val map = bandMap  // one atomic snapshot: bands and positions always agree
+        if (map.bands.isNotEmpty() && map.bandPos.isNotEmpty()) {
             val g = globalEQ
-            for (j in bands.indices) {
-                val bi = bands[j]
-                val mb = applyPreamp(bandTargetDb(levels, bandPos[j], bi.freq))
+            for (j in map.bands.indices) {
+                val bi = map.bands[j]
+                val mb = applyPreamp(bandTargetDb(levels, map.bandPos[j], bi.freq))
                     .toInt().coerceIn(bi.minLevel.toInt(), bi.maxLevel.toInt())
                 try { g?.setBandLevel(bi.index.toShort(), mb.toShort()) } catch (_: Throwable) {}
             }
@@ -943,21 +986,11 @@ class EqualizerEngine private constructor(context: Context) {
             statusMessage = "Limited EQ support on this device — try again or reduce bands"
             isReady = true
             enabled = currentEnabled
-            if (bands.isEmpty()) bands = fallbackBands(bandCount); bandPos = FloatArray(bandCount) { it.toFloat() }
+            if (bands.isEmpty()) publishBands(fallbackBands(bandCount), FloatArray(bandCount) { it.toFloat() })
             onReady?.invoke(isReady, statusMessage, bands)
         }
     }
     @Volatile private var uiNotified = false
-
-    private fun fallbackBands(count: Int): List<BandInfo> {
-        // Generic band spread so sliders still render even if no real Equalizer attached.
-        val freqs = listOf(60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000)
-        val n = count.coerceIn(MIN_BANDS, MAX_BANDS)
-        return (0 until n).map { i ->
-            val f = freqs.getOrElse(i * freqs.size / n) { 1000 }
-            BandInfo(i, f, -1500, 1500)
-        }
-    }
 
     fun attachToGlobalSession() {
         uiNotified = false
@@ -993,7 +1026,7 @@ class EqualizerEngine private constructor(context: Context) {
                         eq.enabled = currentEnabled
                         val numBands = eq.numberOfBands.toInt()
                         val usable = minOf(numBands, MAX_BANDS)
-                        bands = pickBands(eq, bandCount, usable)
+                        publishBands(pickBands(eq, bandCount, usable))
                         Log.d(TAG, "Global session 0: $numBands bands")
                         // Reapply persisted band levels immediately on (re)attach.
                         for (i in 0 until minOf(bandCount, usable)) {
@@ -1087,7 +1120,7 @@ class EqualizerEngine private constructor(context: Context) {
                     statusMessage = "Scanning for audio sessions..."
                     isReady = true
                     enabled = currentEnabled
-                    if (bands.isEmpty()) bands = fallbackBands(bandCount); bandPos = FloatArray(bandCount) { it.toFloat() }
+                    if (bands.isEmpty()) publishBands(fallbackBands(bandCount), FloatArray(bandCount) { it.toFloat() })
                 }
 
                 try { startSessionPolling() } catch (t: Throwable) { Log.w(TAG, "startSessionPolling failed: ${t.message}") }
@@ -1100,7 +1133,7 @@ class EqualizerEngine private constructor(context: Context) {
                 statusMessage = "EQ running in limited mode on this device"
                 isReady = true
                 enabled = currentEnabled
-                if (bands.isEmpty()) bands = fallbackBands(bandCount); bandPos = FloatArray(bandCount) { it.toFloat() }
+                if (bands.isEmpty()) publishBands(fallbackBands(bandCount), FloatArray(bandCount) { it.toFloat() })
             } finally {
                 mainHandler.removeCallbacks(watchdogRunnable)
                 if (!uiNotified) {
@@ -1432,7 +1465,7 @@ class EqualizerEngine private constructor(context: Context) {
                 if (anyEQ != null) {
                     val numBands = anyEQ.numberOfBands.toInt()
                     val usable = minOf(numBands, MAX_BANDS)
-                    bands = pickBands(anyEQ, bandCount, usable)
+                    publishBands(pickBands(anyEQ, bandCount, usable))
                 }
             }
 
@@ -1467,10 +1500,11 @@ class EqualizerEngine private constructor(context: Context) {
                             if (g.enabled != currentEnabled) g.enabled = currentEnabled
                             // Build #70: the global EQ gets the same all-band
                             // verification (it only had its enabled flag checked).
-                            if (enabled && rampOk && bands.isNotEmpty() && bandPos.isNotEmpty()) {
-                                val probes = interiorProbes(-1, bandPos.size)
-                                val globalFreqs = IntArray(bandPos.size) { j -> bands.getOrNull(j)?.freq ?: 0 }
-                                if (verifyBandsDrifted(g, bandPos, globalFreqs, levelsI, probes, shouldFullSweep(-1))) drifted = true
+                            val snap = bandMap  // one atomic snapshot
+                            if (enabled && rampOk && snap.bands.isNotEmpty() && snap.bandPos.isNotEmpty()) {
+                                val probes = interiorProbes(-1, snap.bandPos.size)
+                                val globalFreqs = IntArray(snap.bandPos.size) { j -> snap.bands.getOrNull(j)?.freq ?: 0 }
+                                if (verifyBandsDrifted(g, snap.bandPos, globalFreqs, levelsI, probes, shouldFullSweep(-1))) drifted = true
                             }
                         } catch (_: Throwable) {}
                     }
@@ -1622,7 +1656,7 @@ class EqualizerEngine private constructor(context: Context) {
             Log.d(TAG, "Session $sessionId: $numBands bands attached")
 
             if (bands.isEmpty()) {
-                bands = pickBands(eq, bandCount, usable)
+                publishBands(pickBands(eq, bandCount, usable))
             }
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to attach to session $sessionId", e)
@@ -1645,17 +1679,16 @@ class EqualizerEngine private constructor(context: Context) {
     // is SAMPLED at these (fractional) positions with linear interpolation, so
     // on a 5-band device ALL 31 sliders contribute (previously only the first
     // `usable` sliders were live and the rest were silently dead).
-    @Volatile private var bandPos = FloatArray(0)
-
-    private fun pickBands(eq: Equalizer, count: Int, usable: Int): List<BandInfo> {
-        val indices = if (usable <= count) (0 until usable).toList()
-        else (0 until count).map { it * usable / count }
-        bandPos = FloatArray(indices.size) { j ->
-            indices[j] * (count - 1).toFloat() / maxOf(usable - 1, 1).toFloat()
-        }
-        return indices.map { i ->
+    // v141: returns (bands, positions) as a PAIR — it must never assign the
+    // two engine fields separately (that split assignment was the second half
+    // of the length=5 / index=5 crash). Callers publish them atomically.
+    private fun pickBands(eq: Equalizer, count: Int, usable: Int): Pair<List<BandInfo>, FloatArray> {
+        val indices = bandIndices(count, usable)
+        val pos = bandPositions(indices, count, usable)
+        val b = indices.map { i ->
             BandInfo(i, eq.getCenterFreq(i.toShort()) / 1000, eq.bandLevelRange[0], eq.bandLevelRange[1])
         }
+        return Pair(b, pos)
     }
 
     // Build #68: write the sampled curve to ONE equalizer (global or session)
