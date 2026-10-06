@@ -643,6 +643,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     var showPresetPicker by remember { mutableStateOf(false) }
     // ── v144 OUTPUT STUDIO ──
     var showOutputStudio by remember { mutableStateOf(false) }
+    // v145 §6: ONE immutable output snapshot — structural equality means
+    // identical snapshots never recompose anything downstream.
+    var outputUi by remember { mutableStateOf(OutputContract.OutputUiState.EMPTY) }
     var outputTick by remember { mutableStateOf(0) }          // bumps on any device add/remove
     var nicknameEditKey by remember { mutableStateOf<String?>(null) }
     var nicknameEditInput by remember { mutableStateOf("") }
@@ -883,7 +886,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
         Spacer(Modifier.height(6.dp))
         // v144 §28: QUICK OUTPUT SWITCHER — current route always visible
-        val quickRoute by remember(outputTick) { mutableStateOf(OutputRoutes.activeRouteLabel(context)) }
+        val quickRoute = outputUi.activeName
+        val quickNote = outputUi.fallbackNote
         Row(verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
@@ -894,7 +898,8 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 .semantics { contentDescription = "Output: " + quickRoute + " — opens Output Studio" }) {
             Text("OUTPUT", fontSize = 10.sp, color = T.secondary, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(8.dp))
-            Text(quickRoute, fontSize = 11.sp, color = T.primary, maxLines = 1, modifier = Modifier.weight(1f))
+            Text(if (quickNote != null) quickNote + " · " + quickRoute else quickRoute,
+                fontSize = 11.sp, color = if (quickNote != null) T.accent else T.primary, maxLines = 1, modifier = Modifier.weight(1f))
             Text("▾", fontSize = 11.sp, color = T.primary)
         }
         Spacer(Modifier.height(6.dp))
@@ -1933,7 +1938,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             }
             val rate = if (CaptureEqService.running && CaptureEqService.captureSampleRate > 0)
                 " · " + (CaptureEqService.captureSampleRate / 1000) + " kHz" else ""
-            val route = runCatching { OutputRoutes.activeRouteLabel(context) }.getOrDefault("ROUTE UNKNOWN")
+            val route = if (outputUi.activeKey != null) outputUi.activeName else "ROUTE UNKNOWN"
             ds + rate + " · " + route
         }
         Text(eqStatusLine, fontSize = 8.sp, color = T.secondary, modifier = Modifier.padding(top = 2.dp))
@@ -3706,6 +3711,9 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     // for the composition and ALWAYS unregistered on dispose (lifecycle-safe;
     // never registered from or touching the audio thread).
     val ctx = LocalContext.current
+    // v145 §3: the callback stays CHEAP — it only bumps a counter and appends a
+    // bounded log line. No enumeration, no snapshot building, no profile or
+    // preset loading here. The debounce below does the real work, once.
     DisposableEffect(Unit) {
         val cb = object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) {
@@ -3721,6 +3729,43 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         if (ok) OutputRoutes.note("Route monitoring active")
         onDispose { OutputRoutes.unregisterCallback(ctx, cb) }
     }
+    // v145 §22: ONE debounced refresh when returning from system output
+    // settings (or any resume) — no monitoring while the picker is open.
+    DisposableEffect(Unit) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+            if (ev == androidx.lifecycle.Lifecycle.Event.ON_RESUME) outputTick++
+        }
+        val owner = ctx as? androidx.lifecycle.LifecycleOwner
+        owner?.lifecycle?.addObserver(obs)
+        onDispose { owner?.lifecycle?.removeObserver(obs) }
+    }
+    // v145 §4/§5/§6: trailing debounce — a burst of device events for one
+    // physical connection coalesces into ONE snapshot build; identical
+    // snapshots are skipped (no second recomposition). Audio recovery is
+    // fully independent (CaptureEqService handles its own route rebuild).
+    LaunchedEffect(outputTick) {
+        delay(250)
+        val snap = OutputRoutes.buildSnapshot(ctx)
+        if (snap == outputUi) { OutputRoutes.snapshotSkips++; return@LaunchedEffect }
+        outputUi = snap
+        val key = snap.activeKey
+        if (key != null && key != OutputRoutes.lastReportedKey) {
+            val first = OutputRoutes.lastReportedKey == null
+            OutputRoutes.lastReportedKey = key
+            OutputRoutes.rememberRoute(ctx, snap.activeName)
+            OutputRoutes.note("Route changed → " + snap.activeName)
+            val pname = snap.profileName
+            if (pname != null && tryApplyPresetByName(pname)) {
+                OutputRoutes.note("Profile restored: " + pname)
+                android.widget.Toast.makeText(ctx, "Restoring " + pname + " EQ… ✓", android.widget.Toast.LENGTH_SHORT).show()
+            } else if (!first) {
+                android.widget.Toast.makeText(ctx, "Output: " + snap.activeName, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        } else if (key == null) {
+            OutputRoutes.note(snap.fallbackNote ?: "No output reported")
+        }
+    }
+    LaunchedEffect(Unit) { outputTick++ }   // first snapshot after composition
     // v144 §16: per-output EQ profile — ONE existing DSP state, applied
     // atomically through the existing preset apply path. Runs only when the
     // ACTIVE route key actually changes; a missing profile keeps the live EQ.
@@ -3955,7 +4000,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         Text("Choose where SonicCore sends processed audio", fontSize = 9.sp, color = T.secondary)
         Spacer(Modifier.height(8.dp))
         val octx = context
-        val routes = remember(showOutputStudio, outputTick) { OutputRoutes.devices(octx) }
+        val routes = outputUi.routes
         val act = routes.firstOrNull { it.isActive } ?: routes.firstOrNull()
         val nicknames = remember(showOutputStudio) { OutputRoutes.nicknames(octx) }
 
@@ -3964,9 +4009,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
             GradientText("ACTIVE OUTPUT", 11.sp, Brush.horizontalGradient(listOf(T.primary, T.accent)))
             Spacer(Modifier.height(4.dp))
             Text(
-                (act?.let { OutputContract.displayName(it.key, it.productName, nicknames) } ?: "ROUTE UNKNOWN"),
+                if (act != null) outputUi.activeName else "WAITING FOR OUTPUT",
                 fontSize = 18.sp, fontWeight = FontWeight.Bold, color = T.primary
             )
+            if (outputUi.fallbackNote != null) {
+                Text(outputUi.fallbackNote + " — waiting for Android's route state",
+                    fontSize = 9.sp, color = T.accent)
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("● ACTIVE", fontSize = 10.sp, color = T.primary,
                     modifier = Modifier.clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.12f))
@@ -3975,11 +4024,11 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 Text(act?.let { OutputContract.categoryDetail(it.category) } ?: "n/a", fontSize = 10.sp, color = T.secondary)
             }
             Spacer(Modifier.height(4.dp))
-            val maxRate = act?.sampleRates?.maxOrNull() ?: 0
+            val maxRate = act?.maxRate ?: 0
             TechValue(
                 (if (CaptureEqService.running) "Sample rate: " + CaptureEqService.captureSampleRate + " Hz (measured)"
                  else if (maxRate > 0) "Supports up to " + maxRate + " Hz (reported by Android)" else "Sample rate: not reported by Android") +
-                    " · Channels: " + (if ((act?.channelCount ?: 0) > 1) "Stereo" else if (act?.channelCount == 1) "Mono" else "not reported")
+                    " · Channels: " + (if ((act?.channels ?: 0) > 1) "Stereo" else if (act?.channels == 1) "Mono" else "not reported")
             )
             TechValue(
                 "Latency: ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + " ms (estimated, capture chain)" +
@@ -3991,8 +4040,12 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── OUTPUT METERS (§22) — native per-channel RMS, no new analysis ──
         var oMeters by remember { mutableStateOf(0) }
+        val meterMs = remember(showOutputStudio) { OutputRoutes.meterIntervalMs(octx) }
         LaunchedEffect(showOutputStudio) {
-            while (showOutputStudio) { delay(400); oMeters++ }
+            if (showOutputStudio) {
+                outputTick++   // §16: one refresh on open, then event-driven
+                while (showOutputStudio) { delay(meterMs.toLong()); oMeters++ }
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text("L", fontSize = 9.sp, color = T.secondary)
@@ -4020,7 +4073,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
         routes.forEach { r ->
             val rname = OutputContract.displayName(r.key, r.productName, nicknames)
-            val isFav = remember(showOutputStudio, r.key) { OutputRoutes.favorites(octx).contains(r.key) }
+            val isFav = remember(showOutputStudio, outputTick, r.key) { OutputRoutes.favorites(octx).contains(r.key) }
             NeonCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (isFav) "★" else " ", fontSize = 12.sp, color = T.accent,
@@ -4032,7 +4085,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     Column(Modifier.weight(1f)) {
                         Text(rname, fontSize = 12.sp, color = T.primary, fontWeight = FontWeight.Bold)
                         Text(OutputContract.categoryLabel(r.category) + " · " + OutputContract.categoryDetail(r.category) +
-                            (if (r.sampleRates.maxOrNull() != null && (r.sampleRates.maxOrNull() ?: 0) > 0) " · up to " + (r.sampleRates.maxOrNull() ?: 0) + " Hz" else "") +
+                            (if (r.maxRate > 0) " · up to " + r.maxRate + " Hz" else "") +
                             if (r.isActive) " · ACTIVE ✓" else "", fontSize = 9.sp, color = T.secondary, maxLines = 1)
                     }
                     Text("USE", fontSize = 10.sp, color = T.primary,
@@ -4065,7 +4118,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
 
         // ── FOLLOW SYSTEM OUTPUT (§12) ──
-        var followSys by remember(showOutputStudio) { mutableStateOf(OutputRoutes.followSystem(octx)) }
+        var followSys by remember(showOutputStudio, outputTick) { mutableStateOf(OutputRoutes.followSystem(octx)) }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(50)).background(T.secondary.copy(alpha = 0.08f))
             .clickable { followSys = !followSys; OutputRoutes.setFollowSystem(octx, followSys) }
@@ -4179,6 +4232,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
 
         // ── OUTPUT HEALTH (§34/§35) ──
         GradientText("OUTPUT HEALTH", 11.sp, Brush.horizontalGradient(listOf(T.secondary, T.primary)))
+        TechValue("Snapshots: " + OutputRoutes.snapshotBuilds + " built · " + OutputRoutes.snapshotSkips + " duplicates skipped · last enum " + OutputRoutes.lastEnumMs + " ms")
         TechValue("Route changes this session: " + OutputRoutes.logEntries().size + " · recoveries: " + (CaptureEqService.lastRecoveryReason ?: "none"))
         TechValue("Capture: " + (if (CaptureEqService.running) "running · " + CaptureEqService.bufferMode else "idle") +
             (if (CaptureEqService.lastError != null) " · last error: " + CaptureEqService.lastError else ""))
@@ -4727,6 +4781,29 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                     Column {
                         Text("App Theme", fontSize = 14.sp, color = S.text)
                         Text("Accent palette for the entire UI", fontSize = 11.sp, color = Color.Gray)
+                        Spacer(Modifier.height(12.dp))
+                        Text("Performance Mode", fontSize = 14.sp, color = S.text)
+                        Text("UI effects only — audio DSP quality never changes", fontSize = 11.sp, color = Color.Gray)
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val pctx = LocalContext.current
+                            var perfSel by remember { mutableStateOf(OutputRoutes.perfMode(pctx)) }
+                            listOf(
+                                OutputContract.PerfMode.AUTO to "AUTO",
+                                OutputContract.PerfMode.QUALITY to "HIGH QUALITY",
+                                OutputContract.PerfMode.PERFORMANCE to "PERFORMANCE"
+                            ).forEach { (mode, label) ->
+                                val selP = perfSel == mode
+                                Text(label, fontSize = 10.sp,
+                                    color = if (selP) T.primary else T.secondary,
+                                    modifier = Modifier.clip(RoundedCornerShape(50))
+                                        .background(if (selP) T.primary.copy(alpha = 0.14f) else T.secondary.copy(alpha = 0.08f))
+                                        .clickable { perfSel = mode; OutputRoutes.setPerfMode(pctx, mode); outputTick++ }
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                        .semantics { contentDescription = "Performance mode " + label })
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
                         Spacer(Modifier.height(10.dp))
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Themes.ALL.forEach { t ->

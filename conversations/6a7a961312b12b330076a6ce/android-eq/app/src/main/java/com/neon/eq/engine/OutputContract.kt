@@ -112,4 +112,64 @@ object OutputContract {
             else -> java.text.SimpleDateFormat("d MMM", java.util.Locale.ROOT).format(java.util.Date(entryMs))
         }
     }
+
+// ══════════ v145 PERFORMANCE: pure UI snapshot model (§6) ══════════
+    // One immutable lightweight state, structural equality — Compose skips
+    // emission when nothing changed (§5 dedup). All primitives: no IntArray
+    // (it breaks equals), no Android types.
+
+    data class RouteUi(
+        val key: String,
+        val productName: String?,
+        val category: Int,
+        val maxRate: Int,
+        val channels: Int,
+        val isActive: Boolean = false
+    )
+
+    data class OutputUiState(
+        val activeName: String,
+        val activeKey: String?,
+        val routes: List<RouteUi>,
+        val fallbackNote: String?,
+        val profileName: String?,
+        val followSystem: Boolean
+    ) {
+        companion object {
+            val EMPTY = OutputUiState("WAITING FOR OUTPUT", null, emptyList(), "WAITING FOR OUTPUT", null, true)
+        }
+    }
+
+    /** Index of the route Android is sending media to, by honest priority.
+     *  Earpiece never wins media (comms only). Empty list → null. */
+    fun activeIndex(categories: List<Int>): Int? {
+        if (categories.isEmpty()) return null
+        var best = -1
+        var bestP = Int.MAX_VALUE
+        categories.forEachIndexed { i, c ->
+            if (c != CAT_EARPIECE) {
+                val p = categoryPriority(c)
+                if (p < bestP) { bestP = p; best = i }
+            }
+        }
+        return if (best >= 0) best else 0
+    }
+
+    /** §20 honest fallback labels — never a fake ACTIVE state. */
+    fun fallbackNote(routes: List<RouteUi>, activeIdx: Int?): String? = when {
+        routes.isEmpty() -> "WAITING FOR OUTPUT"
+        activeIdx == null -> "OUTPUT LOST"
+        else -> null
+    }
+
+    // ── §31 PERFORMANCE MODE: UI only — DSP quality never changes ──
+    enum class PerfMode { AUTO, QUALITY, PERFORMANCE }
+
+    /** Meter/visual update interval in ms. 20 Hz max visual rate (§14):
+     *  the audio DSP itself stays real-time regardless of this value. */
+    fun meterIntervalMs(mode: PerfMode, lowRam: Boolean): Int = when (mode) {
+        PerfMode.PERFORMANCE -> 200
+        PerfMode.QUALITY -> 50
+        PerfMode.AUTO -> if (lowRam) 100 else 50
+    }
 }
