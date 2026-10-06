@@ -43,16 +43,14 @@ object OutputRoutes {
         AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> OutputContract.CAT_SPEAKER
         AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> OutputContract.CAT_EARPIECE
         AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-        AudioDeviceInfo.TYPE_WIRED_HEADSET,
-        AudioDeviceInfo.TYPE_WIRED_BUS -> OutputContract.CAT_WIRED
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> OutputContract.CAT_WIRED
         AudioDeviceInfo.TYPE_USB_HEADSET,
         AudioDeviceInfo.TYPE_USB_DEVICE,
         AudioDeviceInfo.TYPE_USB_ACCESSORY -> OutputContract.CAT_USB
         AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
         AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> OutputContract.CAT_BLUETOOTH
         AudioDeviceInfo.TYPE_BLE_HEADSET,
-        AudioDeviceInfo.TYPE_BLE_SPEAKER,
-        AudioDeviceInfo.TYPE_BLE_HEADPHONES -> OutputContract.CAT_LE_AUDIO
+        AudioDeviceInfo.TYPE_BLE_SPEAKER -> OutputContract.CAT_LE_AUDIO
         else -> OutputContract.CAT_OTHER
     }
 

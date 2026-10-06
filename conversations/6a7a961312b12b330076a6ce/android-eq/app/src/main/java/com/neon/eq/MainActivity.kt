@@ -3708,13 +3708,13 @@ fun EqualizerScreen(engine: EqualizerEngine) {
     val ctx = LocalContext.current
     DisposableEffect(Unit) {
         val cb = object : AudioDeviceCallback() {
-            override fun onAudioDeviceAdded(added: AudioDeviceInfo) {
+            override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) {
                 outputTick++
-                OutputRoutes.note("Device connected: " + (runCatching { added.productName?.toString() }.getOrNull() ?: "output"))
+                added.forEach { d -> OutputRoutes.note("Device connected: " + (runCatching { d.productName?.toString() }.getOrNull() ?: "output")) }
             }
-            override fun onAudioDeviceRemoved(removed: AudioDeviceInfo) {
+            override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) {
                 outputTick++
-                OutputRoutes.note("Device removed: " + (runCatching { removed.productName?.toString() }.getOrNull() ?: "output"))
+                removed.forEach { d -> OutputRoutes.note("Device removed: " + (runCatching { d.productName?.toString() }.getOrNull() ?: "output")) }
             }
         }
         val ok = OutputRoutes.registerCallback(ctx, cb)
