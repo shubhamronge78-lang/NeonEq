@@ -1,5 +1,7 @@
 package com.neon.eq
 
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.Manifest
 import android.content.Intent
 import androidx.compose.foundation.clickable
