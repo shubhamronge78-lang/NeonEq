@@ -49,9 +49,9 @@ class OutputContractV145Test {
     // ── §5: a CHANGED snapshot must re-emit (equality must not over-collapse) ──
     @Test
     fun changedSnapshot_reEmits() {
-        val spk = route("out:0", OutputContract.CAT_SPEAKER, null, active = true)
-        val bt = route("out:4:buds", OutputContract.CAT_BLUETOOTH, "Buds", active = true)
-        val a = OutputContract.OutputUiState("Phone Speaker", "out:0", listOf(spk), null, null, true)
+        val spk = route("out:0", OutputContract.CAT_SPEAKER, null)
+        val bt = route("out:4:buds", OutputContract.CAT_BLUETOOTH, "Buds")
+        val a = OutputContract.OutputUiState("Phone Speaker", "out:0", listOf(spk.copy(isActive = true)), null, null, true)
         val b = OutputContract.OutputUiState("Buds", "out:4:buds", listOf(bt), null, null, true)
         assertNotEquals(a, b)
         val r = spk.copy(isActive = true)
@@ -70,8 +70,9 @@ class OutputContractV145Test {
         val idx = OutputContract.activeIndex(weird.map { it.category })
         assertTrue(idx != null && idx >= 0 && idx < weird.size)
         // empty/null names fall back to category names — never a blank UI
-        assertEquals("Bluetooth Device", OutputContract.displayName("out:4:", "", emptyMap()))
-        assertEquals("USB DAC", OutputContract.displayName("out:3:usb", null, emptyMap()))
+        // keys must come from routeKey — the blank-name fallback key is "out:4", not "out:4:"
+        assertEquals("Bluetooth Device", OutputContract.displayName(OutputContract.routeKey(4, ""), "", emptyMap()))
+        assertEquals("USB DAC", OutputContract.displayName(OutputContract.routeKey(3, null), null, emptyMap()))
         // unknown category still gets a usable label
         assertEquals("OTHER", OutputContract.categoryLabel(OutputContract.CAT_OTHER))
     }
