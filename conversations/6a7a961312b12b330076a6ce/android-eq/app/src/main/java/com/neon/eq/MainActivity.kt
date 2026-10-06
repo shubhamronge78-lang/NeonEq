@@ -1321,7 +1321,7 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                         modifier = Modifier.clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.10f)).clickable { qcTrebleOn = !qcTrebleOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle treble" })
                     Text(if (qcStereoOn) "STEREO ✓" else "STEREO ✗", fontSize = 10.sp, color = if (qcStereoOn) T.primary else T.accent,
                         modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.primary.copy(alpha = 0.10f)).clickable { qcStereoOn = !qcStereoOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle stereo width" })
-                    Text(if (qcLimOn) "LIMITER ✓" else "LIMITER ✗", fontSize = 10.sp, color = if (qcLimOn) T.primary else T.accent,
+                    Text(if (qcLimOn) ("LIMITER ✓" + (if (NeonDsp.available) runCatching { if (NeonDsp.limiterActive()) " · GR -" + (NeonDsp.limiterGrMs() / 10.0) + "dB" else "" }.getOrDefault("") else "")) else "LIMITER ✗", fontSize = 10.sp, color = if (qcLimOn) T.primary else T.accent,
                         modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(T.accent.copy(alpha = 0.10f)).clickable { qcLimOn = !qcLimOn; qcPush() }.padding(horizontal = 10.dp, vertical = 5.dp).semantics { contentDescription = "Toggle limiter" })
                 }
             }
@@ -3549,7 +3549,17 @@ fun EqualizerScreen(engine: EqualizerEngine) {
                 "CHANNELS: " + AudioCapabilityManager.channelsLine() + "\n" +
                 "BUFFER: " + CaptureEqService.bufferMode + " mode · " + AudioCapabilityManager.framesPerBufferLine(apCtx) + "\n" +
                 "LATENCY: capture " + "%.0f".format(CaptureEqService.capLatencyMs) + "ms · dsp " + "%.1f".format(CaptureEqService.dspMs) + "ms · output " + "%.0f".format(CaptureEqService.outLatencyMs) + "ms · total ~" + "%.0f".format(CaptureEqService.totalLatencyMs) + "ms\n" +
-                "UNDERRUNS: " + CaptureEqService.underruns + " · CLIPS: " + clipC2 + " · DSP CPU LOAD: " + "%.0f".format(CaptureEqService.dspLoadPct) + "%" +
+                "UNDERRUNS: " + CaptureEqService.underruns + " · CLIPS: " + clipC2 + " · DSP CPU LOAD: " + "%.0f".format(CaptureEqService.dspLoadPct) + "%" + "\n" +
+                "LIMITER: " + (if (NeonDsp.available) runCatching {
+                    val gr = NeonDsp.limiterGrMs() / 10.0
+                    (if (NeonDsp.limiterActive()) "ACTIVE · GR -" + "%.1f".format(gr) + "dB" else "transparent · GR 0.0dB") + " · out peak " + (NeonDsp.outPeakMs() / 10.0) + "dBFS"
+                }.getOrDefault("not available") else "not available") + "\n" +
+                "COMP: " + (if (NeonDsp.available) runCatching {
+                    val cgr = NeonDsp.compressorGrMs() / 10.0
+                    (if (cgr > 0.05) "GR -" + "%.1f".format(cgr) + "dB" else "no reduction")
+                }.getOrDefault("not available") else "not available") +
+                " · DSP BLOCK: " + (if (NeonDsp.available) runCatching { NeonDsp.dspProcUs().toString() + "µs" }.getOrDefault("—") else "—") +
+                " · CFG v" + (if (NeonDsp.available) runCatching { NeonDsp.paramVersion().toString() }.getOrDefault("—") else "—") +
                 (if (pathTick < 0) "" else ""),
                 fontSize = 10.sp, color = T.secondary, lineHeight = 14.sp
             )

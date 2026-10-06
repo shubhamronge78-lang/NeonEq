@@ -55,4 +55,14 @@ object NeonDsp {
     external fun spectrum(bins: FloatArray, mode: Int)
     external fun processedFrames(): Long
     external fun resetStats()
+    /** v146 limiter telemetry: current gain reduction, 0..1000 units (0..-100 dB). */
+    external fun limiterGrMs(): Int
+    /** v146: true while the limiter is actively reducing gain. */
+    external fun limiterActive(): Boolean
+    /** v146 compressor gain reduction, 0..1000 units (0..-100 dB). */
+    external fun compressorGrMs(): Int
+    /** v146: last process() body duration in microseconds (pure DSP time, no I/O). */
+    external fun dspProcUs(): Long
+    /** v146: monotonic committed-configuration version (diagnostic). */
+    external fun paramVersion(): Long
 }

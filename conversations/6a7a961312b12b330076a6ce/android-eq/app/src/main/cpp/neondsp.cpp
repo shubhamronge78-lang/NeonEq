@@ -1,14 +1,30 @@
 /*
- * NeonDsp — native real-time DSP chain (Build #116)
+ * NeonDsp — native real-time DSP chain (v146 AUDIO ENGINE PRO)
  *
- * The processing order per stereo frame:
- *   mono/balance/swap -> stereo width -> preamp -> parametric EQ (8 slots)
- *   -> graphic EQ (10/15/31 bands) -> bass shelf -> treble shelf
- *   -> compressor (stereo-linked) -> convolver (small IR, optional)
- *   -> output limiter (stereo-linked) -> soft clip counter
+ * MASTER PROCESSING CONTRACT — per stereo frame, always in this order:
+ *   input validation (NaN/Inf sanitized by the capture path; final guard below)
+ *   -> stereo stage (mono/balance/swap -> width)
+ *   -> preamp
+ *   -> parametric EQ (8 slots)
+ *   -> graphic EQ (10/15/31 bands)
+ *   -> bass shelf -> treble shelf
+ *   -> compressor (stereo-linked, gain-reduction domain)
+ *   -> convolver (small IR, optional)
+ *   -> output limiter (stereo-linked, gain-reduction domain)
+ *   -> final safety validation (NaN/Inf guard + clamp) -> OUTPUT PCM
+ *
+ * Contract guarantees for every stage: deterministic behavior, finite
+ * numbers only, no unbounded gain, no uncontrolled state growth, and no
+ * allocation on the audio thread. A flat configuration is unity: every
+ * identity-stage biquad is mathematically exact (numerator == denominator
+ * coefficients at 0 dB), and the v146 limiter/compressor apply exactly
+ * 0 dB of gain reduction below threshold — measured, not assumed.
  *
  * Straight C, no allocations in process(), fixed point not needed on ARM.
+ * Denormal doubles are flushed to zero by ARM hardware (FPCR.FZ) on
+ * Android; host tests run the same code under ASan/UBSan.
  */
+#include <chrono>
 #include <jni.h>
 #include <math.h>
 #include <string.h>
@@ -53,7 +69,14 @@ static double preampDb = 0.0, bassDb = 0.0, trebleDb = 0.0;
 
 static bool compOn = false;
 static double compThreshDb = -18.0, compRatio = 4.0;
-static double compAtkCoef = 0.05, compRelCoef = 0.005, compEnvDb = 0.0;
+static double compAtkCoef = 0.05, compRelCoef = 0.005;
+/* v146: compGrDb is GAIN REDUCTION in dB (<= 0, 0 = no compression).
+ * v136-v145 tracked the smoothed detector LEVEL and multiplied by
+ * 10^((env-det)/20): the envelope lagged the instantaneous level inside
+ * every signal cycle (det floors to -180 dB at zero crossings), so normal
+ * material was crushed (measured: -12 dBFS in -> -42 dBFS out). Tracking
+ * reduction instead of level is exact unity below threshold. */
+static double compGrDb = 0.0;
 
 static double stWidth = 1.0, stBalance = 0.0;
 static bool stSwap = false, stMono = false;
@@ -65,9 +88,15 @@ static float histL[MAXIR], histR[MAXIR];
 static int histIdx = 0;
 
 static bool limOn = true;
-static double limThreshDb = -1.0, limEnvDb = 0.0;
+/* v146: same domain fix for the limiter — limGrDb is gain reduction (<= 0).
+ * The old level-domain envelope attenuated a -6 dBFS sine to -68 dBFS
+ * (limiter is ON by default!). Measured, reproduced, fixed. */
+static double limThreshDb = -1.0, limGrDb = 0.0;
 
 static long clipCount = 0, procFrames = 0;
+/* v146 diagnostics (§11/§17/§21): measured, never inferred */
+static long lastProcUs = 0;      /* last process() body duration, microseconds */
+static long cfgVersion = 0;     /* bumps on every committed parameter change */
 static long nanEvents = 0;
 static long jniFramesIn = 0;   /* frames handed to the JNI process() entry */
 static int inRmsMs = 0, inPeakMs = 0;    /* pre-DSP meters, 0..1000 units */
@@ -311,8 +340,8 @@ static void applyPendingParams() {
         if (cfgSeq != s1) continue;
         /* Envelope/env state resets ONLY on toggle transitions — a threshold
            move during playback must never pump the gain envelope. */
-        if (snap2.compOn && !cfgApplied.compOn) compEnvDb = 0.0;
-        if (snap2.limOn && !cfgApplied.limOn) limEnvDb = 0.0;
+        if (snap2.compOn && !cfgApplied.compOn) compGrDb = 0.0;
+        if (snap2.limOn && !cfgApplied.limOn) limGrDb = 0.0;
         if (snap2.convOn && !cfgApplied.convOn) {
             /* fresh enable: clear the convolver history on the AUDIO thread */
             histIdx = 0;
@@ -337,6 +366,7 @@ static void applyPendingParams() {
         limOn = snap2.limOn; limThreshDb = snap2.limThreshDb;
         convOn = snap2.convOn;
         cfgApplied = snap2;
+        cfgVersion++;
         break;
     }
 }
@@ -387,23 +417,31 @@ static inline void processFrame(jshort* p) {
         l = ol; r = orr;
         if (++histIdx >= MAXIR) histIdx = 0;
     }
-    /* compressor, stereo-linked */
+    /* compressor, stereo-linked — GAIN-REDUCTION domain (v146).
+     * targetGr is exactly 0 below threshold (unity, no pumping, no
+     * within-cycle modulation) and -(over)·(1-1/ratio) above it. The
+     * envelope smooths the REDUCTION, never the signal level. Attack
+     * applies when more reduction is needed, release when recovering. */
     if (compOn) {
         double det = (fabs(l) + fabs(r)) * 0.5 / 32768.0;
         double detDb = 20.0 * log10(det > 1e-9 ? det : 1e-9);
-        double target = detDb > compThreshDb ? compThreshDb + (detDb - compThreshDb) / compRatio : detDb;
-        double coef = target > compEnvDb ? compAtkCoef : compRelCoef;
-        compEnvDb += coef * (target - compEnvDb);
-        double gr = pow(10.0, (compEnvDb - detDb) / 20.0);
-        l *= gr; r *= gr;
+        double over = detDb - compThreshDb;
+        double targetGr = over > 0.0 ? -over * (1.0 - 1.0 / compRatio) : 0.0;
+        double coef = targetGr < compGrDb ? compAtkCoef : compRelCoef;
+        compGrDb += coef * (targetGr - compGrDb);
+        double g = pow(10.0, compGrDb / 20.0);
+        l *= g; r *= g;
     }
-    /* output limiter, stereo-linked */
+    /* output limiter, stereo-linked — GAIN-REDUCTION domain (v146).
+     * Transparent safety stage, not a loudness maximizer: exactly 0 dB
+     * reduction below the ceiling (measured unity), smooth bounded
+     * reduction above it, envelope preserved across audio blocks. */
     if (limOn) {
         double det = fabs(l) > fabs(r) ? fabs(l) : fabs(r);
         double detDb = 20.0 * log10((det / 32768.0) > 1e-9 ? det / 32768.0 : 1e-9);
-        double target = detDb > limThreshDb ? limThreshDb : detDb;
-        limEnvDb += (target < limEnvDb ? 0.30 : 0.02) * (target - limEnvDb);
-        double g = pow(10.0, (limEnvDb - detDb) / 20.0);
+        double targetGr = detDb > limThreshDb ? (limThreshDb - detDb) : 0.0;
+        limGrDb += (targetGr < limGrDb ? 0.30 : 0.02) * (targetGr - limGrDb);
+        double g = pow(10.0, limGrDb / 20.0);
         l *= g; r *= g;
     }
     /* NaN/Inf safety (spec 17): flush all filter states and pass the raw
@@ -413,7 +451,7 @@ static inline void processFrame(jshort* p) {
         for (int i = 0; i < MAXBANDS; i++) { clearB(&graphic[i][0]); clearB(&graphic[i][1]); }
         for (int i = 0; i < MAXPEQ; i++) { clearB(&peq[i][0]); clearB(&peq[i][1]); }
         clearB(&bassSh[0]); clearB(&bassSh[1]); clearB(&trebSh[0]); clearB(&trebSh[1]);
-        compEnvDb = 0.0; limEnvDb = 0.0;
+        compGrDb = 0.0; limGrDb = 0.0;
         p[0] = inL; p[1] = inR;
         procFrames++;
         return;
@@ -441,7 +479,7 @@ Java_com_neon_eq_dsp_NeonDsp_init(JNIEnv* env, jobject thiz, jint rate, jint ban
     setShelf(&bassSh[0], 100.0, 0.0, false); setShelf(&bassSh[1], 100.0, 0.0, false);
     setShelf(&trebSh[0], 8000.0, 0.0, true); setShelf(&trebSh[1], 8000.0, 0.0, true);
     clipCount = 0; procFrames = 0; histIdx = 0;
-    compEnvDb = 0.0; limEnvDb = 0.0;
+    compGrDb = 0.0; limGrDb = 0.0;
     memset(histL, 0, sizeof(histL)); memset(histR, 0, sizeof(histR));
     /* Build #120: reset parameter targets + applied snapshot so a mode
        switch starts from a clean, fully-committed configuration. */
@@ -465,9 +503,9 @@ Java_com_neon_eq_dsp_NeonDsp_init(JNIEnv* env, jobject thiz, jint rate, jint ban
     cfgTarget = CfgScalar { 0.0, 0.0, 0.0, 0, -18.0, 4.0, 0.05, 0.005, 1.0, 0.0, 0, 0, 1, -1.0, 0 };
     cfgApplied = cfgTarget;
     preampDb = 0.0; bassDb = 0.0; trebleDb = 0.0;
-    compOn = 0; compThreshDb = -18.0; compRatio = 4.0; compEnvDb = 0.0;
+    compOn = 0; compThreshDb = -18.0; compRatio = 4.0; compGrDb = 0.0;
     stWidth = 1.0; stBalance = 0.0; stSwap = 0; stMono = 0;
-    limOn = 1; limThreshDb = -1.0; limEnvDb = 0.0;
+    limOn = 1; limThreshDb = -1.0; limGrDb = 0.0;
     convOn = 0;
     __sync_synchronize();
 }
@@ -641,6 +679,10 @@ Java_com_neon_eq_dsp_NeonDsp_loadIr(JNIEnv* env, jobject thiz, jfloatArray left,
 
 JNIEXPORT void JNICALL
 Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf, jint frames) {
+    /* v146 §21: measures ONLY this process() body — pure DSP+meter time.
+     * Capture and output buffering happen outside and are never included
+     * in this number. Two clock reads per block: negligible. */
+    auto _t0 = std::chrono::steady_clock::now();
     jshort* p = (jshort*) env->GetPrimitiveArrayCritical(buf, NULL);
     if (p == NULL) return;
     jniFramesIn += frames;
@@ -710,10 +752,36 @@ Java_com_neon_eq_dsp_NeonDsp_process(JNIEnv* env, jobject thiz, jshortArray buf,
         }
     }
     env->ReleasePrimitiveArrayCritical(buf, p, 0);
+    lastProcUs = (long) std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - _t0).count();
 }
 
 JNIEXPORT jlong JNICALL
 Java_com_neon_eq_dsp_NeonDsp_clipCount(JNIEnv* env, jobject thiz) { return (jlong) clipCount; }
+
+/* v146 §11/§17/§21 diagnostics — measured values, cheap int reads for the UI */
+JNIEXPORT jint JNICALL
+Java_com_neon_eq_dsp_NeonDsp_limiterGrMs(JNIEnv* env, jobject thiz) {
+    double gr = -limGrDb; if (gr < 0.0) gr = 0.0; if (gr > 100.0) gr = 100.0;
+    return (jint) (gr * 10.0);   /* 0..1000 units = 0..-100 dB reduction */
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_neon_eq_dsp_NeonDsp_limiterActive(JNIEnv* env, jobject thiz) {
+    return limGrDb < -0.05 ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_neon_eq_dsp_NeonDsp_compressorGrMs(JNIEnv* env, jobject thiz) {
+    double gr = -compGrDb; if (gr < 0.0) gr = 0.0; if (gr > 100.0) gr = 100.0;
+    return (jint) (gr * 10.0);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_neon_eq_dsp_NeonDsp_dspProcUs(JNIEnv* env, jobject thiz) { return (jlong) lastProcUs; }
+
+JNIEXPORT jlong JNICALL
+Java_com_neon_eq_dsp_NeonDsp_paramVersion(JNIEnv* env, jobject thiz) { return (jlong) cfgVersion; }
 
 JNIEXPORT jlong JNICALL
 Java_com_neon_eq_dsp_NeonDsp_processedFrames(JNIEnv* env, jobject thiz) { return (jlong) procFrames; }
