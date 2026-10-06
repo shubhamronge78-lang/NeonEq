@@ -198,7 +198,11 @@ static void setShelfT(Biquad* f, double freq, double gdb, bool high) {
         b2 =    A * ((A + 1) - (A - 1) * cw - 2 * sqA * alpha);
         a0 =        (A + 1) + (A - 1) * cw + 2 * sqA * alpha;
         a1 =   -2 * ((A - 1) + (A + 1) * cw);
-        a2 =        (A + 1) - (A - 1) * cw - 2 * sqA * alpha;
+        /* v138 FIX: low-shelf a2 is (A+1) + (A-1)cw + 2*sqrt(A)*alpha (RBJ) —
+           the v137 transcription reused b2's signs, making the bass shelf
+           UNSTABLE for most gains: exponential blowup -> inf -> NaN at the
+           comp/limiter gain multiply. Caught by the host DSP harness. */
+        a2 =        (A + 1) + (A - 1) * cw + 2 * sqA * alpha;
     } else {
         b0 =    A * ((A + 1) + (A - 1) * cw + 2 * sqA * alpha);
         b1 = -2 * A * ((A - 1) + (A + 1) * cw);

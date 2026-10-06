@@ -30,6 +30,14 @@ jobs:
         chmod +x gradlew
         ./gradlew testDebugUnitTest --no-daemon --continue
 
+    - name: Native DSP host self-test (ASan/UBSan)
+      working-directory: conversations/6a7a961312b12b330076a6ce/android-eq
+      run: |
+        g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+          -I tools/dspharness tools/dspharness/harness.cpp app/src/main/cpp/neondsp.cpp \
+          -o /tmp/dsp_harness -lpthread
+        /tmp/dsp_harness
+
     - name: Build Debug APK
       working-directory: conversations/6a7a961312b12b330076a6ce/android-eq
       run: |
