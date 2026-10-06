@@ -3766,30 +3766,6 @@ fun EqualizerScreen(engine: EqualizerEngine) {
         }
     }
     LaunchedEffect(Unit) { outputTick++ }   // first snapshot after composition
-    // v144 §16: per-output EQ profile — ONE existing DSP state, applied
-    // atomically through the existing preset apply path. Runs only when the
-    // ACTIVE route key actually changes; a missing profile keeps the live EQ.
-    var lastOutputKey by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(outputTick) {
-        val key = OutputRoutes.activeKey(ctx)
-        if (key != null && key != lastOutputKey) {
-            val firstSeen = lastOutputKey == null
-            lastOutputKey = key
-            val name = OutputRoutes.activeRouteLabel(ctx)
-            OutputRoutes.rememberRoute(ctx, name)
-            OutputRoutes.note("Route changed → " + name)
-            val pname = OutputRoutes.profileFor(ctx, key)
-            if (pname != null) {
-                val applied = tryApplyPresetByName(pname)
-                if (applied) {
-                    OutputRoutes.note("Profile restored: " + pname)
-                    android.widget.Toast.makeText(ctx, "Restoring " + pname + " EQ… ✓", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            } else if (!firstSeen) {
-                android.widget.Toast.makeText(ctx, "Output: " + name, android.widget.Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
     GlassBackground()
